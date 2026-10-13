@@ -1,0 +1,20 @@
+[package]
+name = "crisol-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crisold"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+crisol-core.workspace = true
+crisol-platform.workspace = true
+crisol-protocol.workspace = true
+
+[lints]
+workspace = true
