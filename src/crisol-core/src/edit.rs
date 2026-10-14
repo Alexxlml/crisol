@@ -22,6 +22,7 @@ use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
 use crate::config::Config;
 use crate::paths::CrisolPaths;
+use crate::project::{ProjectConfig, PROJECT_FILE};
 
 const BOM: char = '\u{feff}';
 
@@ -97,6 +98,14 @@ impl TomlEditor {
     pub fn open_config(paths: &CrisolPaths) -> Result<Self, EditError> {
         let mut editor = Self::open(paths.config_file())?;
         editor.check = Some(check_config);
+        Ok(editor)
+    }
+
+    /// Opens (or prepares to create) the `.crisol.toml` of the project in `dir`, validating
+    /// every save against the project model.
+    pub fn open_project(dir: &Path) -> Result<Self, EditError> {
+        let mut editor = Self::open(dir.join(PROJECT_FILE))?;
+        editor.check = Some(check_project);
         Ok(editor)
     }
 
@@ -260,6 +269,12 @@ impl TomlEditor {
 
 fn check_config(text: &str) -> Result<(), String> {
     Config::parse(text).map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn check_project(text: &str) -> Result<(), String> {
+    ProjectConfig::parse(text)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -603,6 +618,38 @@ enabled = true
         assert!(editor.save().unwrap());
         let loaded = Config::load_from(&paths).unwrap();
         assert_eq!(loaded.config.sites.tld, "localhost");
+    }
+
+    #[test]
+    fn the_project_file_is_created_and_validated() {
+        let dir = TempDir::new().unwrap();
+
+        let mut editor = TomlEditor::open_project(dir.path()).unwrap();
+        editor.set(&["php"], "../etc").unwrap();
+        assert!(matches!(editor.save().unwrap_err(), EditError::Rejected(_)));
+        assert!(!dir.path().join(PROJECT_FILE).exists());
+
+        editor.set(&["php"], "8.4").unwrap();
+        assert!(editor.save().unwrap());
+        let loaded = crate::project::load_project(dir.path(), Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.config.php.as_deref(), Some("8.4"));
+
+        // Changing the pin later keeps the user's comments.
+        let file = dir.path().join(PROJECT_FILE);
+        fs::write(
+            &file,
+            "# pinned for the client\nphp = \"8.4\" # LTS\nnode = \"22\"\n",
+        )
+        .unwrap();
+        let mut editor = TomlEditor::open_project(dir.path()).unwrap();
+        editor.set(&["php"], "8.3").unwrap();
+        editor.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "# pinned for the client\nphp = \"8.3\" # LTS\nnode = \"22\"\n"
+        );
     }
 
     #[test]

@@ -3,10 +3,12 @@
 pub mod config;
 pub mod edit;
 pub mod paths;
+pub mod project;
 
 pub use config::{Config, ConfigError, ConfigWarning, LoadedConfig};
 pub use edit::{EditError, TomlEditor};
 pub use paths::{CrisolPaths, PathsError};
+pub use project::{find_project_file, load_project, LoadedProject, ProjectConfig, PROJECT_FILE};
 
 /// Crate version, exposed for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

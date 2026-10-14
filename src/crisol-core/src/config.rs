@@ -313,18 +313,8 @@ pub struct LoadedConfig {
 impl Config {
     /// Parses `crisol.toml` text. Empty text yields the defaults.
     pub fn parse(text: &str) -> Result<LoadedConfig, ConfigError> {
-        // Windows editors may save UTF-8 with a byte-order mark; TOML itself has none.
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let deserializer = toml::de::Deserializer::parse(text)?;
-        let mut unknown = Vec::new();
-        let config: Config =
-            serde_ignored::deserialize(deserializer, |path| unknown.push(path.to_string()))?;
+        let (config, mut warnings): (Config, _) = deserialize_reporting_unknown(text)?;
         config.validate()?;
-
-        let mut warnings: Vec<ConfigWarning> = unknown
-            .into_iter()
-            .map(ConfigWarning::UnknownField)
-            .collect();
         warnings.extend(config.conflicts());
         Ok(LoadedConfig { config, warnings })
     }
@@ -502,7 +492,25 @@ impl Config {
     }
 }
 
-fn invalid(field: &str, reason: &str) -> ConfigError {
+/// Deserializes TOML text, collecting unknown fields as warnings instead of failing.
+///
+/// Shared by every Crisol TOML model. A leading byte-order mark is ignored: Windows editors
+/// may save UTF-8 with one, and TOML itself has none.
+pub(crate) fn deserialize_reporting_unknown<T: serde::de::DeserializeOwned>(
+    text: &str,
+) -> Result<(T, Vec<ConfigWarning>), ConfigError> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let deserializer = toml::de::Deserializer::parse(text)?;
+    let mut unknown = Vec::new();
+    let value: T = serde_ignored::deserialize(deserializer, |path| unknown.push(path.to_string()))?;
+    let warnings = unknown
+        .into_iter()
+        .map(ConfigWarning::UnknownField)
+        .collect();
+    Ok((value, warnings))
+}
+
+pub(crate) fn invalid(field: &str, reason: &str) -> ConfigError {
     ConfigError::Invalid {
         field: field.to_owned(),
         reason: reason.to_owned(),
