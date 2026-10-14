@@ -148,6 +148,10 @@ pub struct PhpIniInput<'a> {
     pub available: &'a BTreeSet<String>,
     /// Where PHP writes its errors; `None` keeps PHP's default (stderr).
     pub error_log: Option<&'a Path>,
+    /// The CA bundle for cURL and OpenSSL (`etc/php/cacert.pem`, ADR-0011); `None` leaves
+    /// `curl.cainfo` and `openssl.cafile` as PHP ships them. A value the user sets in an
+    /// override still wins: overrides come last and PHP keeps the last assignment.
+    pub ca_file: Option<&'a Path>,
     /// The user's `*.ini` fragments as `(file name, text)`, already in the order to append.
     pub overrides: &'a [(String, String)],
     /// Folder the overrides come from, for the header.
@@ -384,6 +388,12 @@ fn directives(input: &PhpIniInput<'_>) -> Result<Vec<Directive>, PhpIniError> {
             Some("php_errors.log"),
         ));
     }
+    if let Some(bundle) = input.ca_file {
+        let quoted = format!("\"{}\"", quote_path(bundle)?);
+        // `;curl.cainfo =` is under [curl] and `;openssl.cafile=` under [openssl].
+        list.push(Directive::commented("curl.cainfo", &quoted, None));
+        list.push(Directive::commented("openssl.cafile", quoted, None));
+    }
     Ok(list)
 }
 
@@ -538,6 +548,8 @@ pub struct WrittenPhpIni {
     pub enabled: Vec<String>,
     /// Requested extensions this build does not ship.
     pub skipped: Vec<String>,
+    /// Things worth telling the user (for instance, that there is no CA bundle yet).
+    pub warnings: Vec<String>,
 }
 
 /// Generates `etc/php/<version>/php.ini` for an installed PHP and writes it atomically. If
@@ -566,6 +578,15 @@ pub fn write_php_ini(
     let overrides =
         read_overrides(&overrides_dir).map_err(io_error("cannot read", &overrides_dir))?;
     let error_log = paths.logs_for("php")?.join("php_errors.log");
+    let ca_file = paths.php_cacert();
+    let ca_file = ca_file.is_file().then_some(ca_file);
+    let mut warnings = Vec::new();
+    if ca_file.is_none() {
+        warnings.push(
+            "there is no CA bundle (etc/php/cacert.pem): PHP's cURL will not trust any HTTPS site until one is built"
+                .to_owned(),
+        );
+    }
 
     let generated = render_php_ini(&PhpIniInput {
         version,
@@ -573,31 +594,39 @@ pub fn write_php_ini(
         extension_dir: &extension_dir,
         available: &available,
         error_log: Some(&error_log),
+        ca_file: ca_file.as_deref(),
         overrides: &overrides,
         overrides_dir: &overrides_dir,
         settings,
     })?;
 
     let path = paths.php_ini(version)?;
-    let changed = fs::read(&path).ok().as_deref() != Some(generated.text.as_bytes());
-    if changed {
-        let dir = path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(io_error("cannot create", dir))?;
-        let mut temp = tempfile::Builder::new()
-            .prefix(".crisol-ini-")
-            .tempfile_in(dir)
-            .map_err(io_error("cannot create a temporary file in", dir))?;
-        io::Write::write_all(&mut temp, generated.text.as_bytes())
-            .map_err(io_error("cannot write", &path))?;
-        temp.persist(&path)
-            .map_err(|e| io_error("cannot write", &path)(e.error))?;
-    }
+    let changed = write_if_changed(&path, generated.text.as_bytes())?;
     Ok(WrittenPhpIni {
         path,
         changed,
         enabled: generated.enabled,
         skipped: generated.skipped,
+        warnings,
     })
+}
+
+/// Writes `bytes` to `path` atomically (a temporary file in the same folder, renamed over
+/// it), unless the file already has exactly that content. Returns whether it wrote.
+pub(crate) fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<bool, PhpIniError> {
+    if fs::read(path).ok().as_deref() == Some(bytes) {
+        return Ok(false);
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(dir).map_err(io_error("cannot create", dir))?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".crisol-gen-")
+        .tempfile_in(dir)
+        .map_err(io_error("cannot create a temporary file in", dir))?;
+    io::Write::write_all(&mut temp, bytes).map_err(io_error("cannot write", path))?;
+    temp.persist(path)
+        .map_err(|e| io_error("cannot write", path)(e.error))?;
+    Ok(true)
 }
 
 #[cfg(test)]

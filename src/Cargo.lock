@@ -195,6 +195,7 @@ dependencies = [
 name = "crisol-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "crisol-protocol",
  "insta",
  "minisign-verify",

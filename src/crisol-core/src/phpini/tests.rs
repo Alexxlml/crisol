@@ -56,6 +56,7 @@ fn render_with(
         extension_dir: Path::new(EXT_DIR),
         available: &set(available),
         error_log: Some(Path::new(LOG)),
+        ca_file: None,
         overrides,
         overrides_dir: Path::new(OVERRIDES_DIR),
         settings,
@@ -194,6 +195,65 @@ fn limits_and_the_log_are_set() {
     assert!(
         text.contains(";error_log = syslog"),
         "the other commented error_log line is not touched"
+    );
+}
+
+#[test]
+fn the_ca_bundle_is_set_for_curl_and_openssl_only_when_there_is_one() {
+    let none = render(EXCERPT).text;
+    assert!(none.contains("\r\n;curl.cainfo =\r\n"));
+    assert!(none.contains("\r\n;openssl.cafile=\r\n"));
+
+    let bundle = Path::new(r"C:\Crisol\etc\php\cacert.pem");
+    let text = render_php_ini(&PhpIniInput {
+        version: "8.4.26",
+        base: EXCERPT,
+        extension_dir: Path::new(EXT_DIR),
+        available: &set(&SHIPPED),
+        error_log: None,
+        ca_file: Some(bundle),
+        overrides: &[],
+        overrides_dir: Path::new(OVERRIDES_DIR),
+        settings: &PhpIniSettings::default(),
+    })
+    .unwrap()
+    .text;
+    for line in [
+        "curl.cainfo = \"C:/Crisol/etc/php/cacert.pem\"",
+        "openssl.cafile = \"C:/Crisol/etc/php/cacert.pem\"",
+    ] {
+        assert!(text.contains(&format!("\r\n{line}\r\n")), "{line}");
+    }
+    assert!(
+        !text.contains(";curl.cainfo"),
+        "the shipped lines are replaced, not duplicated"
+    );
+}
+
+#[test]
+fn a_user_override_of_the_ca_file_has_the_last_word() {
+    let overrides = vec![(
+        "10-ca.ini".to_owned(),
+        "curl.cainfo = \"D:/corp/ca.pem\"\n".to_owned(),
+    )];
+    let text = render_php_ini(&PhpIniInput {
+        version: "8.4.26",
+        base: EXCERPT,
+        extension_dir: Path::new(EXT_DIR),
+        available: &set(&SHIPPED),
+        error_log: None,
+        ca_file: Some(Path::new("C:/Crisol/etc/php/cacert.pem")),
+        overrides: &overrides,
+        overrides_dir: Path::new(OVERRIDES_DIR),
+        settings: &PhpIniSettings::default(),
+    })
+    .unwrap()
+    .text;
+    let ours = text.find("curl.cainfo = \"C:/Crisol").unwrap();
+    let theirs = text.find("curl.cainfo = \"D:/corp/ca.pem\"").unwrap();
+    assert!(
+        ours < theirs,
+        "PHP keeps the last assignment, and overrides come last"
     );
 }
 
@@ -357,6 +417,7 @@ fn settings_that_cannot_be_written_safely_are_refused() {
             extension_dir: Path::new(EXT_DIR),
             available: &set(&SHIPPED),
             error_log: None,
+            ca_file: None,
             overrides: &[],
             overrides_dir: Path::new(OVERRIDES_DIR),
             settings: &settings,
@@ -386,6 +447,7 @@ fn a_path_with_a_quote_is_refused() {
         extension_dir: Path::new("C:/odd\"dir/ext"),
         available: &set(&SHIPPED),
         error_log: None,
+        ca_file: None,
         overrides: &[],
         overrides_dir: Path::new(OVERRIDES_DIR),
         settings: &PhpIniSettings::default(),
@@ -475,6 +537,35 @@ fn the_file_is_written_where_the_layout_says() {
     let log = home.paths.logs_for("php").unwrap().join("php_errors.log");
     let log = log.to_string_lossy().replace('\\', "/");
     assert!(text.contains(&format!("error_log = \"{log}\"")));
+}
+
+#[test]
+fn the_file_points_at_the_ca_bundle_when_it_exists_and_warns_when_it_does_not() {
+    let home = home_with_php("8.4.26");
+    let without = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    assert_eq!(without.warnings.len(), 1, "{:?}", without.warnings);
+    assert!(without.warnings[0].contains("CA bundle"));
+    let text = fs::read_to_string(&without.path).unwrap();
+    assert!(
+        text.contains(";curl.cainfo ="),
+        "no bundle, no directive: {text}"
+    );
+
+    fs::create_dir_all(home.paths.php_cacert().parent().unwrap()).unwrap();
+    fs::write(home.paths.php_cacert(), "bundle").unwrap();
+    let with = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    assert!(with.changed, "the bundle appearing changes the file");
+    assert!(with.warnings.is_empty(), "{:?}", with.warnings);
+    let text = fs::read_to_string(&with.path).unwrap();
+    let bundle = home.paths.php_cacert().to_string_lossy().replace('\\', "/");
+    assert!(
+        text.contains(&format!("curl.cainfo = \"{bundle}\"")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("openssl.cafile = \"{bundle}\"")),
+        "{text}"
+    );
 }
 
 #[test]

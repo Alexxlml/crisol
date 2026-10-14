@@ -177,6 +177,13 @@ impl CrisolPaths {
             .join("php.ini"))
     }
 
+    /// The CA bundle PHP's cURL and OpenSSL use: `etc/php/cacert.pem`. Derived; see
+    /// [`crate::cacert`].
+    #[must_use]
+    pub fn php_cacert(&self) -> PathBuf {
+        self.etc_dir().join("php").join("cacert.pem")
+    }
+
     /// Database and service data root: `data/`.
     #[must_use]
     pub fn data_dir(&self) -> PathBuf {

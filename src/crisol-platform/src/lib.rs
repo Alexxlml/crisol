@@ -10,6 +10,8 @@ mod job_object;
 mod port_probe;
 #[cfg(windows)]
 mod private_dir;
+#[cfg(windows)]
+mod root_certs;
 
 #[cfg(windows)]
 pub use console::survive_ctrl_c;
@@ -21,6 +23,8 @@ pub use job_object::JobObjectSupervisor;
 pub use port_probe::WindowsPortProbe;
 #[cfg(windows)]
 pub use private_dir::WindowsPrivateDirs;
+#[cfg(windows)]
+pub use root_certs::WindowsRootCertificates;
 
 use std::path::PathBuf;
 

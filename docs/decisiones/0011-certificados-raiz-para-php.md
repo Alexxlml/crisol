@@ -1,6 +1,6 @@
 # ADR-0011 — Certificados raíz para PHP: Mozilla más el almacén de Windows
 
-- **Estado:** aceptada (decidida por el usuario el 2026-10-14)
+- **Estado:** aceptada (decidida por el usuario el 2026-10-14); implementada el 2026-10-14
 - **Fecha:** 2026-10-14
 
 ## Contexto
@@ -29,3 +29,13 @@ Se consideraron cuatro opciones:
 - Un certificado raíz agregado a Windows después de generar el archivo no se ve hasta regenerarlo. `doctor` (F11.1) puede comparar el archivo con el almacén y avisar.
 - `php.ini` y sus `overrides/` siguen mandando: si el usuario fija `curl.cainfo` en un override, se respeta.
 - Pruebas: la combinación y la deduplicación se prueban con PEM literales y un doble del trait. La exportación real se prueba solo para Windows, sin modificar el almacén del sistema.
+
+## Implementación (2026-10-14)
+
+- Catálogo: paquete `cacert`, versión `2026.9.25` (la fecha del bundle), `format = "file"`; URL con fecha. Fuente y comprobación en `analisis/fuentes-binarios.md`.
+- Núcleo (`crisol-core::cacert`): trait `RootCertificates`, `merge_bundle` (el texto de Mozilla se copia **tal cual** y las raíces de más van después, sin duplicados y en orden estable) y `write_php_cacert`, que escribe `etc/php/cacert.pem` solo si cambió. `write_php_ini` fija `curl.cainfo` y `openssl.cafile` cuando ese archivo existe; si no, avisa en `WrittenPhpIni::warnings` y deja las directivas como PHP las trae.
+- Plataforma (`crisol-platform::WindowsRootCertificates`): lee el almacén `ROOT` del usuario, del equipo, de la directiva de grupo (usuario y equipo) y de empresa, en solo lectura y solo si el almacén existe; descarta todo lo que esté en `Disallowed` de los mismos sitios.
+- Si leer el almacén de Windows falla, el archivo se genera solo con Mozilla y se avisa; un almacén roto no deja a PHP sin certificados.
+- Los overrides siguen mandando: se añaden al final del `php.ini` y PHP conserva la última asignación (hay prueba).
+- Comprobado con PHP 8.4.26 real: sin el bundle, cURL falla con "unable to get local issuer certificate"; con el bundle generado, `curl_exec` a un sitio público devuelve 200, y los *streams* siguen funcionando. En el equipo de pruebas Windows aportó 54 raíces que Mozilla no tiene.
+- Sigue pendiente (F4.3): comprobar si Composer lo necesita; el ADR supone que no, porque trae su propio bundle.

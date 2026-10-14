@@ -480,3 +480,102 @@ fn serde_json_like(text: &str) -> Vec<String> {
     }
     out
 }
+
+/// The problem ADR-0011 exists for: with the generated CA bundle, PHP's cURL can talk HTTPS.
+/// An official PHP and Mozilla's bundle are installed, the bundle is built together with the
+/// roots of Windows, and `curl_exec` is run through the shim against a public site. The same
+/// request without the bundle is made first, to show that it is the bundle that fixes it.
+///
+/// Needs the network (one GET to getcomposer.org) and, in `CRISOL_TEST_DOWNLOADS`, both
+/// `php-8.4.26-nts-Win32-vs17-x64.zip` and `cacert-2026-09-25.pem`.
+///
+/// ```text
+/// CRISOL_TEST_DOWNLOADS=<folder> cargo test -p crisol-shim real_curl -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the network and the downloaded PHP archive and CA bundle (Windows)"]
+fn real_curl_trusts_https_with_the_generated_bundle() {
+    use crisol_core::cacert::write_php_cacert;
+    use crisol_core::catalog::Catalog;
+    use crisol_core::fetch::fake::FakeFetcher;
+    use crisol_core::install::{install, InstallOptions};
+    use crisol_core::paths::CrisolPaths;
+    use crisol_core::phpini::{write_php_ini, PhpIniSettings};
+    use crisol_platform::WindowsRootCertificates;
+
+    let Some(folder) = std::env::var_os("CRISOL_TEST_DOWNLOADS").map(PathBuf::from) else {
+        panic!("set CRISOL_TEST_DOWNLOADS to the folder with the downloaded files");
+    };
+    let catalog = Catalog::embedded().unwrap();
+    let rig = Rig::new();
+    let paths = CrisolPaths::new(&rig.home).unwrap();
+    let fetcher = FakeFetcher::new();
+    for (service, version) in [("php", "8.4.26"), ("cacert", "2026.9.25")] {
+        let package = catalog
+            .packages()
+            .iter()
+            .find(|p| p.service == service && p.version.to_string() == version)
+            .unwrap();
+        let file = folder.join(package.url.rsplit('/').next().unwrap());
+        assert!(file.is_file(), "{} is not there", file.display());
+        fetcher.serve(&package.url, fs::read(&file).unwrap());
+        install(
+            package,
+            &paths,
+            &fetcher,
+            &InstallOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let php = rig.shim("php");
+    let script = r"
+        $c = curl_init('https://getcomposer.org/versions');
+        curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30]);
+        $body = curl_exec($c);
+        echo $body === false ? 'FAIL: ' . curl_error($c) : 'OK ' . curl_getinfo($c, CURLINFO_HTTP_CODE);
+    ";
+
+    // 1. Without a bundle: the php.ini has no CA file and cURL cannot verify the site.
+    let without = write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    assert!(
+        without.warnings.iter().any(|w| w.contains("CA bundle")),
+        "{:?}",
+        without.warnings
+    );
+    let output = rig.run(&php, &["-r", script]);
+    assert!(
+        stdout(&output).contains("FAIL"),
+        "expected the known failure: {}",
+        stdout(&output)
+    );
+
+    // 2. With it: Mozilla's bundle plus the roots of Windows, and the php.ini points at it.
+    let bundle = write_php_cacert(&paths, &WindowsRootCertificates)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bundle.bundle_version, "2026.9.25");
+    eprintln!(
+        "bundle: {} certificate(s) added from Windows, warnings {:?}",
+        bundle.added, bundle.warnings
+    );
+    let with = write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    assert!(
+        with.changed && with.warnings.is_empty(),
+        "{:?}",
+        with.warnings
+    );
+    let output = rig.run(&php, &["-r", script]);
+    assert_eq!(
+        stdout(&output).trim(),
+        "OK 200",
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+
+    // 3. PHP's own streams keep working with the same file.
+    let streams =
+        r"echo @file_get_contents('https://getcomposer.org/versions') === false ? 'FAIL' : 'OK';";
+    assert_eq!(stdout(&rig.run(&php, &["-r", streams])).trim(), "OK");
+}

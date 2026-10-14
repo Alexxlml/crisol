@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 2
+serial = 3
 generated = "2026-10-14"
 
 [[package]]
@@ -120,3 +120,17 @@ sha256 = "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6"
 format = "file"
 executable = "composer.phar"
 size = 3642137
+
+# Mozilla's root certificates, as curl.se publishes them. Not a program: the base of the
+# CA bundle Crisol builds for PHP's cURL (ADR-0011). The version is the date of the bundle
+# (2026-09-25 -> 2026.9.25; versions have no leading zeros). The dated URL never changes.
+[[package]]
+service = "cacert"
+version = "2026.9.25"
+os = "windows"
+arch = "x86_64"
+url = "https://curl.se/ca/cacert-2026-09-25.pem"
+sha256 = "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505"
+format = "file"
+executable = "cacert.pem"
+size = 188900

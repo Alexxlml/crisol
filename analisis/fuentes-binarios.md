@@ -17,6 +17,8 @@ Qué se descarga, de dónde, qué publica cada proveedor para verificarlo y qué
 
 Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se ejecutó ni se extrajo; solo se leyeron los nombres de los ZIP para fijar `root` y `executable`, y se comprobó que ningún nombre fuera absoluto, contuviera `..` o una unidad.
 
+| CA bundle de Mozilla (`cacert` 2026.9.25) | `curl.se` | `cacert-AAAA-MM-DD.pem.sha256` | Hash calculado = hash publicado, y el mismo que el de `cacert.pem` del día; 188 900 bytes, 121 certificados | ✅ coincide |
+
 ## PHP
 
 - **Fuente:** `https://windows.php.net/downloads/releases/`. El índice `releases.json` trae, por rama, el nombre del ZIP y su `sha256`.
@@ -54,6 +56,14 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 - **Versión:** la estable actual, **2.10.3**. Existe también una rama LTS 2.2 (solo seguridad hasta 2026-12-31) que no se incluye.
 - **Verificación:** el hash coincide con `composer.phar.sha256sum`. La firma es válida con la clave `161D FBE3 4288 9F01 DDAC 4E61 CBB3 D576 F2A0 946F` ("Packagist Conductors"), obtenida de **`keys.openpgp.org`**, independiente de getcomposer.org.
 - **Formato:** `file` (un archivo suelto). Es un `phar` que funciona igual en cualquier sistema; hoy solo se lista para Windows x64 porque es el único objetivo del catálogo.
+
+## CA bundle (`cacert`)
+
+- **Fuente:** `https://curl.se/ca/`. curl extrae del código de Mozilla (`certdata.txt`) las autoridades raíz en formato PEM y las publica como `cacert.pem`. No es un programa: es la base del archivo que Crisol genera para el cURL de PHP (ADR-0011, `etc/php/cacert.pem`).
+- **URL fijada:** `cacert-2026-09-25.pem`. El `cacert.pem` sin fecha cambia cada pocas semanas y rompería el hash; la copia con fecha no cambia. La versión del catálogo es la fecha sin ceros a la izquierda (`2026.9.25`), porque el formato de versiones no los admite.
+- **Qué publica el proveedor para verificarlo:** un `.sha256` por archivo (`cacert-2026-09-25.pem.sha256`). No publica firma. La confianza descansa en HTTPS con curl.se y en el hash fijado en el catálogo.
+- **Comprobación hecha (2026-10-14):** el hash calculado sobre la descarga coincide con el publicado, y es el mismo que el de `cacert.pem` en ese momento; 188 900 bytes, 121 certificados, fin de línea LF.
+- **Cómo renovar:** cada vez que se publique un catálogo nuevo (Mozilla lo actualiza cada pocas semanas): buscar el último `cacert-AAAA-MM-DD.pem` en `https://curl.se/docs/caextract.html`, descargarlo, comparar con su `.sha256`, y cambiar `version`, `url`, `sha256` y `size` de la entrada `cacert`. Las versiones anteriores quedan instaladas hasta que se desinstalen; Crisol usa la más reciente.
 
 ## Cómo actualizar el catálogo
 

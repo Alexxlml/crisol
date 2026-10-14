@@ -554,11 +554,12 @@ fn load_update_is_the_door_for_outside_catalogs_and_checks_signature_and_serial(
 // ---- the contents of the built-in catalog (F3.2) --------------------------------
 
 /// The only sites a built-in entry may download from.
-const OFFICIAL_HOSTS: [&str; 4] = [
+const OFFICIAL_HOSTS: [&str; 5] = [
     "windows.php.net",
     "nginx.org",
     "nodejs.org",
     "getcomposer.org",
+    "curl.se",
 ];
 
 fn built_in() -> Catalog {
@@ -580,9 +581,12 @@ fn every_built_in_package_comes_from_an_official_host() {
 #[test]
 fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
     let catalog = built_in();
-    assert_eq!(catalog.services(), ["composer", "nginx", "node", "php"]);
+    assert_eq!(
+        catalog.services(),
+        ["cacert", "composer", "nginx", "node", "php"]
+    );
     assert!(catalog.packages().iter().all(|p| p.target == WINDOWS));
-    assert!(catalog.serial() >= 2);
+    assert!(catalog.serial() >= 3);
 
     let resolve = |service: &str, request: &str| {
         catalog
@@ -631,6 +635,8 @@ fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
                 Some(format!("node-v{version}-win-x64")),
             ),
             "composer" => (ArchiveFormat::File, "composer.phar", None),
+            // Mozilla's CA bundle is one file (ADR-0011).
+            "cacert" => (ArchiveFormat::File, "cacert.pem", None),
             other => panic!("unexpected service {other}"),
         };
         assert_eq!(package.format, format, "{}", package.label());
@@ -659,6 +665,22 @@ fn built_in_php_urls_use_the_permanent_archives_folder() {
 }
 
 #[test]
+fn the_ca_bundle_is_pinned_to_a_dated_url_and_its_version_is_that_date() {
+    // `cacert.pem` without a date changes under our feet and would break the hash; the dated
+    // copy never changes. The version is the date without leading zeros.
+    let catalog = built_in();
+    let bundle = catalog.latest("cacert", WINDOWS).unwrap();
+    let date = bundle
+        .url
+        .strip_prefix("https://curl.se/ca/cacert-")
+        .and_then(|rest| rest.strip_suffix(".pem"))
+        .expect("a dated curl.se URL");
+    let numbers: Vec<u64> = date.split('-').map(|n| n.parse().unwrap()).collect();
+    assert_eq!(numbers.len(), 3, "{date}");
+    assert_eq!(bundle.version.parts(), numbers.as_slice());
+}
+
+#[test]
 fn built_in_packages_carry_a_realistic_size_and_distinct_hashes() {
     let catalog = built_in();
     let mut hashes = HashSet::new();
@@ -666,7 +688,13 @@ fn built_in_packages_carry_a_realistic_size_and_distinct_hashes() {
         let size = package
             .size
             .expect("every built-in package states its size");
-        assert!(size > 1_000_000, "{} is {size} bytes", package.label());
+        // The CA bundle is a text file of a couple of hundred kilobytes; programs are bigger.
+        let least = if package.service == "cacert" {
+            100_000
+        } else {
+            1_000_000
+        };
+        assert!(size > least, "{} is {size} bytes", package.label());
         assert!(
             hashes.insert(package.sha256.clone()),
             "{} repeats a hash",
