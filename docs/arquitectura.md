@@ -73,7 +73,7 @@ CRISOL_HOME/
 Orden de búsqueda al ejecutar `php` dentro de un directorio:
 
 1. Variable `CRISOL_PHP` (sobrescritura temporal en la terminal actual).
-2. `.crisol.toml` del proyecto (buscando hacia arriba desde el directorio actual).
+2. `.crisol.toml` del proyecto (buscando hacia arriba desde el directorio actual, hasta el primer directorio con `.git`; se ignoran archivos de otro dueño — ADR-0010).
 3. Para PHP: `.php-version`; para Node: `.nvmrc` / `.node-version` / campo `engines` de `package.json`.
 4. Para PHP: restricción `require.php` de `composer.json` → la versión instalada más alta que la cumpla.
 5. Versión por defecto global de `crisol.toml`.
@@ -82,7 +82,7 @@ Los sitios web usan la misma resolución, así cada sitio `.test` corre con su v
 
 ## PHP en Windows
 
-No hay php-fpm en Windows. El daemon mantiene un **pool de procesos `php-cgi.exe`** por versión activa, cada uno en su puerto local, y Nginx los usa como `upstream`. El daemon reinicia procesos caídos y recicla cada N peticiones (`PHP_FCGI_MAX_REQUESTS`). En Unix se usará php-fpm.
+No hay php-fpm en Windows. El daemon mantiene un **pool de procesos `php-cgi.exe`** por versión activa, cada uno en su puerto local, y Nginx los usa como `upstream`. El daemon reinicia procesos caídos y recicla cada N peticiones (`PHP_FCGI_MAX_REQUESTS`). El reinicio es por worker: una salida con código 0 es reciclaje y no cuenta como caída, y el servicio sigue activo mientras quede un worker vivo (ADR-0009). En Unix se usará php-fpm.
 
 ## Puertos
 
