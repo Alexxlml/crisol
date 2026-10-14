@@ -300,17 +300,49 @@ fn exposes_write(sddl: &str, user_sid: &str) -> bool {
         }
     }
 
-    sddl.split('(').skip(1).any(|entry| {
-        let entry = entry.trim_end_matches(')');
-        let fields: Vec<&str> = entry.split(';').collect();
+    let Some(entries) = aces(sddl) else {
+        return true; // unbalanced parentheses: not something to trust
+    };
+    entries.into_iter().any(|entry| {
+        // At most seven fields; the seventh is the condition of a conditional entry, which
+        // has semicolons and parentheses of its own.
+        let fields: Vec<&str> = entry.splitn(7, ';').collect();
         let [kind, _flags, rights, _object, _inherited, trustee, ..] = fields.as_slice() else {
             return true; // an entry that does not look like one is not to be trusted
         };
-        if *kind != "A" || may_write(trustee) {
+        // Every kind of *allow* entry counts; a condition can only narrow who it applies to
+        // at run time, and nothing here can evaluate it.
+        if !matches!(*kind, "A" | "XA" | "OA" | "ZA") || may_write(trustee) {
             return false;
         }
         rights_mask(rights).is_none_or(|mask| mask & WRITE_BITS != 0)
     })
+}
+
+/// The entries of an SDDL ACL: the text inside each top-level pair of parentheses. Nested
+/// parentheses (the condition of an `XA` entry) stay inside their entry. `None` if the
+/// parentheses do not balance.
+fn aces(sddl: &str) -> Option<Vec<&str>> {
+    let mut entries = Vec::new();
+    let (mut depth, mut start) = (0_usize, 0_usize);
+    for (index, c) in sddl.char_indices() {
+        match c {
+            '(' => {
+                if depth == 0 {
+                    start = index + 1;
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    entries.push(&sddl[start..index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(entries)
 }
 
 #[cfg(test)]
@@ -346,6 +378,36 @@ mod tests {
         ] {
             assert!(exposes_write(exposed, ME), "{exposed}");
         }
+    }
+
+    #[test]
+    fn conditional_and_object_allows_count_as_allows() {
+        // A conditional entry has parentheses and semicolons of its own.
+        for exposed in [
+            "D:(XA;OICI;FA;;;WD;(@User.x == 1))",
+            "D:(XA;;DC;;;BU;(Member_of {SID(BA)} && @Resource.y > 2))",
+            "D:(OA;;FA;;;AU)",
+            "D:(ZA;;FA;;;WD)",
+        ] {
+            assert!(exposes_write(exposed, ME), "{exposed}");
+        }
+        // The same conditional entry for somebody trusted, or read-only, is fine.
+        assert!(!exposes_write("D:(XA;OICI;FA;;;SY;(@User.x == 1))", ME));
+        assert!(!exposes_write("D:(XA;;GRGX;;;WD;(@User.x == 1))", ME));
+        // And what cannot be split into entries is not trusted.
+        assert!(exposes_write("D:(A;;GR;;;WD", ME));
+        assert!(exposes_write("D:A;;GR;;;WD)", ME));
+    }
+
+    #[test]
+    fn aces_are_split_by_nesting_depth() {
+        assert_eq!(
+            aces("D:P(A;;FA;;;SY)(XA;;GR;;;WD;(a;(b)))"),
+            Some(vec!["A;;FA;;;SY", "XA;;GR;;;WD;(a;(b))"])
+        );
+        assert_eq!(aces("D:P"), Some(Vec::new()));
+        assert_eq!(aces("(A"), None);
+        assert_eq!(aces(")("), None);
     }
 
     #[test]
