@@ -17,6 +17,7 @@
 //!   detection sources and the global defaults (see `docs/arquitectura.md`); that
 //!   resolution lives elsewhere (F4.2).
 
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -70,43 +71,146 @@ impl ProjectConfig {
     }
 }
 
-/// Finds the nearest `.crisol.toml` at or above `start`.
+/// Who owns a file, as far as deciding whether to obey it is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileOwner {
+    /// The owner is the current user, `SYSTEM` or an administrator.
+    pub trusted: bool,
+    /// The owner as the system names it (a SID on Windows), for messages.
+    pub name: String,
+}
+
+/// Tells who owns a file (ADR-0010). The implementation is per operating system
+/// (`crisol-platform`); the core only decides what to do with the answer.
+pub trait FileOwners: Send + Sync {
+    /// The owner of `path`. An error means "could not find out", which the search treats like
+    /// an untrusted owner.
+    fn owner_of(&self, path: &Path) -> io::Result<FileOwner>;
+}
+
+/// Trusts every file. For platforms where ownership is not checked yet, and for tests of
+/// code that does not care. Prefer a real implementation anywhere a stranger's file could
+/// be found.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TrustAllOwners;
+
+impl FileOwners for TrustAllOwners {
+    fn owner_of(&self, _path: &Path) -> io::Result<FileOwner> {
+        Ok(FileOwner {
+            trusted: true,
+            name: "anyone".to_owned(),
+        })
+    }
+}
+
+/// A `.crisol.toml` that was found but not obeyed because of who owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredProject {
+    /// The file.
+    pub file: PathBuf,
+    /// Its owner, or why it could not be determined.
+    pub owner: String,
+}
+
+impl fmt::Display for IgnoredProject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ignoring `{path}`: it belongs to {owner}, not to you, SYSTEM or an administrator. \
+             If the file is yours, take it over (`takeown /f \"{path}\"`) or create it again",
+            path = self.file.display(),
+            owner = self.owner,
+        )
+    }
+}
+
+/// What a search for a project file found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectSearch {
+    /// The nearest trusted `.crisol.toml`, if any.
+    pub file: Option<PathBuf>,
+    /// Files passed over on the way because of their owner, nearest first. Show them as
+    /// warnings.
+    pub ignored: Vec<IgnoredProject>,
+}
+
+/// Finds the nearest trusted `.crisol.toml` at or above `start` (ADR-0010).
 ///
-/// `start` may be a directory or a file (its directory is used). The search goes up to the
-/// filesystem root, or stops after checking `ceiling` if given (like git's
-/// `GIT_CEILING_DIRECTORIES`). A directory that happens to be named `.crisol.toml` is
-/// ignored. The path is normalized lexically; symlinks are not resolved.
+/// `start` may be a directory or a file (its directory is used). A file whose owner is not
+/// trusted according to `owners` is **skipped, and reported in `ignored`**: the search goes
+/// on upwards as if it did not exist. The search stops, after checking that directory, at
+/// the first one that contains `.git` (a folder, or a file in worktrees and submodules), at
+/// `ceiling` if given (like git's `GIT_CEILING_DIRECTORIES`), or at the filesystem root. A
+/// directory that happens to be named `.crisol.toml` is ignored. The path is normalized
+/// lexically; symlinks are not resolved.
 #[must_use]
-pub fn find_project_file(start: &Path, ceiling: Option<&Path>) -> Option<PathBuf> {
+pub fn find_project_file(
+    start: &Path,
+    ceiling: Option<&Path>,
+    owners: &dyn FileOwners,
+) -> ProjectSearch {
+    let mut ignored = Vec::new();
     let start = normalize(start);
     let ceiling = ceiling.map(normalize);
     let first = if start.is_file() {
-        start.parent()?
+        start.parent()
     } else {
-        start.as_path()
+        Some(start.as_path())
     };
 
-    for dir in first.ancestors() {
+    for dir in first.into_iter().flat_map(Path::ancestors) {
         let candidate = dir.join(PROJECT_FILE);
         if candidate.is_file() {
-            return Some(candidate);
+            match owners.owner_of(&candidate) {
+                Ok(owner) if owner.trusted => {
+                    return ProjectSearch {
+                        file: Some(candidate),
+                        ignored,
+                    };
+                }
+                Ok(owner) => ignored.push(IgnoredProject {
+                    file: candidate,
+                    owner: owner.name,
+                }),
+                Err(error) => ignored.push(IgnoredProject {
+                    file: candidate,
+                    owner: format!("an unknown owner ({error})"),
+                }),
+            }
         }
-        if ceiling.as_deref().is_some_and(|c| same_dir(c, dir)) {
+        if ceiling.as_deref().is_some_and(|c| same_dir(c, dir)) || dir.join(".git").exists() {
             break;
         }
     }
-    None
+    ProjectSearch {
+        file: None,
+        ignored,
+    }
 }
 
-/// Finds and loads the nearest `.crisol.toml` at or above `start`.
+/// The outcome of [`load_project`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectLookup {
+    /// The project that applies, if there is one.
+    pub project: Option<LoadedProject>,
+    /// Files passed over because of their owner. Show them as warnings.
+    pub ignored: Vec<IgnoredProject>,
+}
+
+/// Finds and loads the nearest trusted `.crisol.toml` at or above `start`.
 ///
-/// Returns `Ok(None)` when there is none. See [`find_project_file`] for the search rules.
+/// `project` is `None` when there is none. See [`find_project_file`] for the search rules.
 pub fn load_project(
     start: &Path,
     ceiling: Option<&Path>,
-) -> Result<Option<LoadedProject>, ConfigError> {
-    let Some(file) = find_project_file(start, ceiling) else {
-        return Ok(None);
+    owners: &dyn FileOwners,
+) -> Result<ProjectLookup, ConfigError> {
+    let ProjectSearch { file, ignored } = find_project_file(start, ceiling, owners);
+    let Some(file) = file else {
+        return Ok(ProjectLookup {
+            project: None,
+            ignored,
+        });
     };
     let text = fs::read_to_string(&file).map_err(|source: io::Error| ConfigError::Read {
         path: file.clone(),
@@ -114,12 +218,15 @@ pub fn load_project(
     })?;
     let (config, warnings) = ProjectConfig::parse(&text)?;
     let root = file.parent().map(Path::to_path_buf).unwrap_or_default();
-    Ok(Some(LoadedProject {
-        config,
-        file,
-        root,
-        warnings,
-    }))
+    Ok(ProjectLookup {
+        project: Some(LoadedProject {
+            config,
+            file,
+            root,
+            warnings,
+        }),
+        ignored,
+    })
 }
 
 /// Whether two normalised directories are the same place. Windows paths ignore case
@@ -154,6 +261,44 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    /// The nearest trusted file, as the tests below care about it.
+    fn find(start: &Path, ceiling: Option<&Path>) -> Option<PathBuf> {
+        find_project_file(start, ceiling, &TrustAllOwners).file
+    }
+
+    fn load(start: &Path, ceiling: Option<&Path>) -> Result<Option<LoadedProject>, ConfigError> {
+        load_project(start, ceiling, &TrustAllOwners).map(|lookup| lookup.project)
+    }
+
+    /// Every file is trusted except the ones listed.
+    struct Strangers(BTreeSet<PathBuf>);
+
+    impl Strangers {
+        fn of(files: &[&Path]) -> Self {
+            Self(files.iter().map(|f| f.to_path_buf()).collect())
+        }
+    }
+
+    impl FileOwners for Strangers {
+        fn owner_of(&self, path: &Path) -> io::Result<FileOwner> {
+            let stranger = self.0.contains(path);
+            Ok(FileOwner {
+                trusted: !stranger,
+                name: if stranger { "S-1-5-21-9-9-9-1" } else { "me" }.to_owned(),
+            })
+        }
+    }
+
+    /// Owners cannot be determined at all.
+    struct Unreadable;
+
+    impl FileOwners for Unreadable {
+        fn owner_of(&self, _path: &Path) -> io::Result<FileOwner> {
+            Err(io::Error::other("no way to tell"))
+        }
+    }
     use tempfile::TempDir;
 
     /// Builds `<tmp>/a/b/c` and returns (tmp, the three directories).
@@ -222,23 +367,112 @@ mod tests {
         put(&a, "php = \"8.1\"\n");
         // Same folder as `b`, spelt in upper case: the search must still stop there.
         let shouty = PathBuf::from(b.to_string_lossy().to_uppercase());
-        assert_eq!(find_project_file(&b, Some(&shouty)), None);
+        assert_eq!(find(&b, Some(&shouty)), None);
+    }
+
+    #[test]
+    fn a_file_of_a_stranger_is_skipped_with_a_warning_and_the_search_goes_on() {
+        let (_tmp, a, b, c) = tree();
+        let far = put(&a, "php = \"8.1\"\n");
+        let near = put(&b, "php = \"8.4\"\n");
+        let owners = Strangers::of(&[&near]);
+
+        let search = find_project_file(&c, None, &owners);
+        assert_eq!(search.file, Some(far), "the trusted file above wins");
+        assert_eq!(
+            search.ignored,
+            [IgnoredProject {
+                file: near.clone(),
+                owner: "S-1-5-21-9-9-9-1".to_owned()
+            }]
+        );
+        let message = search.ignored[0].to_string();
+        assert!(message.contains(&near.display().to_string()), "{message}");
+        assert!(message.contains("S-1-5-21-9-9-9-1"), "{message}");
+        assert!(
+            message.contains("takeown"),
+            "tells how to fix it: {message}"
+        );
+    }
+
+    #[test]
+    fn when_every_file_is_a_stranger_s_nothing_applies() {
+        let (_tmp, a, b, c) = tree();
+        let outer = put(&a, "php = \"8.1\"\n");
+        let inner = put(&b, "php = \"8.4\"\n");
+        let lookup = load_project(&c, None, &Strangers::of(&[&outer, &inner])).unwrap();
+        assert_eq!(lookup.project, None);
+        assert_eq!(
+            lookup.ignored.iter().map(|i| &i.file).collect::<Vec<_>>(),
+            [&inner, &outer],
+            "nearest first"
+        );
+    }
+
+    #[test]
+    fn an_owner_that_cannot_be_determined_is_not_trusted() {
+        let (_tmp, a, _b, c) = tree();
+        let file = put(&a, "php = \"8.1\"\n");
+        let lookup = load_project(&c, None, &Unreadable).unwrap();
+        assert_eq!(lookup.project, None);
+        assert_eq!(lookup.ignored.len(), 1);
+        assert_eq!(lookup.ignored[0].file, file);
+        assert!(lookup.ignored[0].owner.contains("no way to tell"));
+    }
+
+    #[test]
+    fn the_search_stops_at_the_first_directory_with_a_git_folder() {
+        let (_tmp, a, b, c) = tree();
+        put(&a, "php = \"8.1\"\n"); // outside the repository
+        fs::create_dir(b.join(".git")).unwrap();
+        assert_eq!(
+            find(&c, None),
+            None,
+            "it must not climb past the repository"
+        );
+
+        // The file of the directory that holds `.git` still counts.
+        let inside = put(&b, "php = \"8.4\"\n");
+        assert_eq!(find(&c, None), Some(inside));
+    }
+
+    #[test]
+    fn a_git_file_stops_the_search_too() {
+        // Worktrees and submodules have a `.git` *file* instead of a folder.
+        let (_tmp, a, b, c) = tree();
+        put(&a, "php = \"8.1\"\n");
+        fs::write(b.join(".git"), "gitdir: ../elsewhere\n").unwrap();
+        assert_eq!(find(&c, None), None);
+    }
+
+    #[test]
+    fn a_nested_project_does_not_inherit_the_repository_around_it() {
+        let (_tmp, a, b, c) = tree();
+        fs::create_dir(a.join(".git")).unwrap();
+        let outer = put(&a, "php = \"8.1\"\n");
+        fs::create_dir(c.join(".git")).unwrap(); // a repository inside the repository
+        assert_eq!(find(&c, None), None);
+        assert_eq!(
+            find(&b, None),
+            Some(outer),
+            "but its parent still sees the outer file"
+        );
     }
 
     #[test]
     fn finds_the_file_in_the_start_directory() {
         let (_tmp, a, _b, _c) = tree();
         let file = put(&a, "php = \"8.3\"\n");
-        assert_eq!(find_project_file(&a, Some(&a)), Some(file));
+        assert_eq!(find(&a, Some(&a)), Some(file));
     }
 
     #[test]
     fn finds_the_file_in_an_ancestor_from_a_deep_directory() {
         let (_tmp, a, _b, c) = tree();
         let file = put(&a, "php = \"8.3\"\n");
-        assert_eq!(find_project_file(&c, Some(&a)), Some(file.clone()));
+        assert_eq!(find(&c, Some(&a)), Some(file.clone()));
 
-        let loaded = load_project(&c, Some(&a)).unwrap().unwrap();
+        let loaded = load(&c, Some(&a)).unwrap().unwrap();
         assert_eq!(loaded.file, file);
         assert_eq!(loaded.root, a);
         assert_eq!(loaded.config.php.as_deref(), Some("8.3"));
@@ -249,7 +483,7 @@ mod tests {
         let (_tmp, a, b, c) = tree();
         put(&a, "php = \"8.1\"\nnode = \"20\"\n");
         put(&b, "php = \"8.4\"\n");
-        let loaded = load_project(&c, Some(&a)).unwrap().unwrap();
+        let loaded = load(&c, Some(&a)).unwrap().unwrap();
         assert_eq!(loaded.root, b);
         assert_eq!(loaded.config.php.as_deref(), Some("8.4"));
         assert_eq!(
@@ -263,7 +497,7 @@ mod tests {
         let (_tmp, a, b, c) = tree();
         put(&a, "php = \"8.1\"\n");
         put(&b, "");
-        let loaded = load_project(&c, Some(&a)).unwrap().unwrap();
+        let loaded = load(&c, Some(&a)).unwrap().unwrap();
         assert_eq!(loaded.root, b);
         assert_eq!(loaded.config, ProjectConfig::default());
     }
@@ -274,14 +508,14 @@ mod tests {
         let sibling = a.join("other");
         fs::create_dir(&sibling).unwrap();
         put(&sibling, "php = \"8.3\"\n");
-        assert_eq!(find_project_file(&c, Some(tmp.path())), None);
+        assert_eq!(find(&c, Some(tmp.path())), None);
     }
 
     #[test]
     fn nothing_found_gives_none() {
         let (tmp, _a, _b, c) = tree();
-        assert_eq!(find_project_file(&c, Some(tmp.path())), None);
-        assert!(load_project(&c, Some(tmp.path())).unwrap().is_none());
+        assert_eq!(find(&c, Some(tmp.path())), None);
+        assert!(load(&c, Some(tmp.path())).unwrap().is_none());
     }
 
     #[test]
@@ -290,9 +524,9 @@ mod tests {
         let above = put(&a, "php = \"8.3\"\n");
 
         // Ceiling below the file: not reached.
-        assert_eq!(find_project_file(&c, Some(&b)), None);
+        assert_eq!(find(&c, Some(&b)), None);
         // Ceiling at the file's own directory: it is still checked.
-        assert_eq!(find_project_file(&c, Some(&a)), Some(above));
+        assert_eq!(find(&c, Some(&a)), Some(above));
     }
 
     #[test]
@@ -301,7 +535,7 @@ mod tests {
         let file = put(&a, "php = \"8.3\"\n");
         let source = c.join("index.php");
         fs::write(&source, "<?php").unwrap();
-        assert_eq!(find_project_file(&source, Some(&a)), Some(file));
+        assert_eq!(find(&source, Some(&a)), Some(file));
     }
 
     #[test]
@@ -309,7 +543,7 @@ mod tests {
         let (_tmp, a, b, c) = tree();
         let real = put(&a, "php = \"8.3\"\n");
         fs::create_dir(b.join(PROJECT_FILE)).unwrap();
-        assert_eq!(find_project_file(&c, Some(&a)), Some(real));
+        assert_eq!(find(&c, Some(&a)), Some(real));
     }
 
     #[test]
@@ -319,7 +553,7 @@ mod tests {
         put(&a, "php = \"8.1\"\n");
         // a/b/c/../../  is `a`, not `b`.
         let tricky = c.join("..").join("..");
-        let loaded = load_project(&tricky, Some(&a)).unwrap().unwrap();
+        let loaded = load(&tricky, Some(&a)).unwrap().unwrap();
         assert_eq!(loaded.root, a);
         assert_eq!(loaded.config.php.as_deref(), Some("8.1"));
     }
@@ -329,11 +563,11 @@ mod tests {
         let (_tmp, a, b, c) = tree();
         put(&a, "php = \"8.1\"\n");
         put(&b, "php = = broken");
-        let err = load_project(&c, Some(&a)).unwrap_err();
+        let err = load(&c, Some(&a)).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)), "{err}");
 
         put(&b, "php = \"../x\"\n");
-        let err = load_project(&c, Some(&a)).unwrap_err();
+        let err = load(&c, Some(&a)).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid { .. }), "{err}");
     }
 
@@ -341,7 +575,7 @@ mod tests {
     fn warnings_travel_with_the_loaded_project() {
         let (_tmp, a, _b, _c) = tree();
         put(&a, "php = \"8.3\"\ncolour = 1\n");
-        let loaded = load_project(&a, Some(&a)).unwrap().unwrap();
+        let loaded = load(&a, Some(&a)).unwrap().unwrap();
         assert_eq!(
             loaded.warnings,
             vec![ConfigWarning::UnknownField("colour".to_owned())]

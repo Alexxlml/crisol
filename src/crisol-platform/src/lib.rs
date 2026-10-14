@@ -1,12 +1,16 @@
 //! crisol-platform: per-OS implementations behind the traits defined in `crisol-core`.
 
 #[cfg(windows)]
+mod file_owner;
+#[cfg(windows)]
 mod job_object;
 #[cfg(windows)]
 mod port_probe;
 #[cfg(windows)]
 mod private_dir;
 
+#[cfg(windows)]
+pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]

@@ -114,7 +114,7 @@ fn private_sddl(sid: &str) -> String {
 }
 
 /// The SID of the user this process runs as, as text (`S-1-5-21-…`).
-fn current_user_sid() -> io::Result<String> {
+pub(crate) fn current_user_sid() -> io::Result<String> {
     let mut token = HANDLE::default();
     // SAFETY: the pseudo-handle of the current process is always valid; `token` is a valid
     // out-parameter.
@@ -160,9 +160,21 @@ fn current_user_sid() -> io::Result<String> {
 
 /// The owner and the DACL of `path`, as SDDL text (`O:…D:…`).
 fn owner_and_dacl_as_sddl(path: &Path) -> io::Result<String> {
+    sddl_of(
+        path,
+        OBJECT_SECURITY_INFORMATION(OWNER_SECURITY_INFORMATION.0 | DACL_SECURITY_INFORMATION.0),
+    )
+}
+
+/// Only the owner of `path`, as SDDL text (`O:…`). Cheaper than reading the whole DACL, which
+/// matters to the shim.
+pub(crate) fn owner_as_sddl(path: &Path) -> io::Result<String> {
+    sddl_of(path, OWNER_SECURITY_INFORMATION)
+}
+
+/// The `parts` of the security descriptor of `path`, as SDDL text.
+fn sddl_of(path: &Path, parts: OBJECT_SECURITY_INFORMATION) -> io::Result<String> {
     let wide_path = wide(path.as_os_str());
-    let parts =
-        OBJECT_SECURITY_INFORMATION(OWNER_SECURITY_INFORMATION.0 | DACL_SECURITY_INFORMATION.0);
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: `wide_path` is NUL-terminated and outlives the call; the other pointers are
     // either `None` or valid out-parameters. Windows allocates `descriptor`.
@@ -226,6 +238,25 @@ const TRUSTED: [&str; 7] = [
     "S-1-3-0",
 ];
 
+/// Whether `who` (a SID or an SDDL alias) is the user `user_sid`, `SYSTEM`, the administrators
+/// or a placeholder for the owner. The one definition of "trusted" shared by the folder
+/// check and the project-file owner check (ADR-0008, ADR-0010).
+pub(crate) fn is_trusted_trustee(who: &str, user_sid: &str) -> bool {
+    who == user_sid || TRUSTED.contains(&who)
+}
+
+/// The owner in SDDL text that starts with `O:`, up to the next section marker.
+pub(crate) fn owner_of(sddl: &str) -> Option<&str> {
+    let after = sddl.strip_prefix("O:")?;
+    // A SID starts with `S-`, never `S:`, so the markers cannot be confused with it.
+    let end = ["G:", "D:", "S:"]
+        .iter()
+        .filter_map(|marker| after.find(marker))
+        .min()
+        .unwrap_or(after.len());
+    Some(&after[..end])
+}
+
 /// Access-mask bits that are not read-only for a file or folder: write data / add file,
 /// append / add subfolder, write extended attributes, delete child, write attributes,
 /// delete, write permissions, take ownership, and the generic write and all rights.
@@ -285,19 +316,10 @@ fn rights_mask(rights: &str) -> Option<u32> {
 /// their permissions. Deny entries are ignored: an unrelated deny does not make an allow for
 /// a stranger safe to rely on. Whatever cannot be understood counts as exposed.
 fn exposes_write(sddl: &str, user_sid: &str) -> bool {
-    let may_write = |who: &str| who == user_sid || TRUSTED.contains(&who);
+    let may_write = |who: &str| is_trusted_trustee(who, user_sid);
 
-    if let Some(after) = sddl.strip_prefix("O:") {
-        // The owner runs up to the next section marker (`G:`, `D:` or `S:`). A SID starts
-        // with `S-`, never `S:`, so the markers cannot be confused with it.
-        let end = ["G:", "D:", "S:"]
-            .iter()
-            .filter_map(|marker| after.find(marker))
-            .min()
-            .unwrap_or(after.len());
-        if !may_write(&after[..end]) {
-            return true;
-        }
+    if owner_of(sddl).is_some_and(|owner| !may_write(owner)) {
+        return true;
     }
 
     let Some(entries) = aces(sddl) else {

@@ -24,7 +24,10 @@ pub use process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
     SupervisorError,
 };
-pub use project::{find_project_file, load_project, LoadedProject, ProjectConfig, PROJECT_FILE};
+pub use project::{
+    find_project_file, load_project, FileOwner, FileOwners, IgnoredProject, LoadedProject,
+    ProjectConfig, ProjectLookup, ProjectSearch, TrustAllOwners, PROJECT_FILE,
+};
 pub use version::{Version, VersionError, VersionReq};
 
 /// Crate version, exposed for diagnostics.

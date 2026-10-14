@@ -671,9 +671,14 @@ enabled = true
 
         editor.set(&["php"], "8.4").unwrap();
         assert!(editor.save().unwrap());
-        let loaded = crate::project::load_project(dir.path(), Some(dir.path()))
-            .unwrap()
-            .unwrap();
+        let loaded = crate::project::load_project(
+            dir.path(),
+            Some(dir.path()),
+            &crate::project::TrustAllOwners,
+        )
+        .unwrap()
+        .project
+        .unwrap();
         assert_eq!(loaded.config.php.as_deref(), Some("8.4"));
 
         // Changing the pin later keeps the user's comments.
