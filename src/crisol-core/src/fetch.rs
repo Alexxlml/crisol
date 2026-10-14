@@ -4,9 +4,14 @@
 //! module is tested with [`fake::FakeFetcher`], with no network. [`HttpFetcher`] is the real
 //! thing.
 //!
-//! [`HttpFetcher`] only talks `https` (also for every redirect). That is not what makes a
-//! download trustworthy, the SHA-256 in the catalog is, but it keeps the bytes private and
-//! rules out downgrade tricks.
+//! [`HttpFetcher`] only talks `https` (also for every redirect: `ureq` checks the scheme of
+//! each hop before connecting, `run.rs` in `ureq` 3.4). That is not what makes a download
+//! trustworthy, the SHA-256 in the catalog is, but it keeps the bytes private and rules out
+//! downgrade tricks.
+//!
+//! `ureq` honours `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` from the environment, which is what
+//! most corporate networks need. A proxy sees only the encrypted tunnel and the host name,
+//! and cannot change the outcome: the bytes are checked against the catalog's hash anyway.
 
 pub mod fake;
 

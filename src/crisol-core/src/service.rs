@@ -24,7 +24,12 @@
 //!   (it is almost always a configuration error); the watchdog only covers a service that
 //!   was `Running`.
 //! - **The watchdog** restarts a crashed service after a short delay, and gives up after too
-//!   many crashes in a time window.
+//!   many crashes in a time window. A restart that fails (it cannot spawn, or dies before it
+//!   is healthy) counts as one more crash, so a service that cannot come back does not retry
+//!   forever, and a start the user asked for that dies is still not retried.
+//! - **Readiness only looks.** A port health check reads the listener tables
+//!   ([`PortProbe::is_listening`]); it never tries to claim the port, which could make the
+//!   starting service lose its own bind.
 //! - **Stopping is graceful first**: an optional command (e.g. `nginx -s quit`) gets a grace
 //!   period, then the whole group is killed. A group that survives the kill is reported as
 //!   a failure; it is never ignored.

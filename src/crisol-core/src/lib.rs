@@ -18,7 +18,7 @@ pub use catalog::{Catalog, CatalogError, Package, Target};
 pub use config::{Config, ConfigError, ConfigWarning, LoadedConfig};
 pub use edit::{EditError, TomlEditor};
 pub use log::{LogRotation, RotatingLog};
-pub use paths::{CrisolPaths, PathsError};
+pub use paths::{CrisolPaths, HomeSecurity, PathsError, PrivateDirs};
 pub use ports::{PortError, PortOwner, PortProbe, PortStatus};
 pub use process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,

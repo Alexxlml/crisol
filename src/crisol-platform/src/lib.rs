@@ -4,11 +4,15 @@
 mod job_object;
 #[cfg(windows)]
 mod port_probe;
+#[cfg(windows)]
+mod private_dir;
 
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]
 pub use port_probe::WindowsPortProbe;
+#[cfg(windows)]
+pub use private_dir::WindowsPrivateDirs;
 
 use std::path::PathBuf;
 

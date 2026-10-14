@@ -50,6 +50,35 @@ pub enum PathsError {
     },
 }
 
+/// Creates folders that only the current user (and the system) can write to, and tells
+/// whether an existing one is open to others. The implementation is per operating system
+/// (`crisol-platform`); the core only decides when to ask.
+///
+/// Why: a home like `C:\Crisol` inherits write access for every account on the machine from
+/// the drive root, which would let any of them replace a binary Crisol later runs.
+pub trait PrivateDirs: Send + Sync {
+    /// Creates `dir` (its parent must exist) restricted to the current user, the system and
+    /// the administrators, and inherited by everything created inside. If `dir` already
+    /// exists it is left exactly as it is. Returns whether it was created.
+    fn create_private_dir(&self, dir: &Path) -> io::Result<bool>;
+
+    /// Whether accounts other than the current user, the system and the administrators can
+    /// write in `dir` or in what is created inside it.
+    fn is_writable_by_others(&self, dir: &Path) -> io::Result<bool>;
+}
+
+/// How the home directory stood after [`CrisolPaths::ensure_private_layout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeSecurity {
+    /// The home did not exist and was created private.
+    Created,
+    /// The home existed and nobody else can write in it.
+    Private,
+    /// The home existed and other accounts can write in it. Crisol does not change an
+    /// existing folder's permissions on its own: the caller should warn (`doctor`).
+    WritableByOthers,
+}
+
 /// Resolved locations inside a Crisol home directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrisolPaths {
@@ -185,6 +214,38 @@ impl CrisolPaths {
     #[must_use]
     pub fn www_dir(&self) -> PathBuf {
         self.home.join(names::WWW)
+    }
+
+    /// Like [`ensure_layout`](Self::ensure_layout), but a home that does not exist yet is
+    /// created through `private`, so it (and everything below, by inheritance) is writable
+    /// only by the current user. A home that already exists is never re-permissioned; the
+    /// result says whether it is open to others.
+    pub fn ensure_private_layout(
+        &self,
+        private: &dyn PrivateDirs,
+    ) -> Result<HomeSecurity, PathsError> {
+        let create = |path: &Path, source| PathsError::Create {
+            path: path.to_path_buf(),
+            source,
+        };
+        if let Some(parent) = self.home.parent() {
+            fs::create_dir_all(parent).map_err(|e| create(parent, e))?;
+        }
+        let created = private
+            .create_private_dir(&self.home)
+            .map_err(|e| create(&self.home, e))?;
+        let security = if created {
+            HomeSecurity::Created
+        } else if private
+            .is_writable_by_others(&self.home)
+            .map_err(|e| create(&self.home, e))?
+        {
+            HomeSecurity::WritableByOthers
+        } else {
+            HomeSecurity::Private
+        };
+        self.ensure_layout()?;
+        Ok(security)
     }
 
     /// Creates the home and every top-level directory that is missing.
@@ -344,6 +405,80 @@ mod tests {
             home.join("logs").join("redis").join("runtime.log")
         );
         assert!(paths.runtime_log("../x").is_err());
+    }
+
+    /// A stand-in that records what it was asked and answers as scripted.
+    struct FakePrivate {
+        exists: bool,
+        open_to_others: bool,
+        created: std::sync::Mutex<Vec<PathBuf>>,
+    }
+
+    impl FakePrivate {
+        fn new(exists: bool, open_to_others: bool) -> Self {
+            Self {
+                exists,
+                open_to_others,
+                created: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl PrivateDirs for FakePrivate {
+        fn create_private_dir(&self, dir: &Path) -> io::Result<bool> {
+            if self.exists {
+                return Ok(false);
+            }
+            self.created.lock().unwrap().push(dir.to_path_buf());
+            fs::create_dir(dir)?;
+            Ok(true)
+        }
+
+        fn is_writable_by_others(&self, _dir: &Path) -> io::Result<bool> {
+            Ok(self.open_to_others)
+        }
+    }
+
+    #[test]
+    fn a_new_home_is_created_through_the_private_creator_and_the_layout_follows() {
+        let dir = TempDir::new().unwrap();
+        let paths = CrisolPaths::new(dir.path().join("deep").join("home")).unwrap();
+        let private = FakePrivate::new(false, false);
+
+        assert_eq!(
+            paths.ensure_private_layout(&private).unwrap(),
+            HomeSecurity::Created
+        );
+        assert_eq!(
+            *private.created.lock().unwrap(),
+            [paths.home().to_path_buf()]
+        );
+        for sub in [paths.bin_dir(), paths.state_dir(), paths.shims_dir()] {
+            assert!(sub.is_dir(), "{}", sub.display());
+        }
+    }
+
+    #[test]
+    fn an_existing_home_is_reported_not_re_permissioned() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        fs::create_dir_all(paths.home()).unwrap();
+
+        let closed = FakePrivate::new(true, false);
+        assert_eq!(
+            paths.ensure_private_layout(&closed).unwrap(),
+            HomeSecurity::Private
+        );
+        let open = FakePrivate::new(true, true);
+        assert_eq!(
+            paths.ensure_private_layout(&open).unwrap(),
+            HomeSecurity::WritableByOthers
+        );
+        assert!(
+            open.created.lock().unwrap().is_empty(),
+            "an existing folder is never touched"
+        );
+        assert!(paths.bin_dir().is_dir(), "the layout is still completed");
     }
 
     #[test]

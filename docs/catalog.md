@@ -51,7 +51,9 @@ size       = 1802240      # opcional, bytes
 
 1. **Catálogo incrustado:** viaja dentro del binario y no necesita firma.
 2. **Catálogo actualizable:** debe traer una firma [minisign](https://jedisct1.github.io/minisign/) que se verifica **antes** de leerlo, con la clave pública del proyecto. La firma cubre los bytes exactos del archivo: cualquier cambio, incluso de saltos de línea, la invalida.
-3. **Anti-reversión:** un catálogo con `serial` menor que el que se usa se rechaza, aunque su firma sea válida; así no se puede reintroducir una versión vulnerable con un catálogo viejo.
+3. **Anti-reversión:** un catálogo con `serial` menor que el más alto visto se rechaza, aunque su firma sea válida; así no se puede reintroducir una versión vulnerable con un catálogo viejo.
+
+   Las dos comprobaciones van juntas en **`Catalog::load_update(texto, firma, serial_mínimo)`**, la única forma pública de leer un catálogo externo (el análisis sin comprobar es privado del crate, así que no se puede olvidar una de las dos). `serial_mínimo` debe ser el mayor entre el `serial` del catálogo incrustado y el más alto que se haya aceptado alguna vez; **dónde se guarda ese valor** lo decide la tarea que implemente la actualización (no puede ser `state/`, que se puede borrar).
 4. **Cada descarga** se compara con el `sha256` del catálogo antes de extraerse (F3.3).
 
 La clave pública del proyecto está en `CATALOG_PUBLIC_KEY` (`src/crisol-core/src/catalog.rs`); la privada la guarda el propietario fuera del repositorio y nunca debe entrar a él. Si se perdiera, habría que generar otro par y publicar un binario nuevo con la clave pública nueva. Con la constante en `None`, solo se acepta el catálogo incrustado.

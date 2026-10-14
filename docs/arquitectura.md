@@ -35,7 +35,8 @@
 
 ```rust
 trait ProcessSupervisor   // lanzar, detener, matar árbol, saber si vive. Windows: Job Objects
-trait PortProbe           // ¿el puerto está libre? ¿qué proceso lo usa?
+trait PortProbe           // ¿el puerto está libre? ¿qué proceso lo usa? ¿ya escucha alguien? (is_listening no toca el puerto)
+trait PrivateDirs         // crear la home con ACL solo del usuario; saber si una existente está abierta a otros
 trait TrustStore          // instalar/quitar la CA local en el almacén del usuario
 trait LocalDns            // resolver *.test → 127.0.0.1 (DNS propio + regla del SO, o hosts como respaldo)
 trait Elevation           // ejecutar una operación puntual con admin, solo si es indispensable
@@ -47,6 +48,8 @@ Cada trait tiene una implementación falsa (`fake`) en `crisol-core` para prueba
 ## Directorio raíz: `CRISOL_HOME`
 
 Por defecto `C:\Crisol` en Windows (`~/.crisol` en Unix). Se puede cambiar con la variable `CRISOL_HOME`, pensada sobre todo para pruebas. La instalación es portable: mover la carpeta y correr `crisol repair` debe bastar.
+
+**Permisos (ADR-0008):** la raíz de un disco da "modificar" a todos los usuarios autenticados y lo hereda a lo que se cree dentro. Por eso la home **nueva** se crea con una ACL protegida (solo el usuario, SYSTEM y administradores) mediante `PrivateDirs`; una home que ya existe no se toca, pero se avisa si está abierta a otros (`doctor`).
 
 ```
 CRISOL_HOME/
@@ -96,8 +99,8 @@ Defaults normales (80/443, 3306, 5432…). Si el puerto está ocupado, Crisol **
 
 Un **manifiesto** (`catalog.toml`, incluido en el binario y actualizable) lista por servicio y versión: URL oficial, SHA-256, formato de archivo y ruta del ejecutable dentro. Se descarga, se verifica el hash y se extrae en `bin/`. Si un proveedor oficial no publica hash, el manifiesto lo fija tras verificarlo manualmente.
 
-El instalador (`crisol-core::install`) sigue siempre este orden: descarga a una carpeta de trabajo `bin/.staging-*` (mismo disco) calculando el SHA-256 al vuelo; **verifica el hash antes de extraer nada**; extrae rechazando rutas que salgan de la carpeta, enlaces simbólicos, nombres reservados de Windows y bombas ZIP; comprueba que exista el ejecutable declarado; y mueve el resultado a `bin/<servicio>/<versión>/` con un solo renombrado. Ante cualquier fallo o cancelación la carpeta de trabajo se borra: `bin/` solo contiene instalaciones completas. La descarga va detrás del trait `Fetch` (HTTPS con `ureq` y `rustls`), así todo se prueba sin red.
+El instalador (`crisol-core::install`) sigue siempre este orden: descarga a una carpeta de trabajo `bin/.staging-*` (mismo disco) calculando el SHA-256 al vuelo; **verifica el hash antes de extraer nada**; extrae rechazando rutas que salgan de la carpeta, enlaces simbólicos, nombres reservados de Windows y bombas ZIP; comprueba que exista el ejecutable declarado; y mueve el resultado a `bin/<servicio>/<versión>/` con un solo renombrado. Ante cualquier fallo o cancelación la carpeta de trabajo se borra: `bin/` solo contiene instalaciones completas. La descarga va detrás del trait `Fetch` (HTTPS con `ureq` y `rustls`), así todo se prueba sin red. Un catálogo que no sea el incrustado solo se lee con `Catalog::load_update` (firma + `serial` mínimo); el análisis sin esas comprobaciones es privado del crate.
 
 ## Crates sugeridos (verificar versiones actuales antes de agregar)
 
-`tokio`, `serde`, `toml`, `toml_edit`, `clap`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `reqwest` (rustls), `sha2`, `zip`, `semver`, `interprocess`, `windows` (Job Objects, PATH, certificados), `rcgen` (CA y certificados), `hickory-server` (DNS local), `tempfile` (pruebas), `insta` (snapshots de configs generadas).
+`tokio`, `serde`, `toml`, `toml_edit`, `clap`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `ureq` (rustls; ya en uso en `crisol-core::fetch`), `sha2`, `zip`, `semver`, `interprocess`, `windows` (Job Objects, PATH, certificados), `rcgen` (CA y certificados), `hickory-server` (DNS local), `tempfile` (pruebas), `insta` (snapshots de configs generadas).
