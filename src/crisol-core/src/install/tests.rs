@@ -988,7 +988,18 @@ fn real_provider_archives_install_cleanly() {
             package.label()
         );
         rig.assert_only(&package.service);
-        eprintln!("ok {:<28} {:>6} files", package.label(), done.files);
+
+        // And back: uninstalling leaves bin/ exactly as it was before the install.
+        let removed =
+            crate::manage::uninstall(&rig.paths, &package.service, &package.version.to_string())
+                .unwrap_or_else(|e| panic!("{} failed to uninstall: {e}", package.label()));
+        assert!(removed.service_folder_removed, "{}", package.label());
+        rig.assert_nothing_installed();
+        eprintln!(
+            "ok {:<28} {:>6} files, installed and removed",
+            package.label(),
+            done.files
+        );
         installed += 1;
     }
     assert!(

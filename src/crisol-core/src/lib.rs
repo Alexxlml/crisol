@@ -6,6 +6,7 @@ pub mod edit;
 pub mod fetch;
 pub mod install;
 pub mod log;
+pub mod manage;
 pub mod paths;
 pub mod ports;
 pub mod process;
