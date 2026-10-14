@@ -29,6 +29,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 sha2 = "0.11.1"
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tempfile = "3.27.0"
+insta = "1.49.0"
 crisol-core = { path = "crisol-core" }
 crisol-platform = { path = "crisol-platform" }
 crisol-protocol = { path = "crisol-protocol" }

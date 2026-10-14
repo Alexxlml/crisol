@@ -1,0 +1,6 @@
+---
+source: crisol-core/src/phpini/tests.rs
+expression: "format!(\"enabled: {}\\nskipped: {}\", written.enabled.join(\" \"),\nwritten.skipped.join(\" \"))"
+---
+enabled: bz2 curl exif fileinfo ftp gd gettext gmp intl mbstring mysqli openssl pdo_mysql pdo_pgsql pdo_sqlite pgsql soap sockets sodium sqlite3 xsl zip opcache
+skipped:

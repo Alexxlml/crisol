@@ -58,6 +58,7 @@ CRISOL_HOME/
 ├── state/               # estado interno de Crisol (PIDs, versiones activas, caché). Se puede borrar.
 ├── bin/<servicio>/<versión>/   # binarios descargados, intactos
 ├── etc/<servicio>/      # configs GENERADAS a partir de crisol.toml. Se regeneran; no editar a mano.
+│   ├── php/<versión>/php.ini   # generado desde el php.ini-development de esa versión (F4.1)
 │   └── overrides/       # fragmentos del usuario que se incluyen en lo generado (no se tocan)
 ├── data/<servicio>/<versión-mayor>/   # datos de bases de datos
 ├── logs/<servicio>/

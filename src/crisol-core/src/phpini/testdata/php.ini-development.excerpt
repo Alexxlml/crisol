@@ -1,0 +1,104 @@
+; Maximum execution time of each script, in seconds
+; https://php.net/max-execution-time
+; Note: This directive is hardcoded to 0 for the CLI SAPI
+max_execution_time = 30
+
+; Maximum amount of memory a script may consume
+; https://php.net/memory-limit
+memory_limit = 128M
+
+; empty.
+; https://php.net/error-log
+; Example:
+;error_log = php_errors.log
+; Log errors to syslog (Event Log on Windows).
+;error_log = syslog
+
+; is disabled through enable_post_data_reading.
+; https://php.net/post-max-size
+post_max_size = 8M
+
+; Directory in which the loadable extensions (modules) reside.
+; https://php.net/extension-dir
+;extension_dir = "./"
+; On windows:
+;extension_dir = "ext"
+
+; Maximum allowed size for uploaded files.
+; https://php.net/upload-max-filesize
+upload_max_filesize = 2M
+
+
+; If you wish to have an extension loaded automatically, use the following
+; syntax:
+;
+;   extension=modulename
+;
+; For example:
+;
+;   extension=mysqli
+;
+; When the extension library to load is not located in the default extension
+; directory, You may specify an absolute path to the library file:
+;
+;   extension=/path/to/extension/mysqli.so
+;
+; Note : The syntax used in previous PHP versions ('extension=<ext>.so' and
+; 'extension='php_<ext>.dll') is supported for legacy reasons and may be
+; deprecated in a future PHP major version. So, when it is possible, please
+; move to the new ('extension=<ext>) syntax.
+;
+; Notes for Windows environments :
+;
+; - Many DLL files are located in the ext/
+;   extension folders as well as the separate PECL DLL download.
+;   Be sure to appropriately set the extension_dir directive.
+;
+;extension=bz2
+;extension=curl
+;extension=ffi
+;extension=ftp
+;extension=fileinfo
+;extension=gd
+;extension=gettext
+;extension=gmp
+;extension=intl
+;extension=ldap
+;extension=mbstring
+;extension=exif      ; Must be after mbstring as it depends on it
+;extension=mysqli
+;extension=odbc
+;extension=openssl
+;extension=pdo_firebird
+;extension=pdo_mysql
+;extension=pdo_odbc
+;extension=pdo_pgsql
+;extension=pdo_sqlite
+;extension=pgsql
+;extension=shmop
+
+; The MIBS data available in the PHP distribution must be installed.
+; See https://www.php.net/manual/en/snmp.installation.php
+;extension=snmp
+
+;extension=soap
+;extension=sockets
+;extension=sodium
+;extension=sqlite3
+;extension=tidy
+;extension=xsl
+;extension=zip
+
+;zend_extension=opcache
+
+[Date]
+; Defines the default timezone used by the date functions
+; https://php.net/date.timezone
+;date.timezone =
+
+[opcache]
+; Determines if Zend OPCache is enabled
+;opcache.enable=1
+
+; Determines if Zend OPCache is enabled for the CLI version of PHP
+;opcache.enable_cli=0

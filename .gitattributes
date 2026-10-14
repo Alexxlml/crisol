@@ -4,3 +4,6 @@
 
 # Test fixtures are signed byte for byte: never convert their line endings.
 src/crisol-core/src/catalog/testdata/* -text
+
+# The php.ini excerpt keeps the CRLF that PHP ships it with: the tests check it is preserved.
+src/crisol-core/src/phpini/testdata/* -text

@@ -168,6 +168,15 @@ impl CrisolPaths {
         Ok(self.etc_for(service)?.join(names::OVERRIDES))
     }
 
+    /// Generated `php.ini` of one PHP version: `etc/php/<version>/php.ini`. Derived; see
+    /// [`crate::phpini`].
+    pub fn php_ini(&self, version: &str) -> Result<PathBuf, PathsError> {
+        Ok(self
+            .etc_for("php")?
+            .join(validate_component(version)?)
+            .join("php.ini"))
+    }
+
     /// Database and service data root: `data/`.
     #[must_use]
     pub fn data_dir(&self) -> PathBuf {
