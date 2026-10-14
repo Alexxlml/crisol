@@ -60,7 +60,10 @@ struct State {
     spawned: Vec<SpawnRecord>,
     /// Pids still running after their group was closed without `kill_on_close`.
     detached: Vec<u32>,
-    fail_next_spawn: Option<SupervisorError>,
+    /// Groups whose processes survive every kill (a stuck service).
+    unkillable: Vec<GroupId>,
+    /// A spawn failure still to happen: (spawns that succeed first, the error).
+    fail_spawn: Option<(usize, SupervisorError)>,
 }
 
 /// Scriptable fake of [`ProcessSupervisor`].
@@ -94,7 +97,12 @@ impl FakeSupervisor {
 
     /// Makes the next `spawn` fail with `error`. Only that one call is affected.
     pub fn fail_next_spawn(&self, error: SupervisorError) {
-        self.state().fail_next_spawn = Some(error);
+        self.fail_spawn_after(0, error);
+    }
+
+    /// Lets `successes` more spawns succeed, then makes the one after them fail with `error`.
+    pub fn fail_spawn_after(&self, successes: usize, error: SupervisorError) {
+        self.state().fail_spawn = Some((successes, error));
     }
 
     /// Simulates the process exiting on its own with `code`. Ignored if it already ended.
@@ -108,6 +116,12 @@ impl FakeSupervisor {
             entry.status = ProcessStatus::Exited(ExitReason::Code(code));
         }
         Ok(())
+    }
+
+    /// Makes the processes of `group` ignore `kill_group` and `close_group`, like a service
+    /// stuck in the kernel. Only for testing how callers cope with a stop that fails.
+    pub fn make_unkillable(&self, group: GroupId) {
+        self.state().unkillable.push(group);
     }
 
     /// Simulates `count` more alive descendants (children of the service's own children).
@@ -156,6 +170,9 @@ impl FakeSupervisor {
 }
 
 fn kill_all(state: &mut State, group: GroupId) {
+    if state.unkillable.contains(&group) {
+        return;
+    }
     for process in state.processes.values_mut().filter(|p| p.group == group) {
         if process.status == ProcessStatus::Running {
             process.status = ProcessStatus::Exited(ExitReason::Killed);
@@ -193,8 +210,10 @@ impl ProcessSupervisor for FakeSupervisor {
             }
             Some(_) => {}
         }
-        if let Some(error) = state.fail_next_spawn.take() {
-            return Err(error);
+        match state.fail_spawn.take() {
+            Some((0, error)) => return Err(error),
+            Some((successes, error)) => state.fail_spawn = Some((successes - 1, error)),
+            None => {}
         }
 
         state.next_process += 1;
