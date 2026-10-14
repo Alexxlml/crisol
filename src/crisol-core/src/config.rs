@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::paths::{validate_component, CrisolPaths};
+use crate::paths::CrisolPaths;
+use crate::version::VersionReq;
 
 /// Top-level configuration with every default filled in.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -359,7 +360,7 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         validate_tld(&self.sites.tld)?;
         for (field, version) in self.pinned_versions() {
-            validate_component(version).map_err(|_| invalid(field, "not a valid version"))?;
+            VersionReq::parse(version).map_err(|_| invalid(field, "not a valid version"))?;
         }
         if let Some(zone) = &self.php.timezone {
             if zone.trim().is_empty() {

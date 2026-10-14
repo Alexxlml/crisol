@@ -387,6 +387,22 @@ fn an_ambiguous_request_removes_nothing_but_an_exact_one_works() {
 }
 
 #[test]
+fn a_prefix_is_ambiguous_even_when_one_match_is_x_y_0() {
+    // `8.4` equals `8.4.0` as a version, but it is a prefix of `8.4.26` too.
+    let rig = Rig::new();
+    for dir in ["bin/php/8.4.0", "bin/php/8.4.26"] {
+        rig.mkdir(dir);
+    }
+    let before = rig.snapshot();
+    let error = uninstall(&rig.paths, "php", "8.4").unwrap_err();
+    assert!(matches!(error, ManageError::Ambiguous { .. }), "{error}");
+    assert_eq!(rig.snapshot(), before);
+
+    uninstall(&rig.paths, "php", "8.4.0").unwrap();
+    assert_eq!(rig.installed(), ["php 8.4.26"]);
+}
+
+#[test]
 fn removing_what_is_not_installed_says_what_is() {
     let rig = Rig::new();
     rig.mkdir("bin/php/8.4.26");

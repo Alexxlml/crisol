@@ -113,7 +113,8 @@ impl Eq for Version {}
 impl Hash for Version {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.significant().hash(state);
-        self.pre.hash(state);
+        // Same normalisation as the comparison, or equal versions could hash differently.
+        self.pre.as_deref().map(tag_pieces).hash(state);
     }
 }
 
@@ -144,26 +145,38 @@ impl Ord for Version {
     }
 }
 
+/// Splits a pre-release tag into alternating runs of digits and other characters. Numeric
+/// runs lose their leading zeros, so `rc01` and `rc1` are the same tag (and no run can
+/// overflow a number: they are compared as text, shortest first).
+fn tag_pieces(tag: &str) -> Vec<(bool, String)> {
+    let mut out: Vec<(bool, String)> = Vec::new();
+    for c in tag.chars() {
+        let digit = c.is_ascii_digit();
+        match out.last_mut() {
+            Some((is_digit, text)) if *is_digit == digit => text.push(c),
+            _ => out.push((digit, c.to_string())),
+        }
+    }
+    for (is_digit, text) in &mut out {
+        if *is_digit {
+            let trimmed = text.trim_start_matches('0');
+            *text = if trimmed.is_empty() { "0" } else { trimmed }.to_owned();
+        }
+    }
+    out
+}
+
 /// Orders pre-release tags piece by piece: numbers numerically (`rc2 < rc10`), text by
 /// letters.
 fn compare_tags(a: &str, b: &str) -> Ordering {
-    let split = |s: &str| -> Vec<(bool, String)> {
-        let mut out: Vec<(bool, String)> = Vec::new();
-        for c in s.chars() {
-            let digit = c.is_ascii_digit();
-            match out.last_mut() {
-                Some((is_digit, text)) if *is_digit == digit => text.push(c),
-                _ => out.push((digit, c.to_string())),
-            }
-        }
-        out
-    };
-    let (a, b) = (split(a), split(b));
+    let (a, b) = (tag_pieces(a), tag_pieces(b));
     for ((a_digit, a_text), (b_digit, b_text)) in a.iter().zip(&b) {
         let order = if *a_digit && *b_digit {
-            let (a_num, b_num): (u64, u64) =
-                (a_text.parse().unwrap_or(0), b_text.parse().unwrap_or(0));
-            a_num.cmp(&b_num)
+            // Without leading zeros a longer number is a bigger one.
+            a_text
+                .len()
+                .cmp(&b_text.len())
+                .then_with(|| a_text.cmp(b_text))
         } else {
             a_text.cmp(b_text)
         };
@@ -295,6 +308,16 @@ mod tests {
 
         let set: HashSet<Version> = [v("8.4"), v("8.4.0"), v("8.4.0.0")].into_iter().collect();
         assert_eq!(set.len(), 1, "equal versions must hash alike");
+    }
+
+    #[test]
+    fn equal_prerelease_tags_hash_alike_and_huge_numbers_still_order() {
+        let set: HashSet<Version> = [v("8.5.0-rc1"), v("8.5.0-rc01"), v("8.5.0.0-rc1")]
+            .into_iter()
+            .collect();
+        assert_eq!(set.len(), 1);
+        assert!(v("8.5.0-rc99999999999999999999") < v("8.5.0-rc100000000000000000000"));
+        assert!(v("8.5.0-rc2") < v("8.5.0-rc10"));
     }
 
     #[test]

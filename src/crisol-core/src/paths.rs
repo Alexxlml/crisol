@@ -211,13 +211,41 @@ impl CrisolPaths {
     }
 }
 
+/// Whether Windows treats `name` (with or without an extension) as a device: opening a file
+/// called like that talks to the device instead of creating a file.
+pub(crate) fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    // COM0-COM9 and LPT0-LPT9, also with the superscript digits Windows accepts.
+    ["COM", "LPT"].iter().any(|prefix| {
+        upper.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    })
+}
+
 /// Accepts a single path component made of safe characters.
 ///
-/// This blocks separators, drive prefixes (`C:`), and `.`/`..`, so a service name or
-/// version can never point outside the directory it is joined to.
+/// This blocks separators, drive prefixes (`C:`), `.`/`..`, names Windows rewrites (a trailing
+/// dot: `...` would resolve to the parent folder) and device names (`CON`, `NUL`...), so a
+/// service name or version can never point outside the directory it is joined to.
 pub(crate) fn validate_component(value: &str) -> Result<&str, PathsError> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+');
-    let valid = !value.is_empty() && value != "." && value != ".." && value.chars().all(allowed);
+    let valid = !value.is_empty()
+        && value.chars().all(allowed)
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !is_reserved_device_name(value);
     if valid {
         Ok(value)
     } else {
@@ -323,7 +351,27 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         for bad in [
-            "", ".", "..", "../etc", "a/b", "a\\b", "C:", "C:\\x", "/abs", "a b", "é",
+            "",
+            ".",
+            "..",
+            "../etc",
+            "a/b",
+            "a\\b",
+            "C:",
+            "C:\\x",
+            "/abs",
+            "a b",
+            "é",
+            // Windows strips trailing dots: `...` is the parent folder, `php.` is `php`.
+            "...",
+            "php.",
+            ".hidden",
+            "CON",
+            "nul",
+            "aux.txt",
+            "COM1",
+            "lpt9",
+            "COM\u{b9}",
         ] {
             assert!(
                 matches!(paths.etc_for(bad), Err(PathsError::InvalidComponent(_))),

@@ -33,7 +33,8 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::{ArchiveFormat, Package};
 use crate::fetch::{Fetch, FetchError};
-use crate::paths::{CrisolPaths, PathsError};
+use crate::paths::{is_reserved_device_name, CrisolPaths, PathsError};
+use crate::version::Version;
 
 /// Prefix of the temporary folders created inside `bin/`.
 pub const STAGING_PREFIX: &str = ".staging-";
@@ -214,8 +215,8 @@ pub fn install(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Installed, InstallError> {
     let dest = paths.bin_for(&package.service, &package.version.to_string())?;
-    if dest.exists() {
-        return Err(InstallError::AlreadyInstalled(dest));
+    if let Some(existing) = installed_equivalent(&dest, package) {
+        return Err(InstallError::AlreadyInstalled(existing));
     }
 
     let bin = paths.bin_dir();
@@ -250,13 +251,23 @@ pub fn install(
     progress(Progress::Installing);
     let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
     fs::create_dir_all(&parent).map_err(io_error("cannot create", &parent))?;
-    if dest.exists() {
-        return Err(InstallError::AlreadyInstalled(dest));
+    if let Some(existing) = installed_equivalent(&dest, package) {
+        return Err(InstallError::AlreadyInstalled(existing));
     }
-    retry(options.move_attempts, options.move_delay, || {
-        fs::rename(&content, &dest)
-    })
-    .map_err(io_error("cannot move into place", &dest))?;
+    let moved = retry_if(
+        options.move_attempts,
+        options.move_delay,
+        is_transient,
+        || fs::rename(&content, &dest),
+    );
+    if let Err(error) = moved {
+        // Another install of the same version may have won the race between the check above
+        // and the rename: that is "already installed", not an I/O failure.
+        if dest.exists() {
+            return Err(InstallError::AlreadyInstalled(dest));
+        }
+        return Err(io_error("cannot move into place", &dest)(error));
+    }
     Ok(Installed {
         path: dest,
         downloaded,
@@ -295,22 +306,52 @@ fn check_cancel(options: &InstallOptions) -> Result<(), InstallError> {
 }
 
 /// Runs `action` up to `attempts` times, pausing between tries, and returns the last error.
-fn retry<T>(
+/// An error for which `transient` says no is returned at once.
+fn retry_if<T>(
     attempts: u32,
     delay: Duration,
+    transient: impl Fn(&io::Error) -> bool,
     mut action: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
     let mut tries = 1;
     loop {
         match action() {
             Ok(value) => return Ok(value),
-            Err(error) if tries >= attempts.max(1) => return Err(error),
+            Err(error) if tries >= attempts.max(1) || !transient(&error) => return Err(error),
             Err(_) => {
                 tries += 1;
                 thread::sleep(delay);
             }
         }
     }
+}
+
+/// Errors that go away by themselves: an antivirus scanner holding a new file shows up as
+/// access denied or a sharing/lock violation.
+fn is_transient(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied
+        || (cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33)))
+}
+
+/// An installation of the same service whose version equals `package`'s (`8.4` and `8.4.0`
+/// are the same version but different folder names), or `dest` itself if it exists.
+fn installed_equivalent(dest: &Path, package: &Package) -> Option<PathBuf> {
+    if dest.exists() {
+        return Some(dest.to_path_buf());
+    }
+    let service_dir = dest.parent()?;
+    fs::read_dir(service_dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| Version::parse(name).ok())
+                .is_some_and(|version| version == package.version)
+        })
+        .map(|entry| entry.path())
 }
 
 // ---- download -------------------------------------------------------------------
@@ -512,12 +553,6 @@ fn extract_zip(
     Ok(files)
 }
 
-/// Windows device names: opening a file called like one of these talks to the device.
-const RESERVED_NAMES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM0", "COM1", "COM2", "COM3", "COM4",
-    "COM5", "COM6", "COM7", "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-];
-
 /// Turns an archive entry name into a path **relative to the install folder**, or says why
 /// it cannot be trusted. `Ok(None)` is the `root` folder itself.
 ///
@@ -568,11 +603,7 @@ fn check_component(component: &str) -> Result<(), String> {
     if component.ends_with('.') || component.ends_with(' ') {
         return Err("Windows would silently rename names that end in a dot or a space".to_owned());
     }
-    let stem = component.split('.').next().unwrap_or_default().trim_end();
-    if RESERVED_NAMES
-        .iter()
-        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
-    {
+    if is_reserved_device_name(component) {
         return Err("reserved Windows device name".to_owned());
     }
     if component.len() > 255 {

@@ -229,9 +229,11 @@ pub fn uninstall(
         versions.iter().map(|i| i.version.to_string()).collect()
     };
 
+    // "Exact" is the folder name as written: `8.4` and `8.4.0` compare equal as versions, but
+    // `8.4` must stay a prefix when `8.4.0` and `8.4.26` are both installed.
     let exact: Vec<&InstalledVersion> = of_service
         .iter()
-        .filter(|i| Version::parse(request).is_ok_and(|v| v == i.version))
+        .filter(|i| i.version.to_string() == request)
         .collect();
     let matching: Vec<&InstalledVersion> = if exact.is_empty() {
         of_service
@@ -333,13 +335,18 @@ fn remove_dir_safely(bin_dir: &Path, dir: &Path) -> Result<(), ManageError> {
         "{STAGING_PREFIX}removing-{}-{nanos}",
         process::id()
     ));
-    fs::rename(dir, &doomed).map_err(|source| match source.kind() {
-        io::ErrorKind::PermissionDenied => ManageError::InUse(dir.to_path_buf()),
-        _ => ManageError::Io {
-            action: "cannot move out of the way",
-            path: dir.to_path_buf(),
-            source,
-        },
+    fs::rename(dir, &doomed).map_err(|source| {
+        // A program whose working directory is inside the folder gives a sharing violation
+        // (32), which is not `PermissionDenied` but means the same thing here.
+        if source.kind() == io::ErrorKind::PermissionDenied || is_busy(&source) {
+            ManageError::InUse(dir.to_path_buf())
+        } else {
+            ManageError::Io {
+                action: "cannot move out of the way",
+                path: dir.to_path_buf(),
+                source,
+            }
+        }
     })?;
     // The version is gone from the user's point of view; failing to free the disk space now
     // is not worth an error, the leftovers are swept on the next install.

@@ -24,7 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::config::{deserialize_reporting_unknown, invalid, ConfigError, ConfigWarning};
-use crate::paths::validate_component;
+use crate::version::VersionReq;
 
 /// Name of the per-project file.
 pub const PROJECT_FILE: &str = ".crisol.toml";
@@ -63,7 +63,7 @@ impl ProjectConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         for (field, value) in [("php", &self.php), ("node", &self.node)] {
             if let Some(version) = value {
-                validate_component(version).map_err(|_| invalid(field, "not a valid version"))?;
+                VersionReq::parse(version).map_err(|_| invalid(field, "not a valid version"))?;
             }
         }
         Ok(())

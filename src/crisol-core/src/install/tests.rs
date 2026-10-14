@@ -406,6 +406,8 @@ fn windows_device_names_and_rewritten_names_are_refused() {
         "Lpt3",
         "aux.dll",
         "CONIN$",
+        "lpt9.txt",
+        "COM\u{b2}.dll",
         "trail.",
         "space ",
         "bad<name>.txt",
@@ -858,34 +860,83 @@ fn an_install_does_not_disturb_a_fresh_staging_folder_of_another_install() {
     );
 }
 
+#[test]
+fn an_equal_version_under_another_folder_name_counts_as_installed() {
+    let rig = Rig::new();
+    let existing = rig.paths.bin_for("php", "8.4").unwrap();
+    fs::create_dir_all(&existing).unwrap();
+
+    let bytes = zip_bytes(&[("php.exe", b"MZ")]);
+    rig.fetcher.serve(URL, bytes.clone());
+    let error = rig
+        .install(&package("php", "8.4.0", &bytes, None, "php.exe"))
+        .unwrap_err();
+    assert!(
+        matches!(&error, InstallError::AlreadyInstalled(p) if *p == existing),
+        "{error}"
+    );
+    assert_eq!(rig.fetcher.requests(), Vec::<String>::new());
+}
+
+#[test]
+fn retry_if_stops_at_once_on_an_error_that_is_not_transient() {
+    let mut calls = 0;
+    let error = retry_if(
+        5,
+        Duration::ZERO,
+        |e| e.kind() == io::ErrorKind::PermissionDenied,
+        || -> io::Result<()> {
+            calls += 1;
+            Err(io::Error::other("permanent"))
+        },
+    )
+    .unwrap_err();
+    assert_eq!((calls, error.to_string().as_str()), (1, "permanent"));
+}
+
 // ---- helpers --------------------------------------------------------------------
 
 #[test]
 fn retry_tries_again_and_returns_the_last_error() {
     let mut calls = 0;
-    let value = retry(5, Duration::ZERO, || {
-        calls += 1;
-        if calls < 3 {
-            Err(io::Error::other("busy"))
-        } else {
-            Ok(calls)
-        }
-    });
+    let value = retry_if(
+        5,
+        Duration::ZERO,
+        |_| true,
+        || {
+            calls += 1;
+            if calls < 3 {
+                Err(io::Error::other("busy"))
+            } else {
+                Ok(calls)
+            }
+        },
+    );
     assert_eq!(value.unwrap(), 3);
 
     let mut calls = 0;
-    let error = retry(4, Duration::ZERO, || -> io::Result<()> {
-        calls += 1;
-        Err(io::Error::other(format!("attempt {calls}")))
-    })
+    let error = retry_if(
+        4,
+        Duration::ZERO,
+        |_| true,
+        || -> io::Result<()> {
+            calls += 1;
+            Err(io::Error::other(format!("attempt {calls}")))
+        },
+    )
     .unwrap_err();
     assert_eq!((calls, error.to_string().as_str()), (4, "attempt 4"));
 
     let mut calls = 0;
-    let _ = retry(0, Duration::ZERO, || -> io::Result<()> {
-        calls += 1;
-        Err(io::Error::other("x"))
-    });
+    let _ = retry_if(
+        0,
+        Duration::ZERO,
+        |_| true,
+        || -> io::Result<()> {
+            calls += 1;
+            Err(io::Error::other("x"))
+        },
+    );
     assert_eq!(calls, 1, "zero attempts still means one try");
 }
 
