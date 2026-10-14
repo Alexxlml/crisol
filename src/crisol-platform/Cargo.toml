@@ -9,5 +9,17 @@ publish.workspace = true
 [dependencies]
 crisol-core.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

@@ -58,6 +58,8 @@ struct State {
     groups: BTreeMap<GroupId, Group>,
     processes: BTreeMap<ProcessId, Process>,
     spawned: Vec<SpawnRecord>,
+    /// Pids still running after their group was closed without `kill_on_close`.
+    detached: Vec<u32>,
     fail_next_spawn: Option<SupervisorError>,
 }
 
@@ -135,12 +137,15 @@ impl FakeSupervisor {
     /// allowed to survive (`kill_on_close = false`).
     #[must_use]
     pub fn alive_pids(&self) -> Vec<u32> {
-        self.state()
+        let state = self.state();
+        let mut pids: Vec<u32> = state
             .processes
             .values()
             .filter(|p| p.status == ProcessStatus::Running)
             .map(|p| p.pid)
-            .collect()
+            .collect();
+        pids.extend(&state.detached);
+        pids
     }
 
     /// Number of groups that exist (created and not closed).
@@ -260,9 +265,17 @@ impl ProcessSupervisor for FakeSupervisor {
             .ok_or(SupervisorError::UnknownGroup(group))?;
         if entry.options.kill_on_close {
             kill_all(&mut state, group);
-            // Ids of a closed group are invalid.
-            state.processes.retain(|_, p| p.group != group);
+        } else {
+            let survivors: Vec<u32> = state
+                .processes
+                .values()
+                .filter(|p| p.group == group && p.status == ProcessStatus::Running)
+                .map(|p| p.pid)
+                .collect();
+            state.detached.extend(survivors);
         }
+        // Ids of a closed group are invalid either way.
+        state.processes.retain(|_, p| p.group != group);
         state.groups.remove(&group);
         Ok(())
     }
@@ -460,8 +473,13 @@ mod tests {
             )
             .unwrap();
         let p = spawn(&s, g, "mailpit");
+        let pid = s.pid(p).unwrap();
         s.close_group(g).unwrap();
-        assert_eq!(s.alive_pids(), vec![s.pid(p).unwrap()]);
+        assert_eq!(s.alive_pids(), vec![pid], "the service outlives its group");
+        assert!(matches!(
+            s.status(p),
+            Err(SupervisorError::UnknownProcess(_))
+        ));
     }
 
     #[test]
