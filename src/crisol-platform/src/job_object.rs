@@ -740,50 +740,57 @@ mod tests {
 
     #[test]
     fn a_chatty_service_rotates_its_log_and_never_blocks() {
+        // The output reaches the log in chunks of up to 16 KiB, so the limit must be well
+        // above one chunk and the output far above the limit; otherwise the result would
+        // depend on how the pipe happens to split the data.
+        const MAX: u64 = 40_000;
+        const CHUNK: u64 = 16 * 1024;
         let dir = TempDir::new().unwrap();
         let log = dir.path().join("logs").join("chatty").join("runtime.log");
         let s = JobObjectSupervisor::new();
         let g = group(&s);
 
-        // About 300 lines of ~60 bytes (~18 KB) into a log that rotates at 2 KB, keeping 2.
-        let line =
-            "for /l %i in (1,1,300) do @echo line-%i-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        // 10 000 lines of about 60 bytes: roughly 600 KB through a log that rotates at 40 KB.
+        let line = "for /l %i in (1,1,10000) do @echo line-%i-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let spec = ProcessSpec::new("cmd.exe")
             .args(["/c", line])
             .log_file(&log)
             .log_rotation(LogRotation {
-                max_bytes: 2000,
+                max_bytes: MAX,
                 keep: 2,
             });
         let p = s.spawn(g, &spec).unwrap();
-        let text = log_after_exit(&s, p, &log, &["line-300-"]);
+        let text = log_after_exit(&s, p, &log, &["line-10000-"]);
 
         let rotated = |n| log.with_file_name(format!("runtime.log.{n}"));
+        let size = |f: &Path| fs::metadata(f).unwrap().len();
+        assert!(
+            text.contains("line-10000-"),
+            "the newest line is in the current file"
+        );
         assert!(
             rotated(1).is_file() && rotated(2).is_file(),
             "history should exist"
         );
         assert!(!rotated(3).exists(), "only `keep` rotated files may remain");
-        assert!(
-            text.contains("line-300-"),
-            "the newest line is in the current file"
-        );
-        for file in [log.clone(), rotated(1), rotated(2)] {
-            let size = fs::metadata(&file).unwrap().len();
+
+        let files = [log.clone(), rotated(1), rotated(2)];
+        for file in &files {
+            let bytes = size(file);
             assert!(
-                size <= 2000 + 16 * 1024,
-                "{} is too large: {size}",
+                bytes <= MAX + CHUNK,
+                "{} is too large: {bytes}",
                 file.display()
             );
         }
-        // 300 lines would be ~18 KB in one file; the cap really bounds the disk use.
-        let total: u64 = [log.clone(), rotated(1), rotated(2)]
-            .iter()
-            .map(|f| fs::metadata(f).unwrap().len())
-            .sum();
+        let total: u64 = files.iter().map(|f| size(f)).sum();
         assert!(
-            total < 8000,
-            "the three files should hold far less than the full output: {total}"
+            total <= 3 * (MAX + CHUNK),
+            "disk use must stay bounded by the history size: {total}"
+        );
+        assert!(
+            total < 400_000,
+            "far less than the ~600 KB written: {total}"
         );
     }
 
