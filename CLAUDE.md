@@ -28,7 +28,7 @@ Suite de desarrollo web local (PHP + Node) en Rust. Ahora mismo **solo se constr
 - **Nada específico de Windows en `crisol-core`.** Va en `crisol-platform`, detrás de un trait.
 - **Nunca reescribas la config del usuario sin un comando explícito.** Para editar TOML del usuario usa `toml_edit`, que conserva comentarios y orden.
 - **No agregues dependencias sin justificarlas** en la bitácora de la sesión. Prefiere crates mantenidos y populares. Verifica la versión actual en crates.io antes de agregarla.
-- Cada tarea termina con pruebas que pasan (`cargo test --workspace`), `cargo clippy --workspace -- -D warnings` limpio y `cargo fmt`.
+- Cada tarea termina con pruebas que pasan (`cargo test --workspace`), `cargo clippy --workspace --all-targets -- -D warnings` limpio y `cargo fmt` (todo junto: `bash src/scripts/check.sh`).
 - Si el plan es ambiguo o choca con la realidad (una API no existe, un binario no se distribuye así), **detente y regístralo como bloqueo en `ESTADO.md`** en lugar de improvisar un cambio de diseño grande.
 
 ## Convenciones
