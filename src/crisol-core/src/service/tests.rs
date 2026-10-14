@@ -177,8 +177,10 @@ fn it_becomes_running_when_the_port_listens_and_not_before() {
 
     let events = rig.tick(1000);
     assert_eq!(changes(&events), [ServiceState::Running]);
-    // Preflight (2), then one health check at 500 and one at 1000; none at 700.
-    assert_eq!(rig.ports.probed(), [HTTP, HTTPS, HTTP, HTTP]);
+    // Preflight probes (2); then one health check at 500 and one at 1000, none at 700. The
+    // health checks only look at the listeners: they never probe.
+    assert_eq!(rig.ports.probed(), [HTTP, HTTPS]);
+    assert_eq!(rig.ports.listen_checked(), [HTTP, HTTP]);
 }
 
 #[test]
@@ -502,6 +504,26 @@ fn a_service_that_keeps_crashing_is_given_up_on() {
     assert_eq!(rig.state(), ServiceState::Failed(reason.clone()));
     assert_eq!(reason.to_string(), "crashed 3 times within 60 s");
     assert_eq!(rig.supervisor.group_count(), 0);
+}
+
+#[test]
+fn the_health_check_only_looks_and_never_probes_the_port() {
+    // `probe` may try to claim the port, which could make the starting service lose its own
+    // bind. Waiting for readiness must go through `is_listening` only.
+    let mut rig = Rig::new(nginx());
+    rig.start(0);
+    assert_eq!(
+        rig.ports.probed(),
+        [HTTP, HTTPS],
+        "only the preflight probes"
+    );
+    rig.tick(500);
+    rig.tick(1000);
+    rig.listen(HTTP);
+    rig.tick(1500);
+    assert_eq!(rig.state(), ServiceState::Running);
+    assert_eq!(rig.ports.probed(), [HTTP, HTTPS], "no probe while waiting");
+    assert_eq!(rig.ports.listen_checked(), [HTTP, HTTP, HTTP]);
 }
 
 #[test]

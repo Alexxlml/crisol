@@ -2,14 +2,18 @@
 //!
 //! Who is listening comes from the TCP tables of the IP Helper API
 //! (`GetExtendedTcpTable`, listeners only, with the owning pid), for IPv4 and IPv6; no
-//! `netstat` and no text parsing. If nobody is listening, a short-lived bind on the wildcard
-//! address tells the remaining cases apart:
+//! `netstat` and no text parsing. If nobody is listening, a short-lived bind on the loopback
+//! address (never the wildcard: that would raise the Windows Firewall prompt and create a
+//! rule for `crisold.exe`) tells the remaining cases apart:
 //!
 //! - it works: the port is free;
 //! - "address in use": something holds it that the tables did not show;
 //! - "access denied": either the port belongs to an excluded range that Windows keeps for
 //!   itself (Hyper-V, WSL, Docker), or a program holds it exclusively without listening yet.
 //!   Only this rare case asks `netsh` for the excluded ranges to tell them apart.
+//!
+//! [`PortProbe::is_listening`] only reads the tables: it never binds, so it is safe to call
+//! while a service is starting up.
 //!
 //! Neither call needs elevation. Note that "administered" exclusions (`*` in `netsh`
 //! output) do not stop programs from binding explicitly, so those ports are reported free.
@@ -18,7 +22,7 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crisol_core::ports::{PortError, PortOwner, PortProbe, PortStatus};
@@ -61,7 +65,7 @@ impl PortProbe for WindowsPortProbe {
             return Ok(PortStatus::InUse(owners));
         }
 
-        let bind = match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)) {
+        let bind = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
             Ok(_listener) => BindOutcome::Bound,
             Err(e) if e.kind() == ErrorKind::AddrInUse => BindOutcome::AddrInUse,
             Err(e) if e.kind() == ErrorKind::PermissionDenied => BindOutcome::Denied,
@@ -69,9 +73,14 @@ impl PortProbe for WindowsPortProbe {
         };
         classify(owners, bind, || is_excluded(port))
     }
+
+    fn is_listening(&self, port: u16) -> Result<bool, PortError> {
+        Ok(!listeners(AF_INET.0.into(), port)?.is_empty()
+            || !listeners(AF_INET6.0.into(), port)?.is_empty())
+    }
 }
 
-/// What a trial bind on the wildcard address did.
+/// What a trial bind on the loopback address did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BindOutcome {
     Bound,
@@ -101,23 +110,42 @@ fn classify(
     }
 }
 
-/// Whether Windows excludes `port` (asks `netsh`; the output is parsed by numbers only, so
-/// the system language does not matter).
+/// Whether Windows excludes `port` for IPv4 or IPv6 (asks `netsh`; the output is parsed by
+/// numbers only, so the system language does not matter). `None` if neither answered.
 fn is_excluded(port: u16) -> Option<bool> {
-    let output = Command::new("netsh")
-        .args(["int", "ipv4", "show", "excludedportrange", "protocol=tcp"])
+    let mut answered = false;
+    for family in ["ipv4", "ipv6"] {
+        if let Some(ranges) = excluded_ranges(family) {
+            answered = true;
+            if ranges
+                .iter()
+                .any(|(start, end)| (*start..=*end).contains(&port))
+            {
+                return Some(true);
+            }
+        }
+    }
+    answered.then_some(false)
+}
+
+/// `netsh.exe` from the system folder. A bare name would be looked up in the folder of the
+/// running program first, where nothing of ours should ever be trusted to be `netsh`.
+fn netsh_path() -> PathBuf {
+    let root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    root.join("System32").join("netsh.exe")
+}
+
+fn excluded_ranges(family: &str) -> Option<Vec<(u16, u16)>> {
+    let output = Command::new(netsh_path())
+        .args(["int", family, "show", "excludedportrange", "protocol=tcp"])
         .creation_flags(CREATE_NO_WINDOW.0)
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let ranges = parse_excluded(&String::from_utf8_lossy(&output.stdout));
-    Some(
-        ranges
-            .iter()
-            .any(|(start, end)| (*start..=*end).contains(&port)),
-    )
+    Some(parse_excluded(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Pairs of numbers in the lines of the `netsh ... excludedportrange` table.
@@ -179,11 +207,14 @@ fn listeners(family: u32, port: u16) -> Result<Vec<PortOwner>, PortError> {
 
     if family == u32::from(AF_INET.0) {
         let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
-        // SAFETY: the buffer is 4-byte aligned and starts with `dwNumEntries`.
-        let count = unsafe { (*table).dwNumEntries } as usize;
-        let count =
-            count.min(bytes.saturating_sub(size_of::<u32>()) / size_of::<MIB_TCPROW_OWNER_PID>());
-        // SAFETY: `count` rows fit in the buffer (checked above).
+        // `dwNumEntries` is the first `u32` of the table. An empty buffer has no table at all.
+        let Some(&declared) = buffer.first() else {
+            return Ok(found);
+        };
+        let count = (declared as usize)
+            .min(bytes.saturating_sub(size_of::<u32>()) / size_of::<MIB_TCPROW_OWNER_PID>());
+        // SAFETY: the buffer holds at least one `u32` (checked above) and `count` rows fit in
+        // it; `addr_of!` only computes the address of the first row, it reads nothing.
         let rows = unsafe { std::ptr::addr_of!((*table).table) }.cast::<MIB_TCPROW_OWNER_PID>();
         for i in 0..count {
             // SAFETY: `i < count`, so the row is inside the buffer.
@@ -195,11 +226,12 @@ fn listeners(family: u32, port: u16) -> Result<Vec<PortOwner>, PortError> {
         }
     } else {
         let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+        let Some(&declared) = buffer.first() else {
+            return Ok(found);
+        };
+        let count = (declared as usize)
+            .min(bytes.saturating_sub(size_of::<u32>()) / size_of::<MIB_TCP6ROW_OWNER_PID>());
         // SAFETY: as above.
-        let count = unsafe { (*table).dwNumEntries } as usize;
-        let count =
-            count.min(bytes.saturating_sub(size_of::<u32>()) / size_of::<MIB_TCP6ROW_OWNER_PID>());
-        // SAFETY: `count` rows fit in the buffer (checked above).
         let rows = unsafe { std::ptr::addr_of!((*table).table) }.cast::<MIB_TCP6ROW_OWNER_PID>();
         for i in 0..count {
             // SAFETY: `i < count`, so the row is inside the buffer.
@@ -361,6 +393,19 @@ mod tests {
             SocketAddr::from((Ipv6Addr::LOCALHOST, port))
         );
         drop(v6);
+    }
+
+    #[test]
+    fn is_listening_only_looks_and_never_claims_the_port() {
+        let port = free_port(19_300);
+        assert!(!WindowsPortProbe.is_listening(port).unwrap());
+        // A service that starts between two checks can still bind: nothing was held.
+        let service = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).unwrap();
+        assert!(WindowsPortProbe.is_listening(port).unwrap());
+        drop(service);
+        assert!(eventually(5, || !WindowsPortProbe
+            .is_listening(port)
+            .unwrap()));
     }
 
     #[test]

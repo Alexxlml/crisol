@@ -527,9 +527,10 @@ impl Service {
     fn healthy(&mut self, now: Instant) -> bool {
         match self.spec.health.clone() {
             HealthCheck::None => true,
+            // Only looks: asking with `probe` could make the starting service lose its bind.
             HealthCheck::Ports(ports) => ports
                 .iter()
-                .all(|port| matches!(self.ports.probe(*port), Ok(PortStatus::InUse(_)))),
+                .all(|port| matches!(self.ports.is_listening(*port), Ok(true))),
             HealthCheck::Command(command) => self.command_healthy(&command, now),
         }
     }

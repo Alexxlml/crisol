@@ -11,6 +11,7 @@ struct State {
     reserved: Vec<std::ops::RangeInclusive<u16>>,
     unknown_owner: Vec<u16>,
     probes: Vec<u16>,
+    listen_checks: Vec<u16>,
     failure: Option<String>,
 }
 
@@ -63,6 +64,13 @@ impl FakePortProbe {
     pub fn probed(&self) -> Vec<u16> {
         self.state().probes.clone()
     }
+
+    /// Ports asked about with [`PortProbe::is_listening`] so far, in order. Kept apart from
+    /// [`probed`](Self::probed) so tests can tell "can I start here?" from "is it up yet?".
+    #[must_use]
+    pub fn listen_checked(&self) -> Vec<u16> {
+        self.state().listen_checks.clone()
+    }
 }
 
 impl PortProbe for FakePortProbe {
@@ -82,6 +90,15 @@ impl PortProbe for FakePortProbe {
             return Ok(PortStatus::InUse(Vec::new()));
         }
         Ok(PortStatus::Free)
+    }
+
+    fn is_listening(&self, port: u16) -> Result<bool, PortError> {
+        let mut state = self.state();
+        state.listen_checks.push(port);
+        if let Some(message) = &state.failure {
+            return Err(PortError::Os(message.clone()));
+        }
+        Ok(state.owners.contains_key(&port))
     }
 }
 

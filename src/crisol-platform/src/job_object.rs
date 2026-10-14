@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crisol_core::log::{pump, RotatingLog};
 use crisol_core::process::{
@@ -46,6 +47,8 @@ use windows::Win32::System::Threading::{
 
 /// Exit code given to processes killed through the job.
 const KILLED_EXIT_CODE: u32 = 1;
+/// How long `kill_group` waits for the job to empty after terminating it.
+const KILL_SETTLE: Duration = Duration::from_secs(1);
 
 /// A Job Object handle; closed on drop.
 #[derive(Debug)]
@@ -103,6 +106,24 @@ impl JobObjectSupervisor {
 
 fn os_error(what: &str, error: &windows::core::Error) -> SupervisorError {
     SupervisorError::Os(format!("{what}: {error}"))
+}
+
+/// How many processes are alive in the job right now.
+fn active_in_job(job: HANDLE) -> Result<u32, SupervisorError> {
+    let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    // SAFETY: `info` is a valid struct of the size passed alongside it and outlives the
+    // call; the caller keeps the job handle valid.
+    unsafe {
+        QueryInformationJobObject(
+            Some(job),
+            JobObjectBasicAccountingInformation,
+            std::ptr::from_mut(&mut info).cast(),
+            size_of_u32::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(),
+            None,
+        )
+    }
+    .map_err(|e| os_error("QueryInformationJobObject", &e))?;
+    Ok(info.ActiveProcesses)
 }
 
 fn size_of_u32<T>() -> u32 {
@@ -371,20 +392,7 @@ impl ProcessSupervisor for JobObjectSupervisor {
             .groups
             .get(&group)
             .ok_or(SupervisorError::UnknownGroup(group))?;
-        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-        // SAFETY: `info` is a valid struct of the size passed alongside it and outlives the
-        // call; the job handle is valid while the group exists.
-        unsafe {
-            QueryInformationJobObject(
-                Some(entry.job.raw()),
-                JobObjectBasicAccountingInformation,
-                std::ptr::from_mut(&mut info).cast(),
-                size_of_u32::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(),
-                None,
-            )
-        }
-        .map_err(|e| os_error("QueryInformationJobObject", &e))?;
-        Ok(info.ActiveProcesses as usize)
+        Ok(active_in_job(entry.job.raw())? as usize)
     }
 
     fn kill_group(&self, group: GroupId) -> Result<(), SupervisorError> {
@@ -434,6 +442,13 @@ fn kill(state: &mut State, group: GroupId) -> Result<(), SupervisorError> {
     // SAFETY: the job handle is valid while the group exists.
     unsafe { TerminateJobObject(job, KILLED_EXIT_CODE) }
         .map_err(|e| os_error("TerminateJobObject", &e))?;
+    // Termination is asynchronous: give the processes a moment to actually go, so that their
+    // ports and files are free when this returns. Bounded, because a process stuck in the
+    // kernel can take forever and `kill_group` must not.
+    let deadline = Instant::now() + KILL_SETTLE;
+    while Instant::now() < deadline && active_in_job(job).is_ok_and(|alive| alive > 0) {
+        thread::sleep(Duration::from_millis(5));
+    }
 
     for id in &ids {
         if let Some(process) = state.processes.get_mut(id) {
@@ -820,6 +835,21 @@ mod tests {
         let text = log_after_exit(&s, a, &log, &["from-a", "from-b"]);
         assert!(eventually(10, || s.status(b).unwrap() != ProcessStatus::Running));
         assert!(text.contains("from-a") && text.contains("from-b"), "{text}");
+    }
+
+    #[test]
+    fn killing_a_group_returns_only_when_its_processes_are_gone() {
+        let marker = "127.0.0.51";
+        let s = JobObjectSupervisor::new();
+        let g = group(&s);
+        s.spawn(g, &sleeper(marker)).unwrap();
+        assert_eq!(s.active_processes(g).unwrap(), 1);
+
+        s.kill_group(g).unwrap();
+        // No waiting loop here on purpose: termination is asynchronous in Windows, and
+        // `kill_group` is what must wait for it.
+        assert_eq!(s.active_processes(g).unwrap(), 0);
+        s.close_group(g).unwrap();
     }
 
     #[test]
