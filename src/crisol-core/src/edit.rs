@@ -17,7 +17,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use tempfile::NamedTempFile;
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
 use crate::config::Config;
@@ -218,15 +217,26 @@ impl TomlEditor {
             path: self.path.clone(),
             source,
         };
-        let dir = match self.path.parent() {
+        // A symbolic link (common for dotfiles kept in another folder) must stay a link:
+        // write next to the real file and replace that one.
+        let target = if fs::symlink_metadata(&self.path).is_ok_and(|m| m.file_type().is_symlink()) {
+            fs::canonicalize(&self.path).map_err(write_err)?
+        } else {
+            self.path.clone()
+        };
+        let dir = match target.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
         fs::create_dir_all(dir).map_err(write_err)?;
-        let mut temp = NamedTempFile::new_in(dir).map_err(write_err)?;
+        // A recognisable prefix, so a temp file left by a crash is not a mystery.
+        let mut temp = tempfile::Builder::new()
+            .prefix(".crisol-edit-")
+            .tempfile_in(dir)
+            .map_err(write_err)?;
         temp.write_all(text.as_bytes()).map_err(write_err)?;
         temp.as_file().sync_all().map_err(write_err)?;
-        temp.persist(&self.path).map_err(|e| write_err(e.error))?;
+        temp.persist(&target).map_err(|e| write_err(e.error))?;
         Ok(true)
     }
 
@@ -321,6 +331,36 @@ workers = 4 # a bit of a guess
         f(&mut editor);
         assert!(editor.save().unwrap());
         fs::read_to_string(path).unwrap()
+    }
+
+    /// Saving through a symbolic link edits the real file and keeps the link. Creating links
+    /// may be forbidden (Windows without developer mode); then there is nothing to check.
+    #[test]
+    fn saving_through_a_symlink_keeps_the_link() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real.toml");
+        fs::write(&real, "php = \"8.3\"\n").unwrap();
+        let link = dir.path().join("crisol.toml");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&real, &link);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&real, &link);
+        if linked.is_err() {
+            return;
+        }
+
+        let mut editor = TomlEditor::open(&link).unwrap();
+        editor.set(&["php"], "8.4").unwrap();
+        assert!(editor.save().unwrap());
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must still be a link"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "php = \"8.4\"\n");
     }
 
     #[test]

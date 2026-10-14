@@ -91,7 +91,7 @@ pub fn find_project_file(start: &Path, ceiling: Option<&Path>) -> Option<PathBuf
         if candidate.is_file() {
             return Some(candidate);
         }
-        if ceiling.as_deref() == Some(dir) {
+        if ceiling.as_deref().is_some_and(|c| same_dir(c, dir)) {
             break;
         }
     }
@@ -123,6 +123,16 @@ pub fn load_project(
 }
 
 /// Makes `path` absolute and removes `.` and `..` components lexically.
+/// Whether two normalised directories are the same place. Windows paths ignore case
+/// (`D:\Proyectos` is `d:\proyectos`); elsewhere they do not.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
 fn normalize(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut out = PathBuf::new();
@@ -203,6 +213,16 @@ mod tests {
             ProjectConfig::parse("php = 8\n"),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_ceiling_ignores_letter_case_on_windows() {
+        let (_tmp, a, b, _c) = tree();
+        put(&a, "php = \"8.1\"\n");
+        // Same folder as `b`, spelt in upper case: the search must still stop there.
+        let shouty = PathBuf::from(b.to_string_lossy().to_uppercase());
+        assert_eq!(find_project_file(&b, Some(&shouty)), None);
     }
 
     #[test]

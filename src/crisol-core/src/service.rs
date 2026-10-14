@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use crate::ports::{PortOwner, PortProbe, PortStatus};
 use crate::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
+    SupervisorError,
 };
 
 /// Timing and restart behaviour of one service. Every field can be overridden per service.
@@ -325,6 +326,9 @@ pub struct Service {
     next_probe: Option<Instant>,
     probe: Option<Probe>,
     restart_at: Option<Instant>,
+    /// The current `Starting` is a restart by the watchdog, not a start the user asked for:
+    /// a restart that fails also counts as a crash.
+    restarting: bool,
     crashes: VecDeque<Instant>,
     stopping: Option<Stopping>,
     events: Vec<ServiceEvent>,
@@ -364,6 +368,7 @@ impl Service {
             next_probe: None,
             probe: None,
             restart_at: None,
+            restarting: false,
             crashes: VecDeque::new(),
             stopping: None,
             events: Vec::new(),
@@ -392,6 +397,7 @@ impl Service {
             ServiceState::Stopping => return Err(LifecycleError::AlreadyActive("stopping")),
         }
         self.crashes.clear();
+        self.restarting = false;
         self.launch(now);
         Ok(std::mem::take(&mut self.events))
     }
@@ -421,17 +427,21 @@ impl Service {
     // ---- start ----------------------------------------------------------------------
 
     fn launch(&mut self, now: Instant) {
-        if let Some(reason) = self.preflight() {
+        if let Err(reason) = self.try_launch(now) {
             self.fail(reason);
-            return;
         }
-        let group = match self
+    }
+
+    /// Starts every process of the service. On failure nothing is left running and the state
+    /// is untouched: the caller decides what the failure means.
+    fn try_launch(&mut self, now: Instant) -> Result<(), FailureReason> {
+        if let Some(reason) = self.preflight() {
+            return Err(reason);
+        }
+        let group = self
             .supervisor
             .create_group(&self.spec.name, GroupOptions::default())
-        {
-            Ok(group) => group,
-            Err(e) => return self.fail(FailureReason::Internal(e.to_string())),
-        };
+            .map_err(|e| FailureReason::Internal(e.to_string()))?;
         let mut processes = Vec::new();
         for spec in &self.spec.processes {
             match self.supervisor.spawn(group, spec) {
@@ -439,7 +449,7 @@ impl Service {
                 Err(e) => {
                     let _ = self.supervisor.kill_group(group);
                     let _ = self.supervisor.close_group(group);
-                    return self.fail(FailureReason::SpawnFailed {
+                    return Err(FailureReason::SpawnFailed {
                         program: spec.program.display().to_string(),
                         reason: e.to_string(),
                     });
@@ -450,6 +460,7 @@ impl Service {
         self.started = Some(now);
         self.next_probe = Some(now + self.spec.policy.probe_interval);
         self.set_state(ServiceState::Starting);
+        Ok(())
     }
 
     /// Checks that every declared port is free. Never frees anything.
@@ -471,7 +482,10 @@ impl Service {
         if let Some(at) = self.restart_at {
             if now >= at {
                 self.restart_at = None;
-                self.launch(now);
+                if let Err(reason) = self.try_launch(now) {
+                    // A restart that cannot even start is one more crash.
+                    self.on_crash(now, None, Some(reason));
+                }
             }
             return;
         }
@@ -479,7 +493,12 @@ impl Service {
             return;
         };
         if survey.alive == 0 {
-            self.fail(FailureReason::ExitedDuringStartup { code: survey.code });
+            if self.restarting {
+                self.teardown();
+                self.on_crash(now, survey.code, None);
+            } else {
+                self.fail(FailureReason::ExitedDuringStartup { code: survey.code });
+            }
             return;
         }
         if self.probe_due(now) && self.healthy(now) {
@@ -575,6 +594,13 @@ impl Service {
             return;
         }
         self.teardown();
+        self.on_crash(now, survey.code, None);
+    }
+
+    /// Counts a crash and either schedules a restart or gives up. `cause` is the specific
+    /// failure to report if this is the end of the line (a restart that could not start);
+    /// otherwise the generic reasons are used.
+    fn on_crash(&mut self, now: Instant, code: Option<i32>, cause: Option<FailureReason>) {
         self.crashes.push_back(now);
         let window = self.spec.policy.crash_window;
         while self
@@ -587,17 +613,15 @@ impl Service {
         let crashes = u32::try_from(self.crashes.len()).unwrap_or(u32::MAX);
 
         if !self.spec.policy.auto_restart {
-            self.set_state(ServiceState::Failed(FailureReason::Crashed {
-                code: survey.code,
-            }));
+            let reason = cause.unwrap_or(FailureReason::Crashed { code });
+            self.set_state(ServiceState::Failed(reason));
         } else if crashes >= self.spec.policy.max_crashes {
-            self.set_state(ServiceState::Failed(FailureReason::TooManyCrashes {
-                crashes,
-                window,
-            }));
+            let reason = cause.unwrap_or(FailureReason::TooManyCrashes { crashes, window });
+            self.set_state(ServiceState::Failed(reason));
         } else {
             let delay = self.spec.policy.restart_delay;
             self.restart_at = Some(now + delay);
+            self.restarting = true;
             self.events
                 .push(ServiceEvent::Restarting { crashes, delay });
             self.set_state(ServiceState::Starting);
@@ -647,7 +671,14 @@ impl Service {
             self.finish_stop();
             return;
         };
-        let remaining = self.supervisor.active_processes(group).unwrap_or(0);
+        // A group the supervisor no longer knows has nothing alive. Any other error means we
+        // cannot tell, which is not the same as "stopped": keep waiting, and if it never
+        // answers, say so instead of claiming success.
+        let (remaining, unknown) = match self.supervisor.active_processes(group) {
+            Ok(n) => (n, None),
+            Err(SupervisorError::UnknownGroup(_)) => (0, None),
+            Err(e) => (1, Some(e.to_string())),
+        };
         if remaining == 0 {
             self.finish_stop();
             return;
@@ -665,9 +696,13 @@ impl Service {
             }
             Some(at) if now.saturating_duration_since(at) >= self.spec.policy.kill_wait => {
                 self.teardown();
-                self.set_state(ServiceState::Failed(FailureReason::CouldNotStop {
-                    remaining,
-                }));
+                let reason = match unknown {
+                    Some(why) => FailureReason::Internal(format!(
+                        "cannot tell whether the service stopped: {why}"
+                    )),
+                    None => FailureReason::CouldNotStop { remaining },
+                };
+                self.set_state(ServiceState::Failed(reason));
             }
             _ => {}
         }
@@ -726,6 +761,9 @@ impl Service {
     }
 
     fn set_state(&mut self, to: ServiceState) {
+        if to != ServiceState::Starting {
+            self.restarting = false;
+        }
         if self.state != to {
             let from = std::mem::replace(&mut self.state, to.clone());
             self.events.push(ServiceEvent::StateChanged { from, to });

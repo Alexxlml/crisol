@@ -505,6 +505,105 @@ fn a_service_that_keeps_crashing_is_given_up_on() {
 }
 
 #[test]
+fn a_restart_that_dies_before_it_is_healthy_counts_as_a_crash() {
+    let mut rig = Rig::new(nginx());
+    let mut now = rig.run(0);
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let process = *rig.service_processes().last().unwrap();
+        rig.supervisor.exit(process, 1).unwrap();
+        rig.unlisten(HTTP);
+        now += 1000;
+        seen.extend(rig.tick(now)); // crash, or a restart that died
+        now += 1500;
+        rig.tick(now); // relaunch; the new process never listens
+    }
+    let restarts: Vec<u32> = seen
+        .iter()
+        .filter_map(|e| match e {
+            ServiceEvent::Restarting { crashes, .. } => Some(*crashes),
+            ServiceEvent::StateChanged { .. } => None,
+        })
+        .collect();
+    assert_eq!(restarts, [1, 2], "the failed restart was counted");
+    assert_eq!(rig.state(), ServiceState::Starting);
+
+    // The third relaunch dies too: the watchdog gives up instead of looping forever.
+    let process = *rig.service_processes().last().unwrap();
+    rig.supervisor.exit(process, 1).unwrap();
+    rig.tick(now + 500);
+    assert!(
+        matches!(
+            rig.state(),
+            ServiceState::Failed(FailureReason::TooManyCrashes { crashes: 3, .. })
+        ),
+        "{:?}",
+        rig.state()
+    );
+    assert_eq!(rig.supervisor.group_count(), 0);
+}
+
+#[test]
+fn a_restart_that_cannot_spawn_is_retried_and_counted() {
+    let mut rig = Rig::new(nginx());
+    let now = rig.run(0);
+    let process = rig.service_processes()[0];
+    rig.supervisor.exit(process, 1).unwrap();
+    rig.unlisten(HTTP);
+    rig.tick(now + 1000); // crash 1, restart scheduled
+
+    rig.supervisor
+        .fail_next_spawn(SupervisorError::Os("still locked".to_owned()));
+    let events = rig.tick(now + 2500); // the relaunch fails
+    assert!(events.contains(&ServiceEvent::Restarting {
+        crashes: 2,
+        delay: Duration::from_millis(1500)
+    }));
+    assert_eq!(rig.state(), ServiceState::Starting);
+
+    rig.tick(now + 4000); // the next relaunch works
+    rig.listen(HTTP);
+    rig.tick(now + 4500);
+    assert_eq!(rig.state(), ServiceState::Running);
+}
+
+#[test]
+fn a_user_start_that_dies_is_still_not_retried() {
+    let mut rig = Rig::new(nginx());
+    rig.start(0);
+    let process = rig.service_processes()[0];
+    rig.supervisor.exit(process, 3).unwrap();
+    rig.tick(500);
+    assert_eq!(
+        rig.state(),
+        ServiceState::Failed(FailureReason::ExitedDuringStartup { code: Some(3) })
+    );
+}
+
+#[test]
+fn a_group_that_cannot_be_queried_is_not_reported_as_stopped() {
+    let mut rig = Rig::new(nginx());
+    let now = rig.run(0);
+    rig.stop(now);
+    rig.supervisor.fail_active_query(true);
+    rig.tick(now + 1000);
+    assert_eq!(rig.state(), ServiceState::Stopping, "we do not know yet");
+
+    rig.tick(now + 10_000); // the grace period is over: the group is killed
+    rig.tick(now + 20_000); // and the kill wait is over too
+    match rig.state() {
+        ServiceState::Failed(FailureReason::Internal(why)) => {
+            assert!(
+                why.contains("cannot tell whether the service stopped"),
+                "{why}"
+            );
+        }
+        other => panic!("expected an internal failure, got {other:?}"),
+    }
+    assert_eq!(rig.supervisor.group_count(), 0, "everything was cleaned up");
+}
+
+#[test]
 fn crashes_older_than_the_window_are_forgotten() {
     let mut rig = Rig::new(nginx());
     let mut now = rig.run(0);

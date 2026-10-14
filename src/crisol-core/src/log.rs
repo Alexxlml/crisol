@@ -56,6 +56,9 @@ pub struct RotatingLog {
     rotation: LogRotation,
     file: File,
     size: u64,
+    /// After a failed rotation, the size from which the next attempt is made, so a file that
+    /// cannot be moved is not retried (and its history shuffled) on every single write.
+    retry_at: u64,
 }
 
 impl RotatingLog {
@@ -79,6 +82,7 @@ impl RotatingLog {
             rotation,
             file,
             size,
+            retry_at: 0,
         })
     }
 
@@ -93,9 +97,15 @@ impl RotatingLog {
     /// fresh file.
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         let incoming = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if self.size > 0 && self.size.saturating_add(incoming) > self.rotation.max_bytes {
-            // Best effort: on failure keep appending rather than lose the data.
-            let _ = self.rotate();
+        if self.size > 0
+            && self.size.saturating_add(incoming) > self.rotation.max_bytes
+            && self.size >= self.retry_at
+            && self.rotate().is_err()
+        {
+            // Keep appending rather than lose data, and wait for some more before trying again.
+            self.retry_at = self
+                .size
+                .saturating_add((self.rotation.max_bytes / 4).max(1));
         }
         self.file.write_all(bytes)?;
         self.size += incoming;
@@ -133,14 +143,31 @@ impl RotatingLog {
     fn shift(&self, keep: u32) -> io::Result<()> {
         // Renaming the open file is fine: `std` opens files with `FILE_SHARE_DELETE` on
         // Windows. The caller swaps in a new handle right after.
+        //
+        // The current file is moved aside **first**: if some other program prevents that, the
+        // numbered history has not been touched yet and nothing is lost.
+        let parked = {
+            let mut name = self.path.as_os_str().to_owned();
+            name.push(".rotating");
+            PathBuf::from(name)
+        };
+        fs::rename(&self.path, &parked)?;
+
         let _ = fs::remove_file(numbered(&self.path, keep));
-        for i in (1..keep).rev() {
+        let shifted = (1..keep).rev().try_for_each(|i| {
             let from = numbered(&self.path, i);
             if from.exists() {
-                fs::rename(&from, numbered(&self.path, i + 1))?;
+                fs::rename(&from, numbered(&self.path, i + 1))
+            } else {
+                Ok(())
             }
+        });
+        let finished = shifted.and_then(|()| fs::rename(&parked, numbered(&self.path, 1)));
+        if finished.is_err() {
+            // Put the current file back where it was; the log goes on as if nothing happened.
+            let _ = fs::rename(&parked, &self.path);
         }
-        fs::rename(&self.path, numbered(&self.path, 1))
+        finished
     }
 }
 
@@ -343,6 +370,43 @@ mod tests {
         log.write(b"BBBB").unwrap();
         log.write(b"CCCC").unwrap();
         assert_eq!(text(&path), "AAAABBBBCCCC", "no data may be lost");
+    }
+
+    /// Another program holding the log open without `FILE_SHARE_DELETE` (a log viewer, a
+    /// scanner) makes the current file impossible to move. The rotated history must survive
+    /// any number of failed attempts. Windows-only because only Windows can refuse a rename
+    /// this way; the test touches nothing outside its temp folder.
+    #[cfg(windows)]
+    #[test]
+    fn a_log_that_cannot_be_moved_keeps_its_whole_history() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("runtime.log");
+        fs::write(numbered(&path, 1), "one").unwrap();
+        fs::write(numbered(&path, 2), "two").unwrap();
+        fs::write(numbered(&path, 3), "three").unwrap();
+
+        let mut log = RotatingLog::open(&path, rotation(8, 3)).unwrap();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE, no DELETE
+            .open(&path)
+            .unwrap();
+        for _ in 0..20 {
+            log.write(b"XXXXXX").unwrap();
+        }
+        assert_eq!(text(&numbered(&path, 1)), "one");
+        assert_eq!(text(&numbered(&path, 2)), "two");
+        assert_eq!(text(&numbered(&path, 3)), "three");
+        assert_eq!(text(&path), "XXXXXX".repeat(20), "and nothing is dropped");
+
+        // Once the blocker is gone, rotation resumes on its own.
+        drop(blocker);
+        for _ in 0..20 {
+            log.write(b"YYYYYY").unwrap();
+        }
+        assert_ne!(text(&numbered(&path, 1)), "one");
     }
 
     #[test]

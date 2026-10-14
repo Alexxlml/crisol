@@ -64,6 +64,8 @@ struct State {
     unkillable: Vec<GroupId>,
     /// A spawn failure still to happen: (spawns that succeed first, the error).
     fail_spawn: Option<(usize, SupervisorError)>,
+    /// `active_processes` answers with an error instead of a count.
+    active_query_fails: bool,
 }
 
 /// Scriptable fake of [`ProcessSupervisor`].
@@ -103,6 +105,11 @@ impl FakeSupervisor {
     /// Lets `successes` more spawns succeed, then makes the one after them fail with `error`.
     pub fn fail_spawn_after(&self, successes: usize, error: SupervisorError) {
         self.state().fail_spawn = Some((successes, error));
+    }
+
+    /// Makes `active_processes` fail (or work again), like a job that cannot be queried.
+    pub fn fail_active_query(&self, fails: bool) {
+        self.state().active_query_fails = fails;
     }
 
     /// Simulates the process exiting on its own with `code`. Ignored if it already ended.
@@ -255,6 +262,9 @@ impl ProcessSupervisor for FakeSupervisor {
 
     fn active_processes(&self, group: GroupId) -> Result<usize, SupervisorError> {
         let state = self.state();
+        if state.active_query_fails {
+            return Err(SupervisorError::Os("cannot query the group".to_owned()));
+        }
         let entry = state
             .groups
             .get(&group)

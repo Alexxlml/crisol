@@ -23,10 +23,11 @@
 //!
 //! Trust (ADR-0005):
 //! - The catalog built into the binary ([`Catalog::embedded`]) needs no signature.
-//! - A catalog from anywhere else must carry a minisign signature that verifies with the
-//!   project's public key ([`Catalog::parse_signed`]), and its `serial` must not be lower
-//!   than the one in use ([`Catalog::check_not_older_than`]), so an old, validly signed
-//!   catalog cannot be replayed to bring back a vulnerable version.
+//! - A catalog from anywhere else goes through [`Catalog::load_update`], the **only** public
+//!   way to read one: it checks the minisign signature against the project's public key, and
+//!   that the `serial` is not lower than the highest one seen, so an old, validly signed
+//!   catalog cannot be replayed to bring back a vulnerable version. Parsing without those
+//!   checks is private to the crate, so forgetting one is not possible from outside.
 //! - Every download is later checked against the `sha256` here (F3.3).
 //!
 //! Parsing is strict about things that decide what gets downloaded and where it is unpacked:
@@ -266,9 +267,42 @@ impl Catalog {
         Self::parse(EMBEDDED_CATALOG)
     }
 
+    /// Reads a catalog that came from outside the binary (a download, a file): verifies its
+    /// signature with the project's key, parses it, and refuses it if its `serial` is lower
+    /// than `highest_serial_seen`. Pass the higher of the built-in catalog's serial and the
+    /// highest serial ever accepted, so that neither an old download nor an old binary can
+    /// bring back a version that was withdrawn.
+    ///
+    /// Fails with [`CatalogError::NoTrustedKey`] while no public key is configured.
+    pub fn load_update(
+        text: &str,
+        signature: &str,
+        highest_serial_seen: u64,
+    ) -> Result<Self, CatalogError> {
+        Self::load_update_with(text, signature, CATALOG_PUBLIC_KEY, highest_serial_seen)
+    }
+
+    /// [`Catalog::load_update`] with the trusted key passed in, so the "no key" case and a
+    /// test key can be exercised.
+    fn load_update_with(
+        text: &str,
+        signature: &str,
+        trusted_key: Option<&str>,
+        highest_serial_seen: u64,
+    ) -> Result<Self, CatalogError> {
+        let catalog = Self::parse_signed_with(text, signature, trusted_key)?;
+        if catalog.serial < highest_serial_seen {
+            return Err(CatalogError::Rollback {
+                offered: catalog.serial,
+                current: highest_serial_seen,
+            });
+        }
+        Ok(catalog)
+    }
+
     /// Parses and validates catalog text. Does **not** check any signature: use it for text
-    /// that is already trusted (the built-in catalog); see [`Catalog::parse_signed`].
-    pub fn parse(text: &str) -> Result<Self, CatalogError> {
+    /// that is already trusted (the built-in catalog); see [`Catalog::load_update`].
+    pub(crate) fn parse(text: &str) -> Result<Self, CatalogError> {
         let (raw, warnings): (RawCatalog, _) = deserialize_reporting_unknown(text)?;
         if raw.schema != SUPPORTED_SCHEMA {
             return Err(CatalogError::UnsupportedSchema(raw.schema));
@@ -297,7 +331,7 @@ impl Catalog {
     ///
     /// `public_key` is the contents of a minisign `.pub` file or its bare base64 line;
     /// `signature` is the contents of the `.minisig` file.
-    pub fn parse_signed(
+    pub(crate) fn parse_signed(
         text: &str,
         signature: &str,
         public_key: &str,
@@ -306,14 +340,8 @@ impl Catalog {
         Self::parse(text)
     }
 
-    /// Like [`Catalog::parse_signed`] with the project's built-in public key. Fails with
-    /// [`CatalogError::NoTrustedKey`] while none is configured.
-    pub fn parse_signed_trusted(text: &str, signature: &str) -> Result<Self, CatalogError> {
-        Self::parse_signed_with(text, signature, CATALOG_PUBLIC_KEY)
-    }
-
-    /// [`Catalog::parse_signed_trusted`] with the trusted key passed in, so the "no key"
-    /// case can be exercised.
+    /// Verifies with `trusted_key`; with none configured fails with
+    /// [`CatalogError::NoTrustedKey`].
     fn parse_signed_with(
         text: &str,
         signature: &str,
@@ -321,17 +349,6 @@ impl Catalog {
     ) -> Result<Self, CatalogError> {
         let key = trusted_key.ok_or(CatalogError::NoTrustedKey)?;
         Self::parse_signed(text, signature, key)
-    }
-
-    /// Refuses a catalog whose serial is lower than `current`'s (a replay of an old one).
-    pub fn check_not_older_than(&self, current: &Catalog) -> Result<(), CatalogError> {
-        if self.serial < current.serial {
-            return Err(CatalogError::Rollback {
-                offered: self.serial,
-                current: current.serial,
-            });
-        }
-        Ok(())
     }
 
     /// Increases with every published catalog.

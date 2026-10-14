@@ -509,40 +509,46 @@ fn the_project_public_key_is_a_valid_minisign_key() {
 #[test]
 fn a_catalog_signed_by_any_other_key_is_not_trusted() {
     // The fixture is signed by a disposable key, not by the project key.
-    let err = Catalog::parse_signed_trusted(SIGNED_CATALOG, SIGNATURE).unwrap_err();
+    let err = Catalog::load_update(SIGNED_CATALOG, SIGNATURE, 0).unwrap_err();
     assert!(matches!(err, CatalogError::Signature(_)), "{err}");
 }
 
 #[test]
-fn an_older_catalog_cannot_replace_a_newer_one() {
-    let current = Catalog::parse("schema = 1\nserial = 5\n").unwrap();
-    let older = Catalog::parse("schema = 1\nserial = 4\n").unwrap();
-    let same = Catalog::parse("schema = 1\nserial = 5\n").unwrap();
-    let newer = Catalog::parse("schema = 1\nserial = 6\n").unwrap();
+fn load_update_is_the_door_for_outside_catalogs_and_checks_signature_and_serial() {
+    // The test catalog is correctly signed by the test key; its serial is whatever it says.
+    let serial = Catalog::parse_signed(SIGNED_CATALOG, SIGNATURE, PUBLIC_KEY)
+        .unwrap()
+        .serial();
 
-    let err = older.check_not_older_than(&current).unwrap_err();
+    let accepted = Catalog::load_update_with(SIGNED_CATALOG, SIGNATURE, Some(PUBLIC_KEY), serial);
+    assert!(accepted.is_ok(), "same serial as the highest seen is fine");
+
+    let replay = Catalog::load_update_with(SIGNED_CATALOG, SIGNATURE, Some(PUBLIC_KEY), serial + 1)
+        .unwrap_err();
     assert!(
-        matches!(
-            err,
-            CatalogError::Rollback {
-                offered: 4,
-                current: 5
-            }
-        ),
-        "{err}"
+        matches!(replay, CatalogError::Rollback { offered, current } if offered == serial && current == serial + 1),
+        "{replay}"
     );
     assert_eq!(
-        err.to_string(),
-        "catalog serial 4 is older than the one in use (5)"
+        replay.to_string(),
+        format!(
+            "catalog serial {serial} is older than the one in use ({})",
+            serial + 1
+        )
     );
-    assert!(same.check_not_older_than(&current).is_ok());
-    assert!(newer.check_not_older_than(&current).is_ok());
 
     // And the signed fixture is newer than the built-in catalog.
-    let signed = Catalog::parse_signed(SIGNED_CATALOG, SIGNATURE, PUBLIC_KEY).unwrap();
-    assert!(signed
-        .check_not_older_than(&Catalog::embedded().unwrap())
-        .is_ok());
+    let embedded = Catalog::embedded().unwrap().serial();
+    assert!(
+        Catalog::load_update_with(SIGNED_CATALOG, SIGNATURE, Some(PUBLIC_KEY), embedded).is_ok()
+    );
+
+    let tampered = SIGNED_CATALOG.replace("serial", "serial ");
+    let forged = Catalog::load_update_with(&tampered, SIGNATURE, Some(PUBLIC_KEY), 0);
+    assert!(matches!(forged, Err(CatalogError::Signature(_))));
+
+    let no_key = Catalog::load_update_with(SIGNED_CATALOG, SIGNATURE, None, 0);
+    assert!(matches!(no_key, Err(CatalogError::NoTrustedKey)));
 }
 
 // ---- the contents of the built-in catalog (F3.2) --------------------------------
