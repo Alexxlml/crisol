@@ -150,7 +150,7 @@ fn resume_process(pid: u32) -> Result<(), SupervisorError> {
     };
     let mut resumed = 0_u32;
     // SAFETY: `entry.dwSize` is set and `entry` outlives the call.
-    let mut more = unsafe { Thread32First(snapshot_handle, &mut entry) }.is_ok();
+    let mut more = unsafe { Thread32First(snapshot_handle, &raw mut entry) }.is_ok();
     while more {
         if entry.th32OwnerProcessID == pid {
             // SAFETY: plain call; the handle is owned right below.
@@ -168,7 +168,7 @@ fn resume_process(pid: u32) -> Result<(), SupervisorError> {
             resumed += 1;
         }
         // SAFETY: same as for `Thread32First`.
-        more = unsafe { Thread32Next(snapshot_handle, &mut entry) }.is_ok();
+        more = unsafe { Thread32Next(snapshot_handle, &raw mut entry) }.is_ok();
     }
     if resumed == 0 {
         return Err(SupervisorError::Os(format!(

@@ -96,6 +96,8 @@ Defaults normales (80/443, 3306, 5432…). Si el puerto está ocupado, Crisol **
 
 Un **manifiesto** (`catalog.toml`, incluido en el binario y actualizable) lista por servicio y versión: URL oficial, SHA-256, formato de archivo y ruta del ejecutable dentro. Se descarga, se verifica el hash y se extrae en `bin/`. Si un proveedor oficial no publica hash, el manifiesto lo fija tras verificarlo manualmente.
 
+El instalador (`crisol-core::install`) sigue siempre este orden: descarga a una carpeta de trabajo `bin/.staging-*` (mismo disco) calculando el SHA-256 al vuelo; **verifica el hash antes de extraer nada**; extrae rechazando rutas que salgan de la carpeta, enlaces simbólicos, nombres reservados de Windows y bombas ZIP; comprueba que exista el ejecutable declarado; y mueve el resultado a `bin/<servicio>/<versión>/` con un solo renombrado. Ante cualquier fallo o cancelación la carpeta de trabajo se borra: `bin/` solo contiene instalaciones completas. La descarga va detrás del trait `Fetch` (HTTPS con `ureq` y `rustls`), así todo se prueba sin red.
+
 ## Crates sugeridos (verificar versiones actuales antes de agregar)
 
 `tokio`, `serde`, `toml`, `toml_edit`, `clap`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `reqwest` (rustls), `sha2`, `zip`, `semver`, `interprocess`, `windows` (Job Objects, PATH, certificados), `rcgen` (CA y certificados), `hickory-server` (DNS local), `tempfile` (pruebas), `insta` (snapshots de configs generadas).

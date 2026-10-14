@@ -3,6 +3,8 @@
 pub mod catalog;
 pub mod config;
 pub mod edit;
+pub mod fetch;
+pub mod install;
 pub mod log;
 pub mod paths;
 pub mod ports;

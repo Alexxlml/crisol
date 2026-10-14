@@ -65,9 +65,18 @@ Para añadir una versión nueva o actualizar una existente:
 4. Comprobar el contenido del ZIP (solo los nombres): carpeta raíz y ejecutable.
 5. Añadir el `[[package]]` a `src/crisol-core/data/catalog.toml` y **subir `serial`**.
 6. Ejecutar `cargo test -p crisol-core catalog`: valida el formato, los hosts oficiales y las carpetas `root`.
-7. Anotar aquí la versión, la fecha y el resultado.
+7. Comprobar que el archivo **real** se instala con las validaciones estrictas del instalador (rutas, nombres reservados de Windows, enlaces simbólicos). Con los archivos descargados en la carpeta del paso 2:
+
+   ```bash
+   CRISOL_TEST_DOWNLOADS=<carpeta> cargo test -p crisol-core real_provider -- --ignored --nocapture
+   ```
+
+   Instala cada entrada del catálogo en un `CRISOL_HOME` temporal. Con `cargo test -p crisol-core real_network -- --ignored` se prueba además la descarga real por HTTPS (Composer, 3,6 MB).
+8. Anotar aquí la versión, la fecha y el resultado.
 
 Para PHP usar siempre la URL de `archives/`.
+
+**Resultado de la instalación de prueba (2026-10-14):** las 9 entradas se instalan completas con el instalador real: Composer (1 archivo), Nginx (31–32), Node 22 (2 032), Node 24 (1 994) y PHP (78–82).
 
 ## Pendiente
 
