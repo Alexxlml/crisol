@@ -11,10 +11,9 @@ thiserror.workspace = true
 serde.workspace = true
 toml.workspace = true
 serde_ignored.workspace = true
-crisol-protocol.workspace = true
-
-[dev-dependencies]
+toml_edit.workspace = true
 tempfile.workspace = true
+crisol-protocol.workspace = true
 
 [lints]
 workspace = true

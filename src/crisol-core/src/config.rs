@@ -313,6 +313,8 @@ pub struct LoadedConfig {
 impl Config {
     /// Parses `crisol.toml` text. Empty text yields the defaults.
     pub fn parse(text: &str) -> Result<LoadedConfig, ConfigError> {
+        // Windows editors may save UTF-8 with a byte-order mark; TOML itself has none.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let deserializer = toml::de::Deserializer::parse(text)?;
         let mut unknown = Vec::new();
         let config: Config =
