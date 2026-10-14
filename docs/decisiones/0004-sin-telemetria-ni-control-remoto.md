@@ -1,6 +1,6 @@
 # ADR-0004 — Sin telemetría ni control remoto
 
-- **Estado:** propuesta (pendiente de aprobación del usuario)
+- **Estado:** aceptada (aprobada por el usuario el 2026-10-14)
 - **Fecha:** 2026-10-13
 
 ## Contexto

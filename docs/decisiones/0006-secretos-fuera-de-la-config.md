@@ -1,6 +1,6 @@
 # ADR-0006 — Secretos fuera de los archivos de configuración
 
-- **Estado:** propuesta (pendiente de aprobación del usuario)
+- **Estado:** aceptada (aprobada por el usuario el 2026-10-14)
 - **Fecha:** 2026-10-13
 
 ## Contexto

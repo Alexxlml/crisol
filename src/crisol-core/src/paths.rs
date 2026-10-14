@@ -1,0 +1,384 @@
+//! Where everything lives under `CRISOL_HOME`.
+//!
+//! Every path handed out by [`CrisolPaths`] is built with [`Path::join`] from a validated
+//! component; nothing is ever assembled by concatenating strings. The default home is
+//! platform specific, so it is supplied by the caller (see `crisol-platform`).
+
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Environment variable that overrides the Crisol home directory.
+pub const HOME_ENV_VAR: &str = "CRISOL_HOME";
+
+/// File names and directory names inside `CRISOL_HOME`.
+mod names {
+    pub const CONFIG_FILE: &str = "crisol.toml";
+    pub const SITES_FILE: &str = "sites.toml";
+    pub const STATE: &str = "state";
+    pub const BIN: &str = "bin";
+    pub const ETC: &str = "etc";
+    pub const OVERRIDES: &str = "overrides";
+    pub const DATA: &str = "data";
+    pub const LOGS: &str = "logs";
+    pub const CERTS: &str = "certs";
+    pub const SHIMS: &str = "shims";
+    pub const WWW: &str = "www";
+}
+
+/// Errors produced while resolving or preparing the directory layout.
+#[derive(Debug, thiserror::Error)]
+pub enum PathsError {
+    /// `CRISOL_HOME` (or the default) is not an absolute path.
+    #[error("the Crisol home must be an absolute path, got `{}`", .0.display())]
+    NotAbsolute(PathBuf),
+    /// No `CRISOL_HOME` was set and the platform could not provide a default.
+    #[error("CRISOL_HOME is not set and no default home directory is available")]
+    NoHome,
+    /// A service name, version or other path component is not allowed.
+    #[error("invalid path component `{0}`: use letters, digits, `.`, `_`, `-` or `+`")]
+    InvalidComponent(String),
+    /// A directory could not be created.
+    #[error("cannot create `{}`: {source}", path.display())]
+    Create {
+        /// Directory that could not be created.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+}
+
+/// Resolved locations inside a Crisol home directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrisolPaths {
+    home: PathBuf,
+}
+
+impl CrisolPaths {
+    /// Uses `home` as the Crisol home. It must be absolute.
+    pub fn new(home: impl Into<PathBuf>) -> Result<Self, PathsError> {
+        let home = home.into();
+        if !home.is_absolute() {
+            return Err(PathsError::NotAbsolute(home));
+        }
+        Ok(Self { home })
+    }
+
+    /// Resolves the home from the value of `CRISOL_HOME`, falling back to `default_home`.
+    ///
+    /// An unset or empty `env_home` counts as "not set". The environment is read by the
+    /// caller, which keeps this function pure and testable.
+    pub fn resolve(
+        env_home: Option<OsString>,
+        default_home: impl FnOnce() -> Option<PathBuf>,
+    ) -> Result<Self, PathsError> {
+        match env_home.filter(|value| !value.is_empty()) {
+            Some(value) => Self::new(PathBuf::from(value)),
+            None => Self::new(default_home().ok_or(PathsError::NoHome)?),
+        }
+    }
+
+    /// Reads `CRISOL_HOME` from the process environment and falls back to `default_home`.
+    pub fn from_env(default_home: impl FnOnce() -> Option<PathBuf>) -> Result<Self, PathsError> {
+        Self::resolve(std::env::var_os(HOME_ENV_VAR), default_home)
+    }
+
+    /// The Crisol home directory.
+    #[must_use]
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// Global user configuration: `crisol.toml`. Owned by the user.
+    #[must_use]
+    pub fn config_file(&self) -> PathBuf {
+        self.home.join(names::CONFIG_FILE)
+    }
+
+    /// Linked and parked sites: `sites.toml`. Edited only through commands.
+    #[must_use]
+    pub fn sites_file(&self) -> PathBuf {
+        self.home.join(names::SITES_FILE)
+    }
+
+    /// Internal state (PIDs, active versions, cache). Safe to delete.
+    #[must_use]
+    pub fn state_dir(&self) -> PathBuf {
+        self.home.join(names::STATE)
+    }
+
+    /// Downloaded binaries, untouched: `bin/`.
+    #[must_use]
+    pub fn bin_dir(&self) -> PathBuf {
+        self.home.join(names::BIN)
+    }
+
+    /// Binaries of one installed version: `bin/<service>/<version>/`.
+    pub fn bin_for(&self, service: &str, version: &str) -> Result<PathBuf, PathsError> {
+        Ok(self
+            .bin_dir()
+            .join(component(service)?)
+            .join(component(version)?))
+    }
+
+    /// Generated configuration root: `etc/`. Derived; regenerated, never edited by hand.
+    #[must_use]
+    pub fn etc_dir(&self) -> PathBuf {
+        self.home.join(names::ETC)
+    }
+
+    /// Generated configuration of one service: `etc/<service>/`.
+    pub fn etc_for(&self, service: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.etc_dir().join(component(service)?))
+    }
+
+    /// User fragments included by the generated configuration: `etc/<service>/overrides/`.
+    pub fn overrides_for(&self, service: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.etc_for(service)?.join(names::OVERRIDES))
+    }
+
+    /// Database and service data root: `data/`.
+    #[must_use]
+    pub fn data_dir(&self) -> PathBuf {
+        self.home.join(names::DATA)
+    }
+
+    /// Data of one service, split by major version: `data/<service>/<major>/`.
+    pub fn data_for(&self, service: &str, major: &str) -> Result<PathBuf, PathsError> {
+        Ok(self
+            .data_dir()
+            .join(component(service)?)
+            .join(component(major)?))
+    }
+
+    /// Logs root: `logs/`.
+    #[must_use]
+    pub fn logs_dir(&self) -> PathBuf {
+        self.home.join(names::LOGS)
+    }
+
+    /// Logs of one service: `logs/<service>/`.
+    pub fn logs_for(&self, service: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.logs_dir().join(component(service)?))
+    }
+
+    /// Local CA and per-site certificates: `certs/`.
+    #[must_use]
+    pub fn certs_dir(&self) -> PathBuf {
+        self.home.join(names::CERTS)
+    }
+
+    /// The only directory that enters the user `PATH`: `shims/`.
+    #[must_use]
+    pub fn shims_dir(&self) -> PathBuf {
+        self.home.join(names::SHIMS)
+    }
+
+    /// Default parked directory: `www/`.
+    #[must_use]
+    pub fn www_dir(&self) -> PathBuf {
+        self.home.join(names::WWW)
+    }
+
+    /// Creates the home and every top-level directory that is missing.
+    ///
+    /// Existing directories and files are left alone, and the user files (`crisol.toml`,
+    /// `sites.toml`) are never created or touched. Per-service directories are created on
+    /// demand by the code that needs them.
+    pub fn ensure_layout(&self) -> Result<(), PathsError> {
+        let dirs = [
+            self.home.clone(),
+            self.state_dir(),
+            self.bin_dir(),
+            self.etc_dir(),
+            self.data_dir(),
+            self.logs_dir(),
+            self.certs_dir(),
+            self.shims_dir(),
+            self.www_dir(),
+        ];
+        for path in dirs {
+            fs::create_dir_all(&path).map_err(|source| PathsError::Create { path, source })?;
+        }
+        Ok(())
+    }
+}
+
+/// Accepts a single path component made of safe characters.
+///
+/// This blocks separators, drive prefixes (`C:`), and `.`/`..`, so a service name or
+/// version can never point outside the directory it is joined to.
+fn component(value: &str) -> Result<&str, PathsError> {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+');
+    let valid = !value.is_empty() && value != "." && value != ".." && value.chars().all(allowed);
+    if valid {
+        Ok(value)
+    } else {
+        Err(PathsError::InvalidComponent(value.to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn paths_in(dir: &TempDir) -> CrisolPaths {
+        CrisolPaths::new(dir.path().join("home")).expect("temp dirs are absolute")
+    }
+
+    #[test]
+    fn env_value_wins_over_default() {
+        let dir = TempDir::new().unwrap();
+        let from_env = dir.path().join("env");
+        let paths = CrisolPaths::resolve(Some(from_env.clone().into()), || {
+            panic!("default must not be evaluated when the env var is set")
+        })
+        .unwrap();
+        assert_eq!(paths.home(), from_env);
+    }
+
+    #[test]
+    fn missing_or_empty_env_uses_default() {
+        let dir = TempDir::new().unwrap();
+        let default = dir.path().join("default");
+        for env in [None, Some(OsString::new())] {
+            let paths = CrisolPaths::resolve(env, || Some(default.clone())).unwrap();
+            assert_eq!(paths.home(), default);
+        }
+    }
+
+    #[test]
+    fn no_env_and_no_default_is_an_error() {
+        let err = CrisolPaths::resolve(None, || None).unwrap_err();
+        assert!(matches!(err, PathsError::NoHome));
+    }
+
+    #[test]
+    fn relative_home_is_rejected() {
+        let err = CrisolPaths::new("relative/crisol").unwrap_err();
+        assert!(matches!(err, PathsError::NotAbsolute(_)));
+        let err = CrisolPaths::resolve(Some("relative".into()), || None).unwrap_err();
+        assert!(matches!(err, PathsError::NotAbsolute(_)));
+    }
+
+    #[test]
+    fn fixed_locations_match_the_architecture() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        let home = paths.home().to_path_buf();
+        assert_eq!(paths.config_file(), home.join("crisol.toml"));
+        assert_eq!(paths.sites_file(), home.join("sites.toml"));
+        assert_eq!(paths.state_dir(), home.join("state"));
+        assert_eq!(paths.bin_dir(), home.join("bin"));
+        assert_eq!(paths.etc_dir(), home.join("etc"));
+        assert_eq!(paths.data_dir(), home.join("data"));
+        assert_eq!(paths.logs_dir(), home.join("logs"));
+        assert_eq!(paths.certs_dir(), home.join("certs"));
+        assert_eq!(paths.shims_dir(), home.join("shims"));
+        assert_eq!(paths.www_dir(), home.join("www"));
+    }
+
+    #[test]
+    fn per_service_locations_nest_correctly() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        let home = paths.home().to_path_buf();
+        assert_eq!(
+            paths.bin_for("php", "8.3.12").unwrap(),
+            home.join("bin").join("php").join("8.3.12")
+        );
+        assert_eq!(
+            paths.etc_for("nginx").unwrap(),
+            home.join("etc").join("nginx")
+        );
+        assert_eq!(
+            paths.overrides_for("nginx").unwrap(),
+            home.join("etc").join("nginx").join("overrides")
+        );
+        assert_eq!(
+            paths.data_for("mysql", "8.4").unwrap(),
+            home.join("data").join("mysql").join("8.4")
+        );
+        assert_eq!(
+            paths.logs_for("redis").unwrap(),
+            home.join("logs").join("redis")
+        );
+    }
+
+    #[test]
+    fn components_cannot_escape_their_directory() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        for bad in [
+            "", ".", "..", "../etc", "a/b", "a\\b", "C:", "C:\\x", "/abs", "a b", "é",
+        ] {
+            assert!(
+                matches!(paths.etc_for(bad), Err(PathsError::InvalidComponent(_))),
+                "`{bad}` must be rejected"
+            );
+            assert!(
+                paths.bin_for("php", bad).is_err(),
+                "`{bad}` must be rejected as version"
+            );
+        }
+        for good in [
+            "php",
+            "node-22",
+            "8.3.12",
+            "8.4.0-rc1",
+            "1.2+build.5",
+            "mysql_8",
+        ] {
+            assert!(paths.etc_for(good).is_ok(), "`{good}` must be accepted");
+        }
+    }
+
+    #[test]
+    fn ensure_layout_creates_the_structure() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        assert!(!paths.home().exists());
+        paths.ensure_layout().unwrap();
+        for sub in [
+            paths.state_dir(),
+            paths.bin_dir(),
+            paths.etc_dir(),
+            paths.data_dir(),
+            paths.logs_dir(),
+            paths.certs_dir(),
+            paths.shims_dir(),
+            paths.www_dir(),
+        ] {
+            assert!(sub.is_dir(), "{} should exist", sub.display());
+        }
+    }
+
+    #[test]
+    fn ensure_layout_does_not_create_or_touch_user_files() {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        paths.ensure_layout().unwrap();
+        assert!(!paths.config_file().exists());
+        assert!(!paths.sites_file().exists());
+
+        fs::write(paths.config_file(), "# mine\n").unwrap();
+        fs::write(paths.www_dir().join("keep.txt"), "x").unwrap();
+        paths.ensure_layout().unwrap();
+        assert_eq!(fs::read_to_string(paths.config_file()).unwrap(), "# mine\n");
+        assert!(paths.www_dir().join("keep.txt").is_file());
+    }
+
+    #[test]
+    fn ensure_layout_reports_the_failing_path() {
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("home");
+        fs::write(&blocker, "a file where the home should be").unwrap();
+        let paths = CrisolPaths::new(&blocker).unwrap();
+        match paths.ensure_layout().unwrap_err() {
+            PathsError::Create { path, .. } => assert_eq!(path, blocker),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+}
