@@ -1,0 +1,13 @@
+schema = 1
+serial = 7
+generated = "2026-10-14"
+
+[[package]]
+service = "php"
+version = "8.4.21"
+os = "windows"
+arch = "x86_64"
+url = "https://example.invalid/php-8.4.21.zip"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+format = "zip"
+executable = "php-cgi.exe"

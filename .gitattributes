@@ -1,3 +1,6 @@
 * text=auto
 *.sh text eol=lf
 *.rs text eol=lf
+
+# Test fixtures are signed byte for byte: never convert their line endings.
+src/crisol-core/src/catalog/testdata/* -text

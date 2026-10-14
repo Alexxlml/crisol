@@ -13,6 +13,7 @@ toml.workspace = true
 serde_ignored.workspace = true
 toml_edit.workspace = true
 tempfile.workspace = true
+minisign-verify.workspace = true
 crisol-protocol.workspace = true
 
 [lints]

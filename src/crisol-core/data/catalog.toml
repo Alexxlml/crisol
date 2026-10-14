@@ -1,0 +1,12 @@
+# Crisol's built-in catalog of installable tool versions.
+#
+# One [[package]] per build of one tool for one platform. Entries are added in F3.2, each
+# with the SHA-256 checked against what the official provider publishes, and the source
+# documented in analisis/fuentes-binarios.md. Format reference: docs/catalog.md.
+#
+# This copy is compiled into the binary, so it needs no signature. A catalog fetched later
+# must carry a minisign signature and a `serial` not lower than this one (ADR-0005).
+
+schema = 1
+serial = 1
+generated = "2026-10-14"

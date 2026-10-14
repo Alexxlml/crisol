@@ -498,7 +498,7 @@ impl Config {
 /// may save UTF-8 with one, and TOML itself has none.
 pub(crate) fn deserialize_reporting_unknown<T: serde::de::DeserializeOwned>(
     text: &str,
-) -> Result<(T, Vec<ConfigWarning>), ConfigError> {
+) -> Result<(T, Vec<ConfigWarning>), toml::de::Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let deserializer = toml::de::Deserializer::parse(text)?;
     let mut unknown = Vec::new();
