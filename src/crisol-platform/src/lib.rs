@@ -2,9 +2,13 @@
 
 #[cfg(windows)]
 mod job_object;
+#[cfg(windows)]
+mod port_probe;
 
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
+#[cfg(windows)]
+pub use port_probe::WindowsPortProbe;
 
 use std::path::PathBuf;
 
