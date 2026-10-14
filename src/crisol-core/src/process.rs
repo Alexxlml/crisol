@@ -22,6 +22,8 @@ use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 
+use crate::log::LogRotation;
+
 /// Opaque handle of a supervision group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GroupId(u64);
@@ -87,8 +89,11 @@ pub struct ProcessSpec {
     /// Variables added to (or overriding) the inherited environment.
     pub env: Vec<(OsString, OsString)>,
     /// File that receives stdout and stderr, appended. `None` discards the output.
-    /// Rotation is layered on top by F2.3.
+    /// Processes of the same supervisor that name the same file share one writer, so their
+    /// output interleaves instead of fighting over rotation.
     pub log_file: Option<PathBuf>,
+    /// When to rotate `log_file`. Ignored when there is no log file.
+    pub log_rotation: LogRotation,
 }
 
 impl ProcessSpec {
@@ -101,6 +106,7 @@ impl ProcessSpec {
             cwd: None,
             env: Vec::new(),
             log_file: None,
+            log_rotation: LogRotation::default(),
         }
     }
 
@@ -140,6 +146,13 @@ impl ProcessSpec {
     #[must_use]
     pub fn log_file(mut self, file: impl Into<PathBuf>) -> Self {
         self.log_file = Some(file.into());
+        self
+    }
+
+    /// Sets when the log file rotates.
+    #[must_use]
+    pub fn log_rotation(mut self, rotation: LogRotation) -> Self {
+        self.log_rotation = rotation;
         self
     }
 }

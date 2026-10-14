@@ -14,14 +14,17 @@
 //!
 //! Services run as the current user. Nothing here asks for elevation.
 
-use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::thread;
 
+use crisol_core::log::{pump, RotatingLog};
 use crisol_core::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
     SupervisorError,
@@ -76,6 +79,8 @@ struct State {
     next_process: u64,
     groups: BTreeMap<GroupId, Group>,
     processes: BTreeMap<ProcessId, Process>,
+    /// Open log files by path. Weak, so a file closes once its last pump ends.
+    logs: HashMap<PathBuf, Weak<Mutex<RotatingLog>>>,
 }
 
 /// Supervises processes with Windows Job Objects.
@@ -173,25 +178,71 @@ fn resume_process(pid: u32) -> Result<(), SupervisorError> {
     Ok(())
 }
 
-/// Opens the log file (appending) or yields `Stdio::null()`.
-fn output_for(spec: &ProcessSpec) -> Result<(Stdio, Stdio), SupervisorError> {
+type SharedLog = Arc<Mutex<RotatingLog>>;
+
+/// The writer for the spec's log file, shared with every other process that logs to the same
+/// path so that they never rotate the file under each other. `None` if there is no log.
+fn shared_log(
+    logs: &mut HashMap<PathBuf, Weak<Mutex<RotatingLog>>>,
+    spec: &ProcessSpec,
+) -> Result<Option<SharedLog>, SupervisorError> {
     let Some(path) = &spec.log_file else {
-        return Ok((Stdio::null(), Stdio::null()));
+        return Ok(None);
     };
-    let spawn_error = |source| SupervisorError::Spawn {
-        program: spec.program.clone(),
-        source,
-    };
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(spawn_error)?;
+    if let Some(existing) = logs.get(path).and_then(Weak::upgrade) {
+        return Ok(Some(existing));
     }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(spawn_error)?;
-    let stderr = file.try_clone().map_err(spawn_error)?;
-    Ok((Stdio::from(file), Stdio::from(stderr)))
+    let log =
+        RotatingLog::open(path, spec.log_rotation).map_err(|source| SupervisorError::Spawn {
+            program: spec.program.clone(),
+            source,
+        })?;
+    let log = Arc::new(Mutex::new(log));
+    logs.retain(|_, weak| weak.strong_count() > 0);
+    logs.insert(path.clone(), Arc::downgrade(&log));
+    Ok(Some(log))
+}
+
+/// Starts a thread that copies `reader` into the log until the pipe closes. The thread
+/// always drains the pipe, even if the log cannot be written, so the process never blocks.
+fn start_pump(
+    name: &str,
+    reader: impl Read + Send + 'static,
+    log: SharedLog,
+) -> Result<(), SupervisorError> {
+    thread::Builder::new()
+        .name(format!("crisol-log-{name}"))
+        .spawn(move || {
+            pump(reader, |bytes| {
+                log.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .write(bytes)
+            });
+        })
+        .map(|_| ())
+        .map_err(|e| SupervisorError::Os(format!("cannot start the log thread: {e}")))
+}
+
+/// Starts the threads that move the child's stdout and stderr into the shared log.
+fn start_pumps(
+    child: &mut Child,
+    log: Option<&SharedLog>,
+    spec: &ProcessSpec,
+) -> Result<(), SupervisorError> {
+    let Some(log) = log else {
+        return Ok(());
+    };
+    let name = spec
+        .program
+        .file_stem()
+        .map_or_else(|| "process".into(), |n| n.to_string_lossy().into_owned());
+    if let Some(stdout) = child.stdout.take() {
+        start_pump(&name, stdout, Arc::clone(log))?;
+    }
+    if let Some(stderr) = child.stderr.take() {
+        start_pump(&name, stderr, Arc::clone(log))?;
+    }
+    Ok(())
 }
 
 /// Refreshes and returns the status of a process.
@@ -239,14 +290,21 @@ impl ProcessSupervisor for JobObjectSupervisor {
         }
         let job = entry.job.raw();
 
-        let (stdout, stderr) = output_for(spec)?;
+        let log = shared_log(&mut state.logs, spec)?;
+        let piped = || {
+            if log.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            }
+        };
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr)
+            .stdout(piped())
+            .stderr(piped())
             .creation_flags((CREATE_NO_WINDOW | CREATE_SUSPENDED).0);
         if let Some(cwd) = &spec.cwd {
             command.current_dir(cwd);
@@ -256,12 +314,14 @@ impl ProcessSupervisor for JobObjectSupervisor {
             source,
         })?;
 
-        // Contain it before it runs a single instruction.
+        // Contain it before it runs a single instruction, wire its output, and only then let
+        // it run.
         let contained = {
             let process = HANDLE(child.as_raw_handle());
             // SAFETY: both handles are valid; `child` owns the process handle for the call.
             unsafe { AssignProcessToJobObject(job, process) }
                 .map_err(|e| os_error("AssignProcessToJobObject", &e))
+                .and_then(|()| start_pumps(&mut child, log.as_ref(), spec))
                 .and_then(|()| resume_process(child.id()))
         };
         if let Err(error) = contained {
@@ -391,6 +451,8 @@ fn kill(state: &mut State, group: GroupId) -> Result<(), SupervisorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crisol_core::log::LogRotation;
+    use std::fs;
     use std::path::Path;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
@@ -441,12 +503,24 @@ mod tests {
         s.create_group("test", GroupOptions::default()).unwrap()
     }
 
-    fn read_when_exited(s: &JobObjectSupervisor, id: ProcessId, file: &Path) -> String {
+    /// Waits for the process to end and for every `needle` to reach the log (a pump
+    /// thread copies the output, so it lands a moment after the process exits).
+    fn log_after_exit(
+        s: &JobObjectSupervisor,
+        id: ProcessId,
+        file: &Path,
+        needles: &[&str],
+    ) -> String {
         assert!(
             eventually(10, || s.status(id).unwrap() != ProcessStatus::Running),
             "the process should have finished"
         );
-        fs::read_to_string(file).unwrap_or_default()
+        let mut text = String::new();
+        eventually(10, || {
+            text = fs::read_to_string(file).unwrap_or_default();
+            needles.iter().all(|n| text.contains(n))
+        });
+        text
     }
 
     #[test]
@@ -626,7 +700,7 @@ mod tests {
             .args(["/c", "echo hello-out& echo hello-err 1>&2"])
             .log_file(&log);
         let p = s.spawn(g, &first).unwrap();
-        let text = read_when_exited(&s, p, &log);
+        let text = log_after_exit(&s, p, &log, &["hello-out", "hello-err"]);
         assert!(text.contains("hello-out"), "{text}");
         assert!(
             text.contains("hello-err"),
@@ -637,7 +711,7 @@ mod tests {
             .args(["/c", "echo second-run"])
             .log_file(&log);
         let p = s.spawn(g, &second).unwrap();
-        let text = read_when_exited(&s, p, &log);
+        let text = log_after_exit(&s, p, &log, &["hello-out", "second-run"]);
         assert!(
             text.contains("hello-out") && text.contains("second-run"),
             "{text}"
@@ -659,9 +733,106 @@ mod tests {
             .cwd(&work)
             .log_file(&log);
         let p = s.spawn(g, &spec).unwrap();
-        let text = read_when_exited(&s, p, &log);
+        let text = log_after_exit(&s, p, &log, &["bar-value", "work"]);
         assert!(text.contains("bar-value"), "{text}");
         assert!(text.contains("work"), "{text}");
+    }
+
+    #[test]
+    fn a_chatty_service_rotates_its_log_and_never_blocks() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("logs").join("chatty").join("runtime.log");
+        let s = JobObjectSupervisor::new();
+        let g = group(&s);
+
+        // About 300 lines of ~60 bytes (~18 KB) into a log that rotates at 2 KB, keeping 2.
+        let line =
+            "for /l %i in (1,1,300) do @echo line-%i-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let spec = ProcessSpec::new("cmd.exe")
+            .args(["/c", line])
+            .log_file(&log)
+            .log_rotation(LogRotation {
+                max_bytes: 2000,
+                keep: 2,
+            });
+        let p = s.spawn(g, &spec).unwrap();
+        let text = log_after_exit(&s, p, &log, &["line-300-"]);
+
+        let rotated = |n| log.with_file_name(format!("runtime.log.{n}"));
+        assert!(
+            rotated(1).is_file() && rotated(2).is_file(),
+            "history should exist"
+        );
+        assert!(!rotated(3).exists(), "only `keep` rotated files may remain");
+        assert!(
+            text.contains("line-300-"),
+            "the newest line is in the current file"
+        );
+        for file in [log.clone(), rotated(1), rotated(2)] {
+            let size = fs::metadata(&file).unwrap().len();
+            assert!(
+                size <= 2000 + 16 * 1024,
+                "{} is too large: {size}",
+                file.display()
+            );
+        }
+        // 300 lines would be ~18 KB in one file; the cap really bounds the disk use.
+        let total: u64 = [log.clone(), rotated(1), rotated(2)]
+            .iter()
+            .map(|f| fs::metadata(f).unwrap().len())
+            .sum();
+        assert!(
+            total < 8000,
+            "the three files should hold far less than the full output: {total}"
+        );
+    }
+
+    #[test]
+    fn processes_sharing_a_log_file_share_one_writer() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("runtime.log");
+        let s = JobObjectSupervisor::new();
+        let g = group(&s);
+
+        let a = s
+            .spawn(
+                g,
+                &ProcessSpec::new("cmd.exe")
+                    .args(["/c", "echo from-a"])
+                    .log_file(&log),
+            )
+            .unwrap();
+        let b = s
+            .spawn(
+                g,
+                &ProcessSpec::new("cmd.exe")
+                    .args(["/c", "echo from-b"])
+                    .log_file(&log),
+            )
+            .unwrap();
+        let text = log_after_exit(&s, a, &log, &["from-a", "from-b"]);
+        assert!(eventually(10, || s.status(b).unwrap() != ProcessStatus::Running));
+        assert!(text.contains("from-a") && text.contains("from-b"), "{text}");
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_opened_is_a_spawn_error() {
+        let dir = TempDir::new().unwrap();
+        // A directory where the log file should be.
+        let log = dir.path().join("runtime.log");
+        fs::create_dir(&log).unwrap();
+        let s = JobObjectSupervisor::new();
+        let g = group(&s);
+        let err = s
+            .spawn(
+                g,
+                &ProcessSpec::new("cmd.exe")
+                    .args(["/c", "echo x"])
+                    .log_file(&log),
+            )
+            .unwrap_err();
+        assert!(matches!(err, SupervisorError::Spawn { .. }), "{err}");
+        assert_eq!(s.active_processes(g).unwrap(), 0, "nothing may be started");
     }
 
     #[test]

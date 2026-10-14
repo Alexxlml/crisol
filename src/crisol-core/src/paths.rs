@@ -22,6 +22,7 @@ mod names {
     pub const OVERRIDES: &str = "overrides";
     pub const DATA: &str = "data";
     pub const LOGS: &str = "logs";
+    pub const RUNTIME_LOG: &str = "runtime.log";
     pub const CERTS: &str = "certs";
     pub const SHIMS: &str = "shims";
     pub const WWW: &str = "www";
@@ -161,6 +162,11 @@ impl CrisolPaths {
     /// Logs of one service: `logs/<service>/`.
     pub fn logs_for(&self, service: &str) -> Result<PathBuf, PathsError> {
         Ok(self.logs_dir().join(validate_component(service)?))
+    }
+
+    /// Combined stdout and stderr of one service: `logs/<service>/runtime.log`.
+    pub fn runtime_log(&self, service: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.logs_for(service)?.join(names::RUNTIME_LOG))
     }
 
     /// Local CA and per-site certificates: `certs/`.
@@ -305,6 +311,11 @@ mod tests {
             paths.logs_for("redis").unwrap(),
             home.join("logs").join("redis")
         );
+        assert_eq!(
+            paths.runtime_log("redis").unwrap(),
+            home.join("logs").join("redis").join("runtime.log")
+        );
+        assert!(paths.runtime_log("../x").is_err());
     }
 
     #[test]
