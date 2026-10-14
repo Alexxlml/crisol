@@ -209,8 +209,9 @@ impl VersionReq {
     pub fn matches(&self, version: &Version) -> bool {
         match &self.pre {
             Some(_) => {
-                // Exactly that pre-release.
-                version.pre == self.pre && version.significant() == trim_zeros(&self.parts)
+                // Exactly that pre-release, compared like `Eq` and `Hash` do (`rc01` is `rc1`).
+                version.pre.as_deref().map(tag_pieces) == self.pre.as_deref().map(tag_pieces)
+                    && version.significant() == trim_zeros(&self.parts)
             }
             None => {
                 !version.is_prerelease()
@@ -318,6 +319,13 @@ mod tests {
         assert_eq!(set.len(), 1);
         assert!(v("8.5.0-rc99999999999999999999") < v("8.5.0-rc100000000000000000000"));
         assert!(v("8.5.0-rc2") < v("8.5.0-rc10"));
+    }
+
+    #[test]
+    fn a_prerelease_request_matches_the_same_tag_however_it_is_spelt() {
+        assert!(req("8.5.0-rc1").matches(&v("8.5.0-rc01")));
+        assert!(req("8.5.0-rc01").matches(&v("8.5.0-rc1")));
+        assert!(!req("8.5.0-rc1").matches(&v("8.5.0-rc2")));
     }
 
     #[test]

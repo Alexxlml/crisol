@@ -122,7 +122,6 @@ pub fn load_project(
     }))
 }
 
-/// Makes `path` absolute and removes `.` and `..` components lexically.
 /// Whether two normalised directories are the same place. Windows paths ignore case
 /// (`D:\Proyectos` is `d:\proyectos`); elsewhere they do not.
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -133,6 +132,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Makes `path` absolute and removes `.` and `..` components lexically.
 fn normalize(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut out = PathBuf::new();

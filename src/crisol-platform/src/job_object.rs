@@ -396,38 +396,64 @@ impl ProcessSupervisor for JobObjectSupervisor {
     }
 
     fn kill_group(&self, group: GroupId) -> Result<(), SupervisorError> {
-        let mut state = self.state();
-        kill(&mut state, group)
+        // The lock is released before waiting: other services must not stall behind a slow
+        // death.
+        let waiter = kill(&mut self.state(), group)?;
+        if let Some(job) = waiter {
+            wait_until_empty(&job);
+        }
+        Ok(())
     }
 
     fn close_group(&self, group: GroupId) -> Result<(), SupervisorError> {
-        let mut state = self.state();
-        let entry = state
-            .groups
-            .get(&group)
-            .ok_or(SupervisorError::UnknownGroup(group))?;
-        if entry.options.kill_on_close {
-            kill(&mut state, group)?;
-        }
-        // Dropping the group closes the job handle: with kill-on-close Windows now kills
-        // anything left; without it the processes keep running, detached from Crisol.
-        if let Some(removed) = state.groups.remove(&group) {
-            for id in removed.processes {
-                state.processes.remove(&id);
+        let waiter = {
+            let mut state = self.state();
+            let entry = state
+                .groups
+                .get(&group)
+                .ok_or(SupervisorError::UnknownGroup(group))?;
+            let waiter = if entry.options.kill_on_close {
+                kill(&mut state, group)?
+            } else {
+                None
+            };
+            // Dropping the group closes the job handle: with kill-on-close Windows now kills
+            // anything left; without it the processes keep running, detached from Crisol.
+            if let Some(removed) = state.groups.remove(&group) {
+                for id in removed.processes {
+                    state.processes.remove(&id);
+                }
             }
+            waiter
+        };
+        if let Some(job) = waiter {
+            wait_until_empty(&job);
         }
         Ok(())
     }
 }
 
-/// Kills the job of `group` and records how each process ended.
-fn kill(state: &mut State, group: GroupId) -> Result<(), SupervisorError> {
+/// Waits (bounded) until no process is left in the job. Termination is asynchronous: this
+/// is what makes their ports and files free by the time `kill_group` returns. Bounded,
+/// because a process stuck in the kernel can take forever and `kill_group` must not.
+fn wait_until_empty(job: &OwnedHandle) {
+    let handle = HANDLE(job.as_raw_handle());
+    let deadline = Instant::now() + KILL_SETTLE;
+    while Instant::now() < deadline && active_in_job(handle).is_ok_and(|alive| alive > 0) {
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Terminates the job of `group` and records how each process ended. Returns a duplicate of
+/// the job handle to wait on **after** the caller has released the state lock (`None` if the
+/// group was already dead).
+fn kill(state: &mut State, group: GroupId) -> Result<Option<OwnedHandle>, SupervisorError> {
     let entry = state
         .groups
         .get_mut(&group)
         .ok_or(SupervisorError::UnknownGroup(group))?;
     if entry.killed {
-        return Ok(());
+        return Ok(None);
     }
 
     // Remember natural exits first, so they keep their own exit code.
@@ -442,13 +468,12 @@ fn kill(state: &mut State, group: GroupId) -> Result<(), SupervisorError> {
     // SAFETY: the job handle is valid while the group exists.
     unsafe { TerminateJobObject(job, KILLED_EXIT_CODE) }
         .map_err(|e| os_error("TerminateJobObject", &e))?;
-    // Termination is asynchronous: give the processes a moment to actually go, so that their
-    // ports and files are free when this returns. Bounded, because a process stuck in the
-    // kernel can take forever and `kill_group` must not.
-    let deadline = Instant::now() + KILL_SETTLE;
-    while Instant::now() < deadline && active_in_job(job).is_ok_and(|alive| alive > 0) {
-        thread::sleep(Duration::from_millis(5));
-    }
+    // A duplicate keeps the job alive while the caller waits, even if the group is closed
+    // meanwhile.
+    let waiter = state
+        .groups
+        .get(&group)
+        .and_then(|entry| entry.job.0.try_clone().ok());
 
     for id in &ids {
         if let Some(process) = state.processes.get_mut(id) {
@@ -460,7 +485,7 @@ fn kill(state: &mut State, group: GroupId) -> Result<(), SupervisorError> {
     if let Some(entry) = state.groups.get_mut(&group) {
         entry.killed = true;
     }
-    Ok(())
+    Ok(waiter)
 }
 
 #[cfg(test)]

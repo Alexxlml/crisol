@@ -146,11 +146,21 @@ impl RotatingLog {
         //
         // The current file is moved aside **first**: if some other program prevents that, the
         // numbered history has not been touched yet and nothing is lost.
-        let parked = {
-            let mut name = self.path.as_os_str().to_owned();
-            name.push(".rotating");
-            PathBuf::from(name)
-        };
+        //
+        // A `.rotating` file left by a crash is data too: pick a free name instead of
+        // letting the rename replace it.
+        let parked = (0_u32..10_000)
+            .map(|n| {
+                let mut name = self.path.as_os_str().to_owned();
+                name.push(if n == 0 {
+                    ".rotating".to_owned()
+                } else {
+                    format!(".rotating.{n}")
+                });
+                PathBuf::from(name)
+            })
+            .find(|candidate| !candidate.exists())
+            .unwrap_or_else(|| numbered(&self.path, 0));
         fs::rename(&self.path, &parked)?;
 
         let _ = fs::remove_file(numbered(&self.path, keep));
@@ -407,6 +417,23 @@ mod tests {
             log.write(b"YYYYYY").unwrap();
         }
         assert_ne!(text(&numbered(&path, 1)), "one");
+    }
+
+    #[test]
+    fn a_rotating_file_left_by_a_crash_is_not_overwritten() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("runtime.log");
+        let mut leftover = path.clone().into_os_string();
+        leftover.push(".rotating");
+        let leftover = PathBuf::from(leftover);
+        fs::write(&leftover, "from a crashed rotation").unwrap();
+
+        let mut log = RotatingLog::open(&path, rotation(8, 2)).unwrap();
+        log.write(b"AAAAAA").unwrap();
+        log.write(b"BBBBBB").unwrap(); // rotates
+        assert_eq!(text(&leftover), "from a crashed rotation");
+        assert_eq!(text(&numbered(&path, 1)), "AAAAAA");
+        assert_eq!(text(&path), "BBBBBB");
     }
 
     #[test]

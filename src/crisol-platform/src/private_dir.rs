@@ -7,10 +7,15 @@
 //! a folder made by an elevated process would otherwise be owned by the Administrators group
 //! and be unreachable for the same person without elevation.
 //!
-//! Whether an existing folder is open to others is decided by reading its DACL back as SDDL
-//! text and looking for *allow* entries for `Everyone`, `Authenticated Users` or `Users`
-//! that include any write right. The text analysis ([`exposes_write`]) is plain Rust and is
-//! tested on literal strings; only the calls that fetch and release the text use `unsafe`.
+//! Whether an existing folder is open to others is decided by reading its owner and DACL
+//! back as SDDL text. The folder is *exposed* if its owner is anybody but the current user,
+//! `SYSTEM` or the administrators, or if any *allow* entry gives a right to write to a
+//! trustee that is not one of those (or the creator-owner placeholder). It is a list of who
+//! may be trusted, not a list of groups to fear: another account's SID is as good as
+//! `Everyone` for planting a DLL. The analysis ([`exposes_write`]) is plain Rust, turns every
+//! right alias into its access mask first, and treats anything it does not recognise as
+//! exposed. It is tested on literal strings; only the calls that fetch and release the text
+//! use `unsafe`.
 //!
 //! Nothing here needs elevation, and only the folder it is asked about is touched.
 
@@ -31,8 +36,8 @@ use windows::Win32::Security::Authorization::{
     SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -89,7 +94,10 @@ impl PrivateDirs for WindowsPrivateDirs {
     }
 
     fn is_writable_by_others(&self, dir: &Path) -> io::Result<bool> {
-        Ok(exposes_write(&dacl_as_sddl(dir)?))
+        Ok(exposes_write(
+            &owner_and_dacl_as_sddl(dir)?,
+            &current_user_sid()?,
+        ))
     }
 }
 
@@ -150,9 +158,11 @@ fn current_user_sid() -> io::Result<String> {
     sid.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// The DACL of `path`, as SDDL text.
-fn dacl_as_sddl(path: &Path) -> io::Result<String> {
+/// The owner and the DACL of `path`, as SDDL text (`O:…D:…`).
+fn owner_and_dacl_as_sddl(path: &Path) -> io::Result<String> {
     let wide_path = wide(path.as_os_str());
+    let parts =
+        OBJECT_SECURITY_INFORMATION(OWNER_SECURITY_INFORMATION.0 | DACL_SECURITY_INFORMATION.0);
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: `wide_path` is NUL-terminated and outlives the call; the other pointers are
     // either `None` or valid out-parameters. Windows allocates `descriptor`.
@@ -160,7 +170,7 @@ fn dacl_as_sddl(path: &Path) -> io::Result<String> {
         GetNamedSecurityInfoW(
             PCWSTR(wide_path.as_ptr()),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            parts,
             None,
             None,
             None,
@@ -181,7 +191,7 @@ fn dacl_as_sddl(path: &Path) -> io::Result<String> {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
             descriptor,
             SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
+            parts,
             &raw mut text,
             None,
         )
@@ -203,47 +213,103 @@ fn dacl_as_sddl(path: &Path) -> io::Result<String> {
     result
 }
 
-/// Whether an SDDL DACL has an *allow* entry for `Everyone`, `Authenticated Users` or
-/// `Users` that grants any right to write, delete or change permissions. Entries that only
-/// apply to children (`IO`) count: that is where new files get their permissions.
-///
-/// Deny entries are ignored: the answer is "could someone else write here", and an
-/// unrelated deny does not make a broad allow safe to rely on.
-fn exposes_write(sddl: &str) -> bool {
-    // Rights that are not read-only: FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_DELETE_CHILD,
-    // DELETE, WRITE_DAC, WRITE_OWNER, GENERIC_WRITE, GENERIC_ALL.
-    const WRITE_BITS: u32 = 0x0002
-        | 0x0004
-        | 0x0040
-        | 0x0001_0000
-        | 0x0004_0000
-        | 0x0008_0000
-        | 0x4000_0000
-        | 0x1000_0000;
-    const BROAD_TRUSTEES: [&str; 6] = ["WD", "AU", "BU", "S-1-1-0", "S-1-5-11", "S-1-5-32-545"];
-    // Two-letter right aliases that include writing.
-    const WRITE_ALIASES: [&str; 7] = ["FA", "FW", "GA", "GW", "SD", "WD", "WO"];
+/// Trustees that may hold write access to a private folder: `SYSTEM`, the local
+/// administrators, and the creator-owner and owner-rights placeholders (which only ever
+/// resolve to whoever owns the item). The current user is added by the caller.
+const TRUSTED: [&str; 7] = [
+    "SY",
+    "BA",
+    "CO",
+    "OW",
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-3-0",
+];
+
+/// Access-mask bits that are not read-only for a file or folder: write data / add file,
+/// append / add subfolder, write extended attributes, delete child, write attributes,
+/// delete, write permissions, take ownership, and the generic write and all rights.
+const WRITE_BITS: u32 =
+    0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000 | 0x4000_0000;
+
+/// The access mask of an SDDL right alias. For folders, the "directory service" aliases
+/// share their bits with the file rights: `DC` is *add file* (0x2), `LC` is *add
+/// subfolder* (0x4), `DT` is *delete child* (0x40).
+fn alias_mask(alias: &str) -> Option<u32> {
+    Some(match alias {
+        "CC" => 0x1,
+        "DC" => 0x2,
+        "LC" => 0x4,
+        "SW" => 0x8,
+        "RP" => 0x10,
+        "WP" => 0x20,
+        "DT" => 0x40,
+        "LO" => 0x80,
+        "CR" => 0x100,
+        "SD" => 0x1_0000,
+        "RC" => 0x2_0000,
+        "WD" => 0x4_0000,
+        "WO" => 0x8_0000,
+        "GA" => 0x1000_0000,
+        "GX" => 0x2000_0000,
+        "GW" => 0x4000_0000,
+        "GR" => 0x8000_0000,
+        "FA" => 0x1F_01FF,
+        "FR" => 0x12_0089,
+        "FW" => 0x12_0116,
+        "FX" => 0x12_00A0,
+        _ => return None,
+    })
+}
+
+/// The mask of a rights field: a hexadecimal number or a run of two-letter aliases. `None`
+/// if any part is not understood.
+fn rights_mask(rights: &str) -> Option<u32> {
+    if let Some(hex) = rights
+        .strip_prefix("0x")
+        .or_else(|| rights.strip_prefix("0X"))
+    {
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    if rights.is_empty() || !rights.len().is_multiple_of(2) {
+        return None;
+    }
+    rights.as_bytes().chunks(2).try_fold(0_u32, |mask, pair| {
+        Some(mask | alias_mask(std::str::from_utf8(pair).ok()?)?)
+    })
+}
+
+/// Whether the owner or the DACL in `sddl` (`O:…D:…`) lets an account other than the user
+/// `user_sid`, `SYSTEM` or the administrators write to the folder or to what is created
+/// inside it. Entries that only apply to children (`IO`) count: that is where new files get
+/// their permissions. Deny entries are ignored: an unrelated deny does not make an allow for
+/// a stranger safe to rely on. Whatever cannot be understood counts as exposed.
+fn exposes_write(sddl: &str, user_sid: &str) -> bool {
+    let may_write = |who: &str| who == user_sid || TRUSTED.contains(&who);
+
+    if let Some(after) = sddl.strip_prefix("O:") {
+        // The owner runs up to the next section marker (`G:`, `D:` or `S:`). A SID starts
+        // with `S-`, never `S:`, so the markers cannot be confused with it.
+        let end = ["G:", "D:", "S:"]
+            .iter()
+            .filter_map(|marker| after.find(marker))
+            .min()
+            .unwrap_or(after.len());
+        if !may_write(&after[..end]) {
+            return true;
+        }
+    }
 
     sddl.split('(').skip(1).any(|entry| {
         let entry = entry.trim_end_matches(')');
         let fields: Vec<&str> = entry.split(';').collect();
         let [kind, _flags, rights, _object, _inherited, trustee, ..] = fields.as_slice() else {
-            return false;
+            return true; // an entry that does not look like one is not to be trusted
         };
-        if *kind != "A" || !BROAD_TRUSTEES.contains(trustee) {
+        if *kind != "A" || may_write(trustee) {
             return false;
         }
-        if let Some(hex) = rights
-            .strip_prefix("0x")
-            .or_else(|| rights.strip_prefix("0X"))
-        {
-            return u32::from_str_radix(hex, 16).map_or(true, |mask| mask & WRITE_BITS != 0);
-        }
-        rights
-            .as_bytes()
-            .chunks(2)
-            .filter_map(|pair| std::str::from_utf8(pair).ok())
-            .any(|alias| WRITE_ALIASES.contains(&alias))
+        rights_mask(rights).is_none_or(|mask| mask & WRITE_BITS != 0)
     })
 }
 
@@ -254,49 +320,87 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    const ME: &str = "S-1-5-21-1-2-3-1001";
+
     #[test]
-    fn sddl_text_with_broad_write_access_is_recognised() {
+    fn sddl_text_that_lets_others_write_is_recognised() {
         // What `C:\Crisol` really inherits on a default Windows install (see the review).
         let inherited = "D:PAI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIIOID;GA;;;CO)\
             (A;OICIID;0x1200a9;;;BU)(A;CIID;LC;;;BU)(A;CIID;DC;;;BU)(A;OICIIOID;SDGXGWGR;;;AU)\
             (A;CIID;0x1301bf;;;AU)";
-        assert!(exposes_write(inherited), "Authenticated Users can modify");
+        assert!(exposes_write(inherited, ME));
 
-        assert!(exposes_write("D:(A;;FA;;;WD)"), "Everyone, full control");
-        assert!(
-            exposes_write("D:(A;OICI;0x1301bf;;;AU)"),
-            "modify, as a mask"
-        );
-        assert!(exposes_write("D:(A;OICI;FW;;;BU)"), "Users can write files");
-        assert!(
-            exposes_write("D:(A;OICIIO;GW;;;S-1-5-11)"),
-            "children only still counts"
-        );
-        assert!(
-            exposes_write("D:(A;;0xZZ;;;WD)"),
-            "an unreadable mask is not trusted"
-        );
+        // Each of these alone is enough: creating a file is enough to plant a DLL.
+        for exposed in [
+            "D:(A;;FA;;;WD)",
+            "D:(A;OICI;0x1301bf;;;AU)",
+            "D:(A;OICI;FW;;;BU)",
+            "D:(A;CIID;DC;;;BU)", // create files
+            "D:(A;CIID;LC;;;BU)", // create folders
+            "D:(A;CIID;DT;;;BU)", // delete children
+            "D:(A;OICIIO;GW;;;S-1-5-11)",
+            "D:(A;OICI;FA;;;S-1-5-21-1-2-3-1002)", // another account, by its own SID
+            "D:(A;;0xZZ;;;WD)",                    // unreadable mask
+            "D:(A;;ZZ;;;WD)",                      // unknown alias
+            "D:(A;;FA)",                           // malformed entry
+        ] {
+            assert!(exposes_write(exposed, ME), "{exposed}");
+        }
     }
 
     #[test]
-    fn sddl_text_without_broad_write_access_is_not_flagged() {
-        let own = "D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
-        assert!(!exposes_write(own));
-        // Read and execute for everyone is fine; so are denies and other accounts' writes.
-        assert!(!exposes_write("D:(A;OICI;0x1200a9;;;BU)"));
-        assert!(!exposes_write("D:(A;OICI;GRGX;;;WD)"));
-        assert!(!exposes_write("D:(D;OICI;FA;;;WD)"));
-        assert!(!exposes_write("D:(A;OICI;FA;;;S-1-5-21-1-2-3-1002)"));
-        assert!(!exposes_write("D:P"));
-        assert!(!exposes_write(""));
+    fn sddl_text_that_only_lets_trusted_accounts_write_is_not_flagged() {
+        let own = format!("O:{ME}G:{ME}D:P(A;OICI;FA;;;{ME})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        assert!(!exposes_write(&own, ME));
+        assert!(!exposes_write(
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICIIO;GA;;;CO)",
+            ME
+        ));
+        assert!(!exposes_write("O:SYD:", ME));
+
+        // Reading and executing is fine for anybody; so are denies.
+        for fine in [
+            "D:(A;OICI;0x1200a9;;;BU)",
+            "D:(A;OICI;GRGX;;;WD)",
+            "D:(A;OICI;CC;;;BU)", // list folder
+            "D:(A;OICI;FRFX;;;AU)",
+            "D:(D;OICI;FA;;;WD)",
+            "D:P",
+            "",
+        ] {
+            assert!(!exposes_write(fine, ME), "{fine}");
+        }
+    }
+
+    #[test]
+    fn a_folder_owned_by_somebody_else_is_exposed_whatever_its_acl_says() {
+        // Somebody else created `C:\Crisol` first and granted the user full control: the
+        // DACL looks harmless, but the owner can rewrite it at any time.
+        let planted = format!("O:S-1-5-21-1-2-3-1002G:S-1-5-21-1-2-3-1002D:P(A;OICI;FA;;;{ME})");
+        assert!(exposes_write(&planted, ME));
+        assert!(!exposes_write(&format!("O:{ME}D:P(A;OICI;FA;;;{ME})"), ME));
+    }
+
+    #[test]
+    fn right_aliases_are_turned_into_masks() {
+        assert_eq!(alias_mask("DC"), Some(0x2));
+        assert_eq!(
+            rights_mask("SDGXGWGR"),
+            Some(0x1_0000 | 0x2000_0000 | 0x4000_0000 | 0x8000_0000)
+        );
+        assert_eq!(rights_mask("0x1200a9"), Some(0x12_00A9));
+        assert_eq!(rights_mask("FRFX"), Some(0x12_0089 | 0x12_00A0));
+        assert_eq!(rights_mask(""), None);
+        assert_eq!(rights_mask("F"), None);
+        assert_eq!(rights_mask("ZZ"), None);
     }
 
     #[test]
     fn the_private_descriptor_is_protected_and_names_the_user() {
-        let sddl = private_sddl("S-1-5-21-1-2-3-1001");
+        let sddl = private_sddl(ME);
         assert!(sddl.starts_with("D:P("), "protected: {sddl}");
-        assert!(sddl.contains("FA;;;S-1-5-21-1-2-3-1001"));
-        assert!(!exposes_write(&sddl));
+        assert!(sddl.contains(&format!("FA;;;{ME}")));
+        assert!(!exposes_write(&sddl, ME));
     }
 
     #[test]
@@ -373,6 +477,39 @@ mod tests {
         let inside = private.join("bin");
         fs::create_dir(&inside).unwrap();
         assert!(!WindowsPrivateDirs.is_writable_by_others(&inside).unwrap());
+    }
+
+    #[test]
+    fn a_folder_where_users_can_only_create_files_is_exposed() {
+        // What `C:\` leaves for `Users` (`(A;CIID;DC;;;BU)`): no "modify", just "create
+        // files", which is already enough to plant a DLL. `icacls` calls it `WD`.
+        let tmp = TempDir::new().unwrap();
+        let open = tmp.path().join("create-only");
+        fs::create_dir(&open).unwrap();
+        let grant = Command::new("icacls")
+            .arg(&open)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)(WD)"])
+            .output()
+            .unwrap();
+        assert!(grant.status.success(), "icacls failed");
+
+        assert!(WindowsPrivateDirs.is_writable_by_others(&open).unwrap());
+    }
+
+    #[test]
+    fn a_folder_granted_to_another_account_by_sid_is_exposed() {
+        // Not a broad group: a concrete SID that is neither the user nor an administrator.
+        let tmp = TempDir::new().unwrap();
+        let open = tmp.path().join("other-account");
+        fs::create_dir(&open).unwrap();
+        let grant = Command::new("icacls")
+            .arg(&open)
+            .args(["/grant", "*S-1-5-32-546:(OI)(CI)M"])
+            .output()
+            .unwrap();
+        assert!(grant.status.success(), "icacls failed");
+
+        assert!(WindowsPrivateDirs.is_writable_by_others(&open).unwrap());
     }
 
     #[test]
