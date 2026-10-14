@@ -44,11 +44,12 @@ use crate::version::{Version, VersionError, VersionReq};
 /// The catalog compiled into the binary.
 pub const EMBEDDED_CATALOG: &str = include_str!("../data/catalog.toml");
 
-/// Public key (minisign) that signed catalogs must verify with.
+/// Public key (minisign) that signed catalogs must verify with. The matching private key is
+/// held by the project owner and never enters the repository.
 ///
-/// `None` until the project's signing key is generated and its public half is placed here;
-/// until then only the embedded catalog is accepted.
-pub const CATALOG_PUBLIC_KEY: Option<&str> = None;
+/// `None` would mean "no key configured": only the built-in catalog is then accepted.
+pub const CATALOG_PUBLIC_KEY: Option<&str> =
+    Some("RWT5f7dA5mhS5I60To3gZ6B22D7XYEhMn34zm+ujr/xr8LcdIXdmP0vH");
 
 /// The only catalog format this version understands.
 pub const SUPPORTED_SCHEMA: u32 = 1;
@@ -308,7 +309,17 @@ impl Catalog {
     /// Like [`Catalog::parse_signed`] with the project's built-in public key. Fails with
     /// [`CatalogError::NoTrustedKey`] while none is configured.
     pub fn parse_signed_trusted(text: &str, signature: &str) -> Result<Self, CatalogError> {
-        let key = CATALOG_PUBLIC_KEY.ok_or(CatalogError::NoTrustedKey)?;
+        Self::parse_signed_with(text, signature, CATALOG_PUBLIC_KEY)
+    }
+
+    /// [`Catalog::parse_signed_trusted`] with the trusted key passed in, so the "no key"
+    /// case can be exercised.
+    fn parse_signed_with(
+        text: &str,
+        signature: &str,
+        trusted_key: Option<&str>,
+    ) -> Result<Self, CatalogError> {
+        let key = trusted_key.ok_or(CatalogError::NoTrustedKey)?;
         Self::parse_signed(text, signature, key)
     }
 

@@ -54,7 +54,7 @@ size       = 1802240      # opcional, bytes
 3. **Anti-reversión:** un catálogo con `serial` menor que el que se usa se rechaza, aunque su firma sea válida; así no se puede reintroducir una versión vulnerable con un catálogo viejo.
 4. **Cada descarga** se compara con el `sha256` del catálogo antes de extraerse (F3.3).
 
-La clave pública va en `CATALOG_PUBLIC_KEY` (`src/crisol-core/src/catalog.rs`). Mientras valga `None`, solo se acepta el catálogo incrustado. **Generar el par de claves y publicar la clave pública es una decisión del propietario del proyecto**; la clave privada nunca debe entrar al repositorio.
+La clave pública del proyecto está en `CATALOG_PUBLIC_KEY` (`src/crisol-core/src/catalog.rs`); la privada la guarda el propietario fuera del repositorio y nunca debe entrar a él. Si se perdiera, habría que generar otro par y publicar un binario nuevo con la clave pública nueva. Con la constante en `None`, solo se acepta el catálogo incrustado.
 
 ## Cómo añadir una entrada (F3.2)
 

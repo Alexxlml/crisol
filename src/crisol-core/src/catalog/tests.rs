@@ -491,10 +491,25 @@ fn a_broken_signature_or_key_is_rejected_without_parsing() {
 
 #[test]
 fn without_a_configured_key_only_the_built_in_catalog_is_usable() {
-    if CATALOG_PUBLIC_KEY.is_none() {
-        let err = Catalog::parse_signed_trusted(SIGNED_CATALOG, SIGNATURE).unwrap_err();
-        assert!(matches!(err, CatalogError::NoTrustedKey), "{err}");
-    }
+    let err = Catalog::parse_signed_with(SIGNED_CATALOG, SIGNATURE, None).unwrap_err();
+    assert!(matches!(err, CatalogError::NoTrustedKey), "{err}");
+}
+
+#[test]
+fn the_project_public_key_is_a_valid_minisign_key() {
+    let key = CATALOG_PUBLIC_KEY.expect("the project key is configured");
+    assert!(
+        minisign_verify::PublicKey::from_base64(key).is_ok(),
+        "{key}"
+    );
+    assert!(key.starts_with("RW") && !key.contains(char::is_whitespace));
+}
+
+#[test]
+fn a_catalog_signed_by_any_other_key_is_not_trusted() {
+    // The fixture is signed by a disposable key, not by the project key.
+    let err = Catalog::parse_signed_trusted(SIGNED_CATALOG, SIGNATURE).unwrap_err();
+    assert!(matches!(err, CatalogError::Signature(_)), "{err}");
 }
 
 #[test]
