@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 const SIGNED_CATALOG: &str = include_str!("testdata/signed-catalog.toml");
 const SIGNATURE: &str = include_str!("testdata/test.minisig");
@@ -542,4 +543,128 @@ fn an_older_catalog_cannot_replace_a_newer_one() {
     assert!(signed
         .check_not_older_than(&Catalog::embedded().unwrap())
         .is_ok());
+}
+
+// ---- the contents of the built-in catalog (F3.2) --------------------------------
+
+/// The only sites a built-in entry may download from.
+const OFFICIAL_HOSTS: [&str; 4] = [
+    "windows.php.net",
+    "nginx.org",
+    "nodejs.org",
+    "getcomposer.org",
+];
+
+fn built_in() -> Catalog {
+    Catalog::embedded().expect("the built-in catalog must parse")
+}
+
+#[test]
+fn every_built_in_package_comes_from_an_official_host() {
+    for package in built_in().packages() {
+        assert!(
+            OFFICIAL_HOSTS.contains(&package.host()),
+            "{} is downloaded from {}, which is not an official source",
+            package.label(),
+            package.host()
+        );
+    }
+}
+
+#[test]
+fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
+    let catalog = built_in();
+    assert_eq!(catalog.services(), ["composer", "nginx", "node", "php"]);
+    assert!(catalog.packages().iter().all(|p| p.target == WINDOWS));
+    assert!(catalog.serial() >= 2);
+
+    let resolve = |service: &str, request: &str| {
+        catalog
+            .find(service, request, WINDOWS)
+            .unwrap()
+            .version
+            .to_string()
+    };
+    assert_eq!(resolve("php", "8.3"), "8.3.35");
+    assert_eq!(resolve("php", "8.4"), "8.4.26");
+    assert_eq!(resolve("php", "8.5"), "8.5.11");
+    assert_eq!(resolve("php", "8"), "8.5.11");
+    assert_eq!(resolve("nginx", "1.28"), "1.28.3");
+    assert_eq!(resolve("nginx", "1.30"), "1.30.5");
+    assert_eq!(resolve("node", "22"), "22.23.3");
+    assert_eq!(resolve("node", "24"), "24.21.0");
+    assert_eq!(
+        catalog
+            .latest("composer", WINDOWS)
+            .unwrap()
+            .version
+            .to_string(),
+        "2.10.3"
+    );
+    assert!(
+        catalog.find("php", "7.4", WINDOWS).is_err(),
+        "unsupported PHP stays out"
+    );
+}
+
+#[test]
+fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
+    for package in built_in().packages() {
+        let version = package.version.to_string();
+        let (format, executable, root) = match package.service.as_str() {
+            // PHP puts its files at the top of the zip.
+            "php" => (ArchiveFormat::Zip, "php.exe", None),
+            "nginx" => (
+                ArchiveFormat::Zip,
+                "nginx.exe",
+                Some(format!("nginx-{version}")),
+            ),
+            "node" => (
+                ArchiveFormat::Zip,
+                "node.exe",
+                Some(format!("node-v{version}-win-x64")),
+            ),
+            "composer" => (ArchiveFormat::File, "composer.phar", None),
+            other => panic!("unexpected service {other}"),
+        };
+        assert_eq!(package.format, format, "{}", package.label());
+        assert_eq!(package.executable, executable, "{}", package.label());
+        assert_eq!(package.root, root, "{}", package.label());
+    }
+}
+
+#[test]
+fn built_in_php_urls_use_the_permanent_archives_folder() {
+    // releases/ loses a version as soon as the next patch release appears; archives/ keeps all.
+    for package in built_in().packages().iter().filter(|p| p.service == "php") {
+        assert!(
+            package
+                .url
+                .starts_with("https://windows.php.net/downloads/releases/archives/"),
+            "{}",
+            package.url
+        );
+        assert!(
+            package.url.contains("-nts-"),
+            "Crisol runs PHP through php-cgi: non-thread-safe"
+        );
+        assert!(package.url.ends_with("-x64.zip"), "{}", package.url);
+    }
+}
+
+#[test]
+fn built_in_packages_carry_a_realistic_size_and_distinct_hashes() {
+    let catalog = built_in();
+    let mut hashes = HashSet::new();
+    for package in catalog.packages() {
+        let size = package
+            .size
+            .expect("every built-in package states its size");
+        assert!(size > 1_000_000, "{} is {size} bytes", package.label());
+        assert!(
+            hashes.insert(package.sha256.clone()),
+            "{} repeats a hash",
+            package.label()
+        );
+    }
 }
