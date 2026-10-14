@@ -19,6 +19,9 @@ publish = false
 [workspace.dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 thiserror = "2.0.21"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+serde_ignored = "0.1.14"
 tempfile = "3.27.0"
 crisol-core = { path = "crisol-core" }
 crisol-platform = { path = "crisol-platform" }

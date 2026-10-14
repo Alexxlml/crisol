@@ -118,8 +118,8 @@ impl CrisolPaths {
     pub fn bin_for(&self, service: &str, version: &str) -> Result<PathBuf, PathsError> {
         Ok(self
             .bin_dir()
-            .join(component(service)?)
-            .join(component(version)?))
+            .join(validate_component(service)?)
+            .join(validate_component(version)?))
     }
 
     /// Generated configuration root: `etc/`. Derived; regenerated, never edited by hand.
@@ -130,7 +130,7 @@ impl CrisolPaths {
 
     /// Generated configuration of one service: `etc/<service>/`.
     pub fn etc_for(&self, service: &str) -> Result<PathBuf, PathsError> {
-        Ok(self.etc_dir().join(component(service)?))
+        Ok(self.etc_dir().join(validate_component(service)?))
     }
 
     /// User fragments included by the generated configuration: `etc/<service>/overrides/`.
@@ -148,8 +148,8 @@ impl CrisolPaths {
     pub fn data_for(&self, service: &str, major: &str) -> Result<PathBuf, PathsError> {
         Ok(self
             .data_dir()
-            .join(component(service)?)
-            .join(component(major)?))
+            .join(validate_component(service)?)
+            .join(validate_component(major)?))
     }
 
     /// Logs root: `logs/`.
@@ -160,7 +160,7 @@ impl CrisolPaths {
 
     /// Logs of one service: `logs/<service>/`.
     pub fn logs_for(&self, service: &str) -> Result<PathBuf, PathsError> {
-        Ok(self.logs_dir().join(component(service)?))
+        Ok(self.logs_dir().join(validate_component(service)?))
     }
 
     /// Local CA and per-site certificates: `certs/`.
@@ -209,7 +209,7 @@ impl CrisolPaths {
 ///
 /// This blocks separators, drive prefixes (`C:`), and `.`/`..`, so a service name or
 /// version can never point outside the directory it is joined to.
-fn component(value: &str) -> Result<&str, PathsError> {
+pub(crate) fn validate_component(value: &str) -> Result<&str, PathsError> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+');
     let valid = !value.is_empty() && value != "." && value != ".." && value.chars().all(allowed);
     if valid {

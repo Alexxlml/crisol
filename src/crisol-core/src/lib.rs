@@ -1,7 +1,9 @@
 //! crisol-core: platform-independent logic of Crisol.
 
+pub mod config;
 pub mod paths;
 
+pub use config::{Config, ConfigError, ConfigWarning, LoadedConfig};
 pub use paths::{CrisolPaths, PathsError};
 
 /// Crate version, exposed for diagnostics.
