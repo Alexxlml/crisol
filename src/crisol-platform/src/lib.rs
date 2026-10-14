@@ -1,6 +1,8 @@
 //! crisol-platform: per-OS implementations behind the traits defined in `crisol-core`.
 
 #[cfg(windows)]
+mod console;
+#[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
 mod job_object;
@@ -9,6 +11,8 @@ mod port_probe;
 #[cfg(windows)]
 mod private_dir;
 
+#[cfg(windows)]
+pub use console::survive_ctrl_c;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
@@ -19,6 +23,14 @@ pub use port_probe::WindowsPortProbe;
 pub use private_dir::WindowsPrivateDirs;
 
 use std::path::PathBuf;
+
+/// Keeps a shim alive through Ctrl+C so it can pass on its child's exit code. Nothing to do
+/// off Windows, where the shim replaces itself with the program instead.
+#[cfg(not(windows))]
+#[allow(clippy::unnecessary_wraps)]
+pub fn survive_ctrl_c() -> std::io::Result<()> {
+    Ok(())
+}
 
 use crisol_core::{CrisolPaths, PathsError};
 

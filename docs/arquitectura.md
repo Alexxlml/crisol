@@ -75,7 +75,7 @@ Orden de búsqueda al ejecutar `php` dentro de un directorio:
 
 1. Variable `CRISOL_PHP` (sobrescritura temporal en la terminal actual).
 2. `.crisol.toml` del proyecto (buscando hacia arriba desde el directorio actual, hasta el primer directorio con `.git`; se ignoran archivos de otro dueño — ADR-0010).
-3. Para PHP: `.php-version`; para Node: `.nvmrc` / `.node-version` / campo `engines` de `package.json`.
+3. Para PHP: `.php-version`; para Node: `.nvmrc` / `.node-version` / campo `engines` de `package.json`. (Estos archivos, y `composer.json` del paso 4, se buscan hacia arriba con las mismas reglas del ADR-0010 que `.crisol.toml`: dueño de confianza y tope en `.git`.)
 4. Para PHP: restricción `require.php` de `composer.json` → la versión instalada más alta que la cumpla.
 5. Versión por defecto global de `crisol.toml`.
 

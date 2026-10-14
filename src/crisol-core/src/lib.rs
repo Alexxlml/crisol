@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod config;
+pub mod constraint;
 pub mod edit;
 pub mod fetch;
 pub mod install;
@@ -12,6 +13,7 @@ pub mod phpini;
 pub mod ports;
 pub mod process;
 pub mod project;
+pub mod resolve;
 pub mod service;
 pub mod version;
 

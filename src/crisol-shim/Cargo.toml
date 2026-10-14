@@ -11,7 +11,12 @@ name = "crisol-shim"
 path = "src/main.rs"
 
 [dependencies]
+crisol-core.workspace = true
+crisol-platform.workspace = true
 
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

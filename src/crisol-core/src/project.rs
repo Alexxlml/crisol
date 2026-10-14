@@ -149,7 +149,37 @@ pub fn find_project_file(
     ceiling: Option<&Path>,
     owners: &dyn FileOwners,
 ) -> ProjectSearch {
-    let mut ignored = Vec::new();
+    let mut search = find_files_upward(PROJECT_FILE, start, ceiling, owners);
+    let file = (!search.files.is_empty()).then(|| search.files.remove(0));
+    if let Some(found) = &file {
+        // Only the strangers that stood in the way matter; one further up is not news.
+        let depth = found.components().count();
+        search
+            .ignored
+            .retain(|i| i.file.components().count() > depth);
+    }
+    ProjectSearch {
+        file,
+        ignored: search.ignored,
+    }
+}
+
+/// Every trusted file called `file_name` at or above `start`, nearest first, under the same
+/// rules as [`find_project_file`]: untrusted owners are skipped and reported, and the
+/// search stops at the first `.git`, at `ceiling` or at the root. This is how the version
+/// files that pick a tool (`.php-version`, `.nvmrc`, `composer.json`, `package.json`) are
+/// found, with the same protection as `.crisol.toml`.
+#[must_use]
+pub fn find_files_upward(
+    file_name: &str,
+    start: &Path,
+    ceiling: Option<&Path>,
+    owners: &dyn FileOwners,
+) -> FilesSearch {
+    let mut found = FilesSearch {
+        files: Vec::new(),
+        ignored: Vec::new(),
+    };
     let start = normalize(start);
     let ceiling = ceiling.map(normalize);
     let first = if start.is_file() {
@@ -159,20 +189,15 @@ pub fn find_project_file(
     };
 
     for dir in first.into_iter().flat_map(Path::ancestors) {
-        let candidate = dir.join(PROJECT_FILE);
+        let candidate = dir.join(file_name);
         if candidate.is_file() {
             match owners.owner_of(&candidate) {
-                Ok(owner) if owner.trusted => {
-                    return ProjectSearch {
-                        file: Some(candidate),
-                        ignored,
-                    };
-                }
-                Ok(owner) => ignored.push(IgnoredProject {
+                Ok(owner) if owner.trusted => found.files.push(candidate),
+                Ok(owner) => found.ignored.push(IgnoredProject {
                     file: candidate,
                     owner: owner.name,
                 }),
-                Err(error) => ignored.push(IgnoredProject {
+                Err(error) => found.ignored.push(IgnoredProject {
                     file: candidate,
                     owner: format!("an unknown owner ({error})"),
                 }),
@@ -182,10 +207,16 @@ pub fn find_project_file(
             break;
         }
     }
-    ProjectSearch {
-        file: None,
-        ignored,
-    }
+    found
+}
+
+/// What [`find_files_upward`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilesSearch {
+    /// Trusted files, nearest first.
+    pub files: Vec<PathBuf>,
+    /// Files passed over because of their owner, nearest first. Show them as warnings.
+    pub ignored: Vec<IgnoredProject>,
 }
 
 /// The outcome of [`load_project`].
@@ -393,6 +424,24 @@ mod tests {
             message.contains("takeown"),
             "tells how to fix it: {message}"
         );
+    }
+
+    #[test]
+    fn a_stranger_further_up_than_the_obeyed_file_is_not_reported() {
+        let (_tmp, a, b, c) = tree();
+        let far = put(
+            &a,
+            "php = \"8.1\"
+",
+        );
+        let near = put(
+            &b,
+            "php = \"8.4\"
+",
+        );
+        let search = find_project_file(&c, None, &Strangers::of(&[&far]));
+        assert_eq!(search.file, Some(near));
+        assert_eq!(search.ignored, [], "the stranger is behind the file in use");
     }
 
     #[test]
