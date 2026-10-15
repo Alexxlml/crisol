@@ -16,6 +16,8 @@ pub mod process;
 pub mod project;
 pub mod resolve;
 pub mod service;
+pub mod shims;
+pub mod userpath;
 pub mod version;
 
 pub use catalog::{Catalog, CatalogError, Package, Target};

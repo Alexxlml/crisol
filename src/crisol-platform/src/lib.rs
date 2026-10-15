@@ -12,6 +12,8 @@ mod port_probe;
 mod private_dir;
 #[cfg(windows)]
 mod root_certs;
+#[cfg(windows)]
+mod user_path;
 
 #[cfg(windows)]
 pub use console::survive_ctrl_c;
@@ -25,6 +27,8 @@ pub use port_probe::WindowsPortProbe;
 pub use private_dir::WindowsPrivateDirs;
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
+#[cfg(windows)]
+pub use user_path::RegistryUserPath;
 
 use std::path::PathBuf;
 
