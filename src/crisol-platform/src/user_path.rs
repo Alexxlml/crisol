@@ -6,9 +6,10 @@
 //! elevation. After a change, `WM_SETTINGCHANGE` is broadcast with the text `Environment`, which
 //! is what makes Explorer, and so the terminals opened afterwards, pick the new value up.
 //!
-//! The key is a parameter so that the tests can use a scratch key of their own
-//! (`HKCU\Software\CrisolTests\…`, deleted when the test ends) and never write the real
-//! `Environment`. The scratch key does not broadcast.
+//! The root key is a parameter so that the tests can use a **private application hive**
+//! (`RegLoadAppKeyW` over a file in the test's own temporary folder): it needs no privileges,
+//! never touches the global registry, and disappears with the folder. The tests never write the
+//! real `Environment`. A private hive does not broadcast.
 
 use std::io;
 
@@ -58,11 +59,12 @@ impl RegistryUserPath {
         }
     }
 
-    /// A `PATH` stored under another key of the current user, for tests. Does not broadcast.
+    /// A `PATH` stored under `subkey` of another root (a private hive), for tests. Does not
+    /// broadcast.
     #[cfg(test)]
-    fn scratch(subkey: &str) -> Self {
+    fn private(root: HKEY, subkey: &str) -> Self {
         Self {
-            root: HKEY_CURRENT_USER.0 as isize,
+            root: root.0 as isize,
             subkey: subkey.to_owned(),
             broadcast: false,
         }
@@ -171,7 +173,13 @@ fn read_value(root: HKEY, subkey: &str, name: &str) -> io::Result<Option<PathVal
         data.truncate(length as usize);
         break;
     }
-    let (pairs, _) = data.as_chunks::<2>();
+    let (pairs, rest) = data.as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the `{name}` value is not UTF-16 text (odd length)"),
+        ));
+    }
     let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
     // The stored text ends with NUL (sometimes several); that is not part of the value.
     let end = units.iter().rposition(|u| *u != 0).map_or(0, |i| i + 1);
@@ -284,43 +292,41 @@ mod tests {
     use super::*;
     use crisol_core::userpath::{add_shims, remove_shims, PathChange};
     use std::path::Path;
-    use windows::Win32::System::Registry::{RegDeleteKeyW, RegDeleteTreeW};
+    use windows::Win32::System::Registry::{RegLoadAppKeyW, KEY_ALL_ACCESS};
 
-    /// A key of its own under `HKCU\Software\CrisolTests`, deleted when the test ends. The
-    /// real `Environment` is never written by a test.
+    /// A private application hive over a file in a temporary folder of its own. The global
+    /// registry is never written by a test; the hive is unloaded when this is dropped, before
+    /// the folder is removed.
     struct Scratch {
-        subkey: String,
+        hive: Key,
+        _dir: tempfile::TempDir,
     }
 
     impl Scratch {
         fn new() -> Self {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            let dir = tempfile::TempDir::new().unwrap();
+            let file = wide(&dir.path().join("hive.dat").to_string_lossy());
+            let mut handle = HKEY::default();
+            // SAFETY: `file` is NUL-terminated and outlives the call; `handle` is a valid
+            // out-parameter. The file is created if it does not exist.
+            check(unsafe {
+                RegLoadAppKeyW(
+                    PCWSTR(file.as_ptr()),
+                    &raw mut handle,
+                    KEY_ALL_ACCESS.0,
+                    0,
+                    None,
+                )
+            })
+            .unwrap();
             Self {
-                subkey: format!(
-                    r"Software\CrisolTests\userpath-{}-{nanos}",
-                    std::process::id()
-                ),
+                hive: Key(handle),
+                _dir: dir,
             }
         }
 
         fn store(&self) -> RegistryUserPath {
-            RegistryUserPath::scratch(&self.subkey)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let name = wide(&self.subkey);
-            let parent = wide(r"Software\CrisolTests");
-            // SAFETY: both names are NUL-terminated; only our own scratch keys are deleted
-            // (the parent only if it is empty).
-            unsafe {
-                let _ = RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(name.as_ptr()));
-                let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR(parent.as_ptr()));
-            }
+            RegistryUserPath::private(self.hive.0, USER_ENVIRONMENT)
         }
     }
 
@@ -373,7 +379,7 @@ mod tests {
 
     #[test]
     fn add_then_remove_leaves_the_registry_value_identical() {
-        // F4.4's acceptance, against a scratch key that mimics `Environment`.
+        // F4.4's acceptance, against a private hive that mimics `Environment`.
         let scratch = Scratch::new();
         let store = scratch.store();
         for (original, expandable) in [
@@ -405,7 +411,7 @@ mod tests {
             assert_ne!(value.text, "");
         }
         assert!(real.broadcast, "the real one announces its changes");
-        assert!(!RegistryUserPath::scratch("Software\\CrisolTests\\x").broadcast);
+        assert!(!RegistryUserPath::private(HKEY_CURRENT_USER, "x").broadcast);
     }
 
     #[test]
