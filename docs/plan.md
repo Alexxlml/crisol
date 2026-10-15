@@ -90,12 +90,15 @@ Leyenda: 🔒 requiere admin (operación aislada y opcional) · 🌐 requiere re
 ## Fase 6 — HTTPS local
 
 - **F6.1** CA local con `rcgen` (se genera una vez, la clave privada nunca sale de `certs/`).
+  - → ver ADR-0013: la CA lleva *name constraints* (`test`, `localhost`, el TLD configurado, `127.0.0.0/8`, `::1`), `pathlen = 0`, ECDSA P-256 y 10 años; nunca se reemplaza sola.
   - → nota: CA propia con hojas por sitio, no un único certificado autofirmado.
 - **F6.2** Certificado por sitio (o comodín `*.test`) firmado por la CA; integrar en el server block.
+  - → ver ADR-0013: un solo certificado comodín de 1 año, renovación automática, `secure = [...]` en `sites.toml`, redirección HTTP→HTTPS; repetir sobre TLS la prueba de que el código PHP no se sirve.
   - → nota: evitar `.local` en los SAN. Vigencia corta en las hojas.
 - **F6.3** 🪟 Trait `TrustStore`: instalar la CA en el almacén **CurrentUser\Root** (no requiere admin, Windows muestra un diálogo de confirmación). Desinstalar la quita.
   - *Aceptación:* `crisol secure sitio` y la petición HTTPS valida sin `-k`. `crisol trust remove` deja el almacén como estaba.
   - → nota: instalar la CA en CurrentUser\Root (sin admin) evita el aviso del navegador.
+  - → ver ADR-0013: las pruebas automáticas usan un almacén privado; la instalación real la prueba el propietario a mano. La CA también va en `etc/php/cacert.pem` y en `NODE_EXTRA_CA_CERTS`.
 
 ## Fase 7 — Resolución de `.test`
 

@@ -240,6 +240,18 @@ impl CrisolPaths {
         self.home.join(names::CERTS)
     }
 
+    /// The local CA certificate (public): `certs/ca.pem`. See [`crate::ca`].
+    #[must_use]
+    pub fn ca_cert(&self) -> PathBuf {
+        self.certs_dir().join("ca.pem")
+    }
+
+    /// The private key of the local CA: `certs/ca.key`. Never leaves the private home.
+    #[must_use]
+    pub fn ca_key(&self) -> PathBuf {
+        self.certs_dir().join("ca.key")
+    }
+
     /// The only directory that enters the user `PATH`: `shims/`.
     #[must_use]
     pub fn shims_dir(&self) -> PathBuf {

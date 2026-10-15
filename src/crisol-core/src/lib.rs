@@ -1,5 +1,6 @@
 //! crisol-core: platform-independent logic of Crisol.
 
+pub mod ca;
 pub mod cacert;
 pub mod catalog;
 pub mod config;

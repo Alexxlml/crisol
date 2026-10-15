@@ -18,6 +18,9 @@ tempfile.workspace = true
 minisign-verify.workspace = true
 ureq.workspace = true
 sha2.workspace = true
+rcgen.workspace = true
+x509-parser.workspace = true
+time.workspace = true
 zip.workspace = true
 crisol-protocol.workspace = true
 
