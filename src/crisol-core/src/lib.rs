@@ -9,6 +9,7 @@ pub mod fetch;
 pub mod install;
 pub mod log;
 pub mod manage;
+pub mod nginx;
 pub mod paths;
 pub mod phpini;
 pub mod pin;
