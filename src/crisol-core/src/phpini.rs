@@ -198,11 +198,13 @@ pub fn render_php_ini(input: &PhpIniInput<'_>) -> Result<GeneratedPhpIni, PhpIni
     for line in input.base.split_inclusive('\n') {
         let (content, terminator) = split_terminator(line);
         let replaced = match commented_extension(content) {
-            Some((Kind::Zend, "opcache", tail)) if opcache => {
+            Some((Kind::Zend, "opcache", tail)) if opcache && !applied_opcache => {
                 applied_opcache = true;
                 Some(format!("zend_extension=opcache{tail}"))
             }
-            Some((Kind::Normal, name, tail)) if wanted.contains(&name) => {
+            Some((Kind::Normal, name, tail))
+                if wanted.contains(&name) && !applied_extensions.contains(name) =>
+            {
                 applied_extensions.insert(name);
                 Some(format!("extension={name}{tail}"))
             }

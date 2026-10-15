@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use crate::edit::{EditError, TomlEditor};
 use crate::manage::{resolve_installed, InstalledVersion, ManageError};
 use crate::paths::CrisolPaths;
+use crate::project::{load_project, FileOwners, PROJECT_FILE};
 use crate::resolve::Tool;
 use crate::version::{VersionError, VersionReq};
 
@@ -89,20 +90,50 @@ pub fn use_global(
 
 /// Pins `tool` to `request` for the project in `dir`, in `dir/.crisol.toml`. The pin of the
 /// other tool, and anything else in the file, stays.
+///
+/// Levels are not merged (F1.4), so a **new** `.crisol.toml` in a subfolder hides what a trusted
+/// one above pins for the other tool. When that happens the result carries a warning.
+/// `owners` and `ceiling` are the ones of the search for the file above (ADR-0010).
 pub fn use_local(
     paths: &CrisolPaths,
     dir: &Path,
     tool: Tool,
     request: &str,
     env: &dyn Fn(&str) -> Option<String>,
+    owners: &dyn FileOwners,
+    ceiling: Option<&Path>,
 ) -> Result<Used, UseError> {
     if !dir.is_dir() {
         return Err(UseError::NotAFolder(dir.to_path_buf()));
     }
     let selects = installed_match(paths, tool, request)?;
+    let hidden = (!dir.join(PROJECT_FILE).exists())
+        .then(|| hidden_pin(dir, tool, owners, ceiling))
+        .flatten();
     let mut editor = TomlEditor::open_project(dir)?;
     let key = [tool.service()];
-    finish(&mut editor, &key, tool, request, selects, env)
+    let mut used = finish(&mut editor, &key, tool, request, selects, env)?;
+    used.warnings.extend(hidden);
+    Ok(used)
+}
+
+/// A warning if a trusted `.crisol.toml` above `dir` pins the tool **other** than `tool`: a new
+/// file in `dir` would hide that pin.
+fn hidden_pin(
+    dir: &Path,
+    tool: Tool,
+    owners: &dyn FileOwners,
+    ceiling: Option<&Path>,
+) -> Option<String> {
+    let above = load_project(dir.parent()?, ceiling, owners).ok()?.project?;
+    let (other, pin) = match tool {
+        Tool::Php => ("node", above.config.node?),
+        Tool::Node => ("php", above.config.php?),
+    };
+    Some(format!(
+        "{} pins {other} = \"{pin}\", but the new {PROJECT_FILE} in this folder hides it (levels are not merged):          {other} here no longer follows that pin. Add `{other} = \"{pin}\"` to this folder's file to keep it",
+        above.file.display()
+    ))
 }
 
 fn installed_match(

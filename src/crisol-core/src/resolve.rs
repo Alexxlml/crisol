@@ -419,9 +419,16 @@ fn fallback(
 /// project: what varies from project to project is the PHP that runs it, and that is
 /// [`resolve`] with [`Tool::Php`].
 pub fn resolve_composer(paths: &CrisolPaths) -> Result<InstalledVersion, ResolveError> {
-    list_installed(paths)?
+    let composers: Vec<InstalledVersion> = list_installed(paths)?
         .into_iter()
-        .rfind(|i| i.service == COMPOSER_SERVICE)
+        .filter(|i| i.service == COMPOSER_SERVICE)
+        .collect();
+    // Like PHP and Node: a pre-release only when it is all there is.
+    composers
+        .iter()
+        .rfind(|i| !i.version.is_prerelease())
+        .or_else(|| composers.last())
+        .cloned()
         .ok_or(ResolveError::NothingInstalled(COMPOSER_SERVICE))
 }
 

@@ -77,8 +77,13 @@ Orden de búsqueda al ejecutar `php` dentro de un directorio:
 1. Variable `CRISOL_PHP` (sobrescritura temporal en la terminal actual).
 2. `.crisol.toml` del proyecto (buscando hacia arriba desde el directorio actual, hasta el primer directorio con `.git`; se ignoran archivos de otro dueño — ADR-0010).
 3. Para PHP: `.php-version`; para Node: `.nvmrc` / `.node-version` / campo `engines` de `package.json`. (Estos archivos, y `composer.json` del paso 4, se buscan hacia arriba con las mismas reglas del ADR-0010 que `.crisol.toml`: dueño de confianza y tope en `.git`.)
-4. Para PHP: restricción `require.php` de `composer.json` → la versión instalada más alta que la cumpla.
+4. Para PHP: restricción `require.php` de `composer.json` → la **predeterminada** si la cumple y, si no, la versión instalada más alta que la cumpla (ADR-0012).
 5. Versión por defecto global de `crisol.toml`.
+6. Sin ninguna fuente: la línea recomendada por el catálogo (`[recommended]`, hoy PHP 8.4) si está instalada y, si no, la más alta estable con soporte (ADR-0012).
+
+La *predeterminada* es la de `[defaults]` en `crisol.toml` o, si no hay, la línea recomendada del catálogo. Una versión sin soporte (PHP 7.4) nunca es predeterminada; solo se usa si un proyecto la pide.
+
+Cada fuente del paso 3 y 4 se busca por separado hacia arriba, hasta el primer `.git`; la primera que aparece según este orden gana, aunque otra de menor prioridad esté más cerca. En un monorepo, un `.php-version` en la raíz gana a la restricción del `composer.json` de un subpaquete: para que el subpaquete mande, fija su versión con `crisol use php <versión> --local` (un `.crisol.toml` más cercano gana siempre).
 
 Los sitios web usan la misma resolución, así cada sitio `.test` corre con su versión de PHP.
 

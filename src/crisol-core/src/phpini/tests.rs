@@ -754,3 +754,19 @@ fn real_php_builds_load_every_extension_crisol_enables() {
     }
     assert!(tried > 0, "no PHP archive found in {}", folder.display());
 }
+
+#[test]
+fn a_repeated_commented_extension_line_is_activated_only_once() {
+    // Review finding 11: PHP warns "Module already loaded" for a duplicate `extension=`.
+    let base = ";extension=curl\r\n;extension=mbstring\r\n;extension=curl\r\n;zend_extension=opcache\r\n;zend_extension=opcache\r\n";
+    let text = render(base).text;
+    let count = |needle: &str| text.lines().filter(|l| l.trim() == needle).count();
+    assert_eq!(count("extension=curl"), 1, "{text}");
+    assert_eq!(count("extension=mbstring"), 1, "{text}");
+    assert_eq!(count("zend_extension=opcache"), 1, "{text}");
+    assert_eq!(
+        count(";extension=curl"),
+        1,
+        "the second line stays commented"
+    );
+}

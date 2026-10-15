@@ -115,7 +115,16 @@ fn use_local_writes_the_project_file_and_beats_the_global_default() {
     let world = world(&PHPS, &[]);
     use_global(&world.paths, Tool::Php, "8.3", &no_env).unwrap();
 
-    let used = use_local(&world.paths, &world.project, Tool::Php, "8.4.20", &no_env).unwrap();
+    let used = use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "8.4.20",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
     assert_eq!(used.file, world.project.join(".crisol.toml"));
     assert_eq!(
         fs::read_to_string(&used.file).unwrap(),
@@ -134,7 +143,16 @@ fn use_local_keeps_the_other_tools_pin_and_the_comments() {
     let file = world.project.join(".crisol.toml");
     fs::write(&file, "# pinned for the client\nnode = \"22\" # LTS\n").unwrap();
 
-    use_local(&world.paths, &world.project, Tool::Php, "8.4", &no_env).unwrap();
+    use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
     let text = fs::read_to_string(&file).unwrap();
     assert!(
         text.starts_with("# pinned for the client\nnode = \"22\" # LTS\n"),
@@ -144,14 +162,32 @@ fn use_local_keeps_the_other_tools_pin_and_the_comments() {
     assert_eq!(picked(&world, Tool::Node, &world.project), "22.5.0");
     assert_eq!(picked(&world, Tool::Php, &world.project), "8.4.26");
 
-    use_local(&world.paths, &world.project, Tool::Node, "20", &no_env).unwrap();
+    use_local(
+        &world.paths,
+        &world.project,
+        Tool::Node,
+        "20",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
     assert_eq!(picked(&world, Tool::Node, &world.project), "20.11.0");
 }
 
 #[test]
 fn a_version_that_is_not_installed_is_refused_and_nothing_is_written() {
     let world = world(&PHPS, &[]);
-    let error = use_local(&world.paths, &world.project, Tool::Php, "7.4", &no_env).unwrap_err();
+    let error = use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "7.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap_err();
     assert!(
         matches!(&error, UseError::NotInstalled { request, .. } if request == "7.4"),
         "{error}"
@@ -181,7 +217,16 @@ fn something_that_is_not_a_version_is_refused() {
 fn a_folder_that_does_not_exist_is_refused() {
     let world = world(&PHPS, &[]);
     let missing = world.project.join("nope");
-    let error = use_local(&world.paths, &missing, Tool::Php, "8.4", &no_env).unwrap_err();
+    let error = use_local(
+        &world.paths,
+        &missing,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap_err();
     assert!(matches!(error, UseError::NotAFolder(_)), "{error}");
 }
 
@@ -190,7 +235,16 @@ fn a_broken_file_is_an_error_and_is_not_overwritten() {
     let world = world(&PHPS, &[]);
     let file = world.project.join(".crisol.toml");
     fs::write(&file, "php = = broken").unwrap();
-    let error = use_local(&world.paths, &world.project, Tool::Php, "8.4", &no_env).unwrap_err();
+    let error = use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap_err();
     assert!(matches!(error, UseError::Edit(_)), "{error}");
     assert_eq!(fs::read_to_string(&file).unwrap(), "php = = broken");
 }
@@ -203,6 +257,95 @@ fn a_variable_of_this_terminal_is_mentioned_because_it_wins() {
     assert_eq!(used.warnings.len(), 1);
     assert!(used.warnings[0].contains("CRISOL_PHP") && used.warnings[0].contains("8.3"));
 
-    let quiet = use_local(&world.paths, &world.project, Tool::Php, "8.4", &no_env).unwrap();
+    let quiet = use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
     assert_eq!(quiet.warnings, Vec::<String>::new());
+}
+
+#[test]
+fn a_new_subfolder_file_warns_when_it_hides_the_other_tools_pin_above() {
+    // Review finding 10: levels are not merged, so `use php 8.3 --local` in a subfolder
+    // makes Node there stop following the `node = "22"` of the folder above.
+    let world = world(&PHPS, &["22.5.0"]);
+    fs::write(
+        world.project.join(".crisol.toml"),
+        "node = \"22\"
+",
+    )
+    .unwrap();
+    let sub = world.project.join("packages").join("legacy");
+    fs::create_dir_all(&sub).unwrap();
+
+    let used = use_local(
+        &world.paths,
+        &sub,
+        Tool::Php,
+        "8.3",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
+    assert_eq!(used.warnings.len(), 1, "{:?}", used.warnings);
+    assert!(
+        used.warnings[0].contains("node = \"22\"") && used.warnings[0].contains("hides"),
+        "{:?}",
+        used.warnings
+    );
+
+    // Writing the same tool's pin, or into a file that already exists, hides nothing new.
+    let again = use_local(
+        &world.paths,
+        &sub,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
+    assert_eq!(again.warnings, Vec::<String>::new());
+    let same = use_local(
+        &world.paths,
+        &world.project,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
+    assert_eq!(same.warnings, Vec::<String>::new());
+}
+
+#[test]
+fn no_warning_when_nothing_above_pins_the_other_tool() {
+    let world = world(&PHPS, &["22.5.0"]);
+    fs::write(
+        world.project.join(".crisol.toml"),
+        "php = \"8.3\"
+",
+    )
+    .unwrap();
+    let sub = world.project.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    let used = use_local(
+        &world.paths,
+        &sub,
+        Tool::Php,
+        "8.4",
+        &no_env,
+        &TrustAllOwners,
+        None,
+    )
+    .unwrap();
+    assert_eq!(used.warnings, Vec::<String>::new(), "it pins the same tool");
 }

@@ -124,6 +124,24 @@ fn composer_is_the_highest_installed_and_does_not_depend_on_the_project() {
 }
 
 #[test]
+fn composer_prefers_a_stable_version_to_a_higher_prerelease() {
+    let world = World::new(&PHPS, &[]);
+    for version in ["2.9.1", "2.10.0-RC1"] {
+        fs::create_dir_all(world.paths.bin_for(COMPOSER_SERVICE, version).unwrap()).unwrap();
+    }
+    assert_eq!(
+        resolve_composer(&world.paths).unwrap().version.to_string(),
+        "2.9.1"
+    );
+    fs::remove_dir_all(world.paths.bin_for(COMPOSER_SERVICE, "2.9.1").unwrap()).unwrap();
+    assert_eq!(
+        resolve_composer(&world.paths).unwrap().version.to_string(),
+        "2.10.0-RC1",
+        "all there is"
+    );
+}
+
+#[test]
 fn without_composer_installed_that_is_what_is_reported() {
     let world = World::new(&PHPS, &[]);
     let error = resolve_composer(&world.paths).unwrap_err();

@@ -14,7 +14,10 @@
 //! Both accept `||` (Composer also a single `|`), a space or a comma for "and", `x`, `X` and
 //! `*` as wildcards, a `v` prefix, a `1.0 - 2.0` hyphen range, and an `@stability` suffix,
 //! which is ignored. A bare partial version (`8.1`) means "any `8.1.x`", as in npm; this is
-//! kind to people who write `"php": "8.1"`.
+//! kind to people who write `"php": "8.1"`. **Composer is stricter here**: it reads a bare
+//! `"8.1"` as exactly `8.1.0`, so Crisol may choose an `8.1.x` that Composer's platform check
+//! then rejects. That is on purpose (choosing *some* installed 8.1 is more useful than
+//! failing), and the project's own Composer message is then the one that explains it.
 //!
 //! A pre-release (`8.5.0-rc1`) never satisfies a range, in the spirit of both tools: a
 //! release candidate is only used when someone asks for it by name.
