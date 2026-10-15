@@ -110,7 +110,9 @@ impl TomlEditor {
 
     /// Opens `sites.toml`.
     pub fn open_sites(paths: &CrisolPaths) -> Result<Self, EditError> {
-        Self::open(paths.sites_file())
+        let mut editor = Self::open(paths.sites_file())?;
+        editor.check = Some(check_sites);
+        Ok(editor)
     }
 
     fn from_text(path: PathBuf, original: Option<String>) -> Result<Self, EditError> {
@@ -279,6 +281,12 @@ impl TomlEditor {
 
 fn check_config(text: &str) -> Result<(), String> {
     Config::parse(text).map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn check_sites(text: &str) -> Result<(), String> {
+    crate::sites::SitesFile::parse(text)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn check_project(text: &str) -> Result<(), String> {
