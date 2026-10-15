@@ -70,6 +70,10 @@ pub struct LifecyclePolicy {
     pub max_crashes: u32,
     /// Window in which crashes are counted.
     pub crash_window: Duration,
+    /// Pool only: a worker that exits with code 0 sooner than this after it started was not
+    /// recycled, it failed to run; the exit counts as a crash. Without this a worker that
+    /// always exits at once would be relaunched forever without being counted.
+    pub min_recycle_uptime: Duration,
 }
 
 impl Default for LifecyclePolicy {
@@ -83,6 +87,7 @@ impl Default for LifecyclePolicy {
             restart_delay: Duration::from_millis(1500),
             max_crashes: 3,
             crash_window: Duration::from_secs(60),
+            min_recycle_uptime: Duration::from_millis(250),
         }
     }
 }
@@ -346,6 +351,8 @@ struct Run {
     processes: Vec<ProcessId>,
     /// Pool only: when a crashed worker is to be relaunched (`None`: it is not waiting).
     relaunch_at: Vec<Option<Instant>>,
+    /// When each process of `processes` was started.
+    started_at: Vec<Instant>,
 }
 
 #[derive(Debug)]
@@ -507,11 +514,13 @@ impl Service {
             }
         }
         let relaunch_at = vec![None; processes.len()];
+        let started_at = vec![now; processes.len()];
         self.degraded = false;
         self.run = Some(Run {
             group,
             processes,
             relaunch_at,
+            started_at,
         });
         self.started = Some(now);
         self.next_probe = Some(now + self.spec.policy.probe_interval);
@@ -674,7 +683,14 @@ impl Service {
             }
             match self.supervisor.status(*process) {
                 Ok(ProcessStatus::Running) => alive += 1,
-                Ok(ProcessStatus::Exited(ExitReason::Code(0))) => recycled.push(index),
+                Ok(ProcessStatus::Exited(ExitReason::Code(0)))
+                    if now.saturating_duration_since(run.started_at[index])
+                        >= self.spec.policy.min_recycle_uptime =>
+                {
+                    recycled.push(index);
+                }
+                // Exited cleanly but too soon to have served anything: it failed to run.
+                Ok(ProcessStatus::Exited(ExitReason::Code(0))) => crashed.push((index, Some(0))),
                 Ok(ProcessStatus::Exited(ExitReason::Code(code))) => {
                     crashed.push((index, Some(code)));
                 }
@@ -695,7 +711,7 @@ impl Service {
         }
 
         for index in recycled {
-            if self.respawn_worker(index).is_err() {
+            if self.respawn_worker(index, now).is_err() {
                 crashed.push((index, None));
             }
         }
@@ -711,7 +727,7 @@ impl Service {
     }
 
     /// Launches worker `index` again in the group it belongs to.
-    fn respawn_worker(&mut self, index: usize) -> Result<(), SupervisorError> {
+    fn respawn_worker(&mut self, index: usize, now: Instant) -> Result<(), SupervisorError> {
         let Some(run) = self.run.as_mut() else {
             return Ok(());
         };
@@ -720,6 +736,7 @@ impl Service {
             .spawn(run.group, &self.spec.processes[index])?;
         run.processes[index] = id;
         run.relaunch_at[index] = None;
+        run.started_at[index] = now;
         Ok(())
     }
 
@@ -762,7 +779,7 @@ impl Service {
                 .collect()
         });
         for index in due {
-            if self.respawn_worker(index).is_err() && !self.worker_crashed(index, None, now) {
+            if self.respawn_worker(index, now).is_err() && !self.worker_crashed(index, None, now) {
                 return false;
             }
         }

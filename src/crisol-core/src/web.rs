@@ -11,11 +11,17 @@
 //!   and reloads Nginx, then stops the pools nobody uses. The other sites keep answering
 //!   throughout (`nginx -s reload` swaps workers without dropping connections).
 //!
-//! A reload is a small sequence, advanced by [`WebStack::tick`]: wait until the new pools are
-//! up, check the configuration with `nginx -t`, and only if it passes send `nginx -s reload`.
-//! A configuration Nginx rejects is reported ([`WebEvent::ReloadFailed`], with where its
-//! output is) and the running server is left as it was. Requests that arrive while a reload is
-//! under way are merged into one more reload afterwards.
+//! A new configuration never replaces the one on disk until Nginx has accepted it. It is
+//! written in a staging folder (`etc/nginx/.next/`, with its own paths), tested there with
+//! `nginx -t`, and only if the test passes is it written to `etc/nginx/` and `nginx -s reload`
+//! sent. A configuration Nginx rejects (a mistake in a user override, typically) is reported
+//! ([`WebEvent::ReloadFailed`], with where the output is) and neither the running server nor
+//! the files its next start would read change. The first start follows the same road.
+//!
+//! A reload is a small sequence advanced by [`WebStack::tick`]: wait for the pools the change
+//! created, test, promote, reload. Changes that arrive meanwhile are merged into one more
+//! round. A pool no site uses any more is stopped a few seconds after the reload, because the
+//! old Nginx workers keep serving for a moment after the signal.
 //!
 //! Ports of a running pool never move: a version added later gets a free block
 //! ([`PhpPools::ensure`]), whatever its position in version order.
@@ -28,7 +34,10 @@ use std::time::{Duration, Instant};
 use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
 use crate::manage::InstalledVersion;
-use crate::nginx::{write_nginx_config, NginxError, NginxInput, NginxSite, PhpPools, WrittenNginx};
+use crate::nginx::{
+    config_differs, render, stage_nginx_config, write_nginx_config, NginxError, NginxInput,
+    NginxSite, PhpPools,
+};
 use crate::paths::{CrisolPaths, PathsError};
 use crate::phppool::{pool_spec, service_name};
 use crate::ports::PortProbe;
@@ -36,7 +45,7 @@ use crate::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
 };
 use crate::project::FileOwners;
-use crate::resolve::{resolve, ResolveContext, ResolveError, Tool};
+use crate::resolve::{resolve, ResolveContext, Tool};
 use crate::service::{
     HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
 };
@@ -44,6 +53,10 @@ use crate::sites::{discover, Site, SitesFile};
 
 /// How long each step of a reload may take.
 const RELOAD_STEP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a pool that no site uses keeps running after the reload that stops sending it
+/// requests: the old Nginx workers finish what they were doing.
+const RETIRE_GRACE: Duration = Duration::from_secs(5);
 
 // ---- planning -------------------------------------------------------------------------
 
@@ -102,6 +115,10 @@ pub fn plan_from(
 /// the shims would run in its folder (`.crisol.toml`, `.php-version`, `composer.json`, the
 /// default…).
 ///
+/// `CRISOL_PHP` and `CRISOL_NODE` are hidden from the resolution: they override one terminal,
+/// not the web server. The warnings of the resolution (a `.crisol.toml` ignored because of its
+/// owner…) are added to the plan's, with the site's domain in front.
+///
 /// A site whose requested PHP is not installed is still served, as static files, and the plan
 /// says why.
 #[must_use]
@@ -114,24 +131,40 @@ pub fn plan_web(
     env: &dyn Fn(&str) -> Option<String>,
 ) -> WebPlan {
     let found = discover(paths, config, linked);
+    let terminal_only = |name: &str| match name {
+        "CRISOL_PHP" | "CRISOL_NODE" => None,
+        other => env(other),
+    };
+    let mut resolution_warnings: Vec<String> = Vec::new();
     let mut php_for = |site: &Site| -> Result<Option<InstalledVersion>, String> {
         let context = ResolveContext {
             paths,
             cwd: &site.root,
             ceiling: None,
             owners,
-            env,
+            env: &terminal_only,
             catalog,
         };
         match resolve(Tool::Php, &context) {
-            Ok(resolution) => Ok(Some(resolution.resolved.version)),
-            Err(
-                error @ (ResolveError::NotInstalled { .. } | ResolveError::NothingInstalled(_)),
-            ) => Err(error.to_string()),
-            Err(other) => Err(other.to_string()),
+            Ok(resolution) => {
+                resolution_warnings.extend(
+                    resolution
+                        .warnings
+                        .iter()
+                        .map(|w| format!("{}: {w}", site.domain)),
+                );
+                Ok(Some(resolution.resolved.version))
+            }
+            Err(error) => Err(error.to_string()),
         }
     };
-    plan_from(found.sites, found.warnings, &mut php_for)
+    let mut plan = plan_from(found.sites, found.warnings, &mut php_for);
+    for warning in resolution_warnings {
+        if !plan.warnings.contains(&warning) {
+            plan.warnings.push(warning);
+        }
+    }
+    plan
 }
 
 // ---- running --------------------------------------------------------------------------
@@ -157,37 +190,59 @@ pub enum WebEvent {
         /// What.
         event: ServiceEvent,
     },
-    /// The configuration changed and Nginx is going to be reloaded.
+    /// The configuration changed and is going to be tested and, if it passes, loaded.
     ReloadStarted,
     /// Nginx accepted the new configuration and was told to reload. Its new workers take over
     /// a moment later (`nginx -s reload` returns once the signal is sent).
     Reloaded,
-    /// Nginx did not accept the new configuration, or could not be asked to reload. The
-    /// running server keeps the old one.
+    /// The new configuration was not put in place: Nginx rejected it, or could not be asked
+    /// to reload. The files in `etc/nginx/` are the ones that worked before.
     ReloadFailed {
         /// What went wrong.
         reason: String,
     },
 }
 
-/// What [`WebStack::apply`] changed.
+/// What [`WebStack::apply`] found and did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
-    /// The configuration files.
-    pub nginx: WrittenNginx,
+    /// The configuration for this plan is not what is in `etc/nginx/` yet.
+    pub config_changed: bool,
     /// Pools created for PHP versions that were not in use.
     pub new_pools: Vec<String>,
-    /// Pools no site uses any more; they stop once Nginx stops sending them requests.
+    /// Pools no site uses any more; they stop shortly after Nginx stops sending them requests.
     pub retired_pools: Vec<String>,
-    /// A reload was requested.
+    /// A reload was requested (or one under way will run again).
     pub reload_requested: bool,
+    /// Sites left out of the configuration and other things worth saying.
+    pub warnings: Vec<String>,
+}
+
+/// The configuration the stack wants: what [`WebStack::apply`] was last given, owned so that
+/// it can be written later, when Nginx has accepted it.
+#[derive(Debug, Clone)]
+struct Desired {
+    sites: Vec<(Site, Option<String>)>,
+    pools: PhpPools,
+}
+
+impl Desired {
+    fn entries(&self) -> Vec<NginxSite<'_>> {
+        self.sites
+            .iter()
+            .map(|(site, php)| NginxSite {
+                site,
+                php: php.as_deref(),
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Waiting for the new pools to come up.
     Pools,
-    /// `nginx -t` is running.
+    /// `nginx -t` is running on the staged configuration.
     Test,
     /// `nginx -s reload` is running.
     Reload,
@@ -197,6 +252,10 @@ struct Reload {
     phase: Phase,
     since: Instant,
     helper: Option<(GroupId, ProcessId)>,
+    /// What is being tested (and, if it passes, written).
+    tested: Option<Desired>,
+    /// This round is the first start of Nginx, not a reload.
+    then_start: bool,
 }
 
 struct Pool {
@@ -208,16 +267,20 @@ pub struct WebStack {
     paths: CrisolPaths,
     http_port: u16,
     php: PhpConfig,
+    reserved: BTreeSet<u16>,
     nginx_dir: PathBuf,
     supervisor: Arc<dyn ProcessSupervisor>,
     probe: Arc<dyn PortProbe>,
     nginx: Option<Service>,
-    main_conf: Option<PathBuf>,
     pools: BTreeMap<String, Pool>,
+    /// Pools started by `apply` that have not finished starting; a reload waits for these.
+    awaiting: BTreeSet<String>,
     /// Pools that no site uses; stopped once the reload that stops sending them requests ends.
     unused: BTreeSet<String>,
+    retire_at: Option<Instant>,
     stopping: Vec<Service>,
     ports: PhpPools,
+    desired: Option<Desired>,
     running: bool,
     reload: Option<Reload>,
     reload_again: bool,
@@ -246,15 +309,18 @@ impl WebStack {
             paths,
             http_port: config.services.nginx.http_port,
             php: config.php.clone(),
+            reserved: config.reserved_ports(),
             nginx_dir,
             supervisor,
             probe,
             nginx: None,
-            main_conf: None,
             pools: BTreeMap::new(),
+            awaiting: BTreeSet::new(),
             unused: BTreeSet::new(),
+            retire_at: None,
             stopping: Vec::new(),
             ports: PhpPools::default(),
+            desired: None,
             running: false,
             reload: None,
             reload_again: false,
@@ -285,37 +351,47 @@ impl WebStack {
         self.ports.ports(version)
     }
 
-    /// Writes the configuration for `plan` and makes the running stack follow it: pools for
-    /// new PHP versions are started, Nginx is reloaded, and pools nobody uses are retired.
-    /// When the stack is stopped it only prepares: the next [`start`](Self::start) runs it.
+    fn main_conf(&self) -> Result<PathBuf, PathsError> {
+        Ok(self.paths.etc_for("nginx")?.join("nginx.conf"))
+    }
+
+    /// Takes `plan` as what should be served. Pools for new PHP versions are created (and
+    /// started if the stack runs), and if the stack runs and the configuration differs from the
+    /// one on disk a reload is requested: it will be tested in the staging folder and only
+    /// then written. Nothing under `etc/nginx/` changes here.
+    ///
+    /// When the stack is stopped it only prepares: [`start`](Self::start) tests and runs it.
     pub fn apply(&mut self, plan: &WebPlan, now: Instant) -> Result<Applied, WebError> {
         let versions = plan.php_versions();
         for version in versions.keys() {
-            self.ports
-                .ensure(version, self.php.base_port, self.php.workers);
+            self.ports.ensure(
+                version,
+                self.php.base_port,
+                self.php.workers,
+                &self.reserved,
+            );
         }
-
-        let entries: Vec<NginxSite<'_>> = plan
-            .sites
-            .iter()
-            .map(|s| NginxSite {
-                site: &s.site,
-                php: s
-                    .php
-                    .as_ref()
-                    .and_then(|v| versions.get_key_value(&v.version.to_string()))
-                    .map(|(version, _)| version.as_str())
-                    .filter(|version| self.ports.ports(version).is_some()),
-            })
-            .collect();
-        let nginx = write_nginx_config(&NginxInput {
-            paths: &self.paths,
-            nginx_dir: &self.nginx_dir,
-            http_port: self.http_port,
-            sites: &entries,
-            pools: &self.ports,
-        })?;
-        self.main_conf = Some(nginx.main.clone());
+        let desired = Desired {
+            sites: plan
+                .sites
+                .iter()
+                .map(|planned| {
+                    let php = planned
+                        .php
+                        .as_ref()
+                        .map(|v| v.version.to_string())
+                        .filter(|v| self.ports.ports(v).is_some());
+                    (planned.site.clone(), php)
+                })
+                .collect(),
+            pools: self.ports.clone(),
+        };
+        let (config_changed, warnings) = {
+            let entries = desired.entries();
+            let input = self.input(&desired, &entries);
+            (config_differs(&input)?, render(&input).warnings)
+        };
+        self.desired = Some(desired);
 
         let mut new_pools = Vec::new();
         for (version, installed) in &versions {
@@ -340,17 +416,19 @@ impl WebStack {
         self.unused.extend(retired_pools.iter().cloned());
 
         if self.nginx.is_none() {
-            self.nginx = Some(self.nginx_service(&nginx.main)?);
+            self.nginx = Some(self.nginx_service()?);
         }
 
         let mut reload_requested = false;
         if self.running {
             for version in &new_pools {
                 if let Some(pool) = self.pools.get_mut(version) {
-                    let _ = pool.service.start(now);
+                    if pool.service.start(now).is_ok() {
+                        self.awaiting.insert(version.clone());
+                    }
                 }
             }
-            if !nginx.changed.is_empty() {
+            if config_changed || self.reload.is_some() {
                 self.request_reload(now);
                 reload_requested = true;
             } else if !retired_pools.is_empty() {
@@ -362,21 +440,33 @@ impl WebStack {
         }
 
         Ok(Applied {
-            nginx,
+            config_changed,
             new_pools,
             retired_pools,
             reload_requested,
+            warnings,
         })
     }
 
-    fn nginx_service(&self, main: &Path) -> Result<Service, WebError> {
+    fn input<'a>(&'a self, desired: &'a Desired, entries: &'a [NginxSite<'a>]) -> NginxInput<'a> {
+        NginxInput {
+            paths: &self.paths,
+            nginx_dir: &self.nginx_dir,
+            http_port: self.http_port,
+            sites: entries,
+            pools: &desired.pools,
+        }
+    }
+
+    fn nginx_service(&self) -> Result<Service, WebError> {
         let program = self
             .nginx_dir
             .join(format!("nginx{}", std::env::consts::EXE_SUFFIX));
+        let main = self.main_conf()?;
         let control = |extra: &[&str]| {
             ProcessSpec::new(&program)
                 .arg("-c")
-                .arg(main)
+                .arg(&main)
                 .arg("-p")
                 .arg(&self.nginx_dir)
                 .args(extra.iter().copied())
@@ -395,7 +485,10 @@ impl WebStack {
         ))
     }
 
-    /// Starts Nginx and every pool. Call [`apply`](Self::apply) first.
+    /// Starts the pools and, once the configuration has passed `nginx -t` and been written,
+    /// Nginx. Call [`apply`](Self::apply) first. If the new configuration is rejected and an
+    /// earlier one is on disk, Nginx starts with that one and [`WebEvent::ReloadFailed`] says
+    /// why.
     pub fn start(&mut self, now: Instant) -> Vec<WebEvent> {
         let mut events = Vec::new();
         self.running = true;
@@ -404,12 +497,21 @@ impl WebStack {
                 events.extend(wrap(&service_name(name), list));
             }
         }
+        let on_disk = self.main_conf().is_ok_and(|main| main.is_file());
+        if self.desired.is_some() {
+            self.begin_test(true, now, &mut events);
+        } else if on_disk {
+            self.start_nginx(now, &mut events);
+        }
+        events
+    }
+
+    fn start_nginx(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
         if let Some(nginx) = &mut self.nginx {
             if let Ok(list) = nginx.start(now) {
                 events.extend(wrap("nginx", list));
             }
         }
-        events
     }
 
     /// Stops Nginx and the pools, and cancels a reload under way.
@@ -418,6 +520,8 @@ impl WebStack {
         self.running = false;
         self.cancel_reload();
         self.reload_again = false;
+        self.retire_at = None;
+        self.awaiting.clear();
         if let Some(nginx) = &mut self.nginx {
             events.extend(wrap("nginx", nginx.stop(now)));
         }
@@ -452,7 +556,16 @@ impl WebStack {
         }
         self.stopping
             .retain(|s| !matches!(s.state(), ServiceState::Stopped | ServiceState::Failed(_)));
+        let pools = &self.pools;
+        self.awaiting.retain(|version| {
+            pools
+                .get(version)
+                .is_some_and(|p| *p.service.state() == ServiceState::Starting)
+        });
         self.tick_reload(now, &mut events);
+        if self.retire_at.is_some_and(|at| now >= at) {
+            self.retire_unused(now);
+        }
         events
     }
 
@@ -466,6 +579,8 @@ impl WebStack {
                 phase: Phase::Pools,
                 since: now,
                 helper: None,
+                tested: None,
+                then_start: false,
             });
         }
     }
@@ -483,9 +598,8 @@ impl WebStack {
         let _ = self.supervisor.close_group(group);
     }
 
-    /// Runs `nginx -c <main> -p <dir> <args>` once, in a group of its own.
-    fn run_nginx(&self, args: &[&str]) -> Result<(GroupId, ProcessId), String> {
-        let main = self.main_conf.as_ref().ok_or("no configuration yet")?;
+    /// Runs `nginx -c <conf> -p <dir> <args>` once, in a group of its own.
+    fn run_nginx(&self, conf: &Path, args: &[&str]) -> Result<(GroupId, ProcessId), String> {
         let program = self
             .nginx_dir
             .join(format!("nginx{}", std::env::consts::EXE_SUFFIX));
@@ -496,7 +610,7 @@ impl WebStack {
             .join("reload.log");
         let spec = ProcessSpec::new(program)
             .arg("-c")
-            .arg(main)
+            .arg(conf)
             .arg("-p")
             .arg(&self.nginx_dir)
             .args(args.iter().copied())
@@ -515,39 +629,51 @@ impl WebStack {
         }
     }
 
-    fn fail_reload(&mut self, reason: String, now: Instant, events: &mut Vec<WebEvent>) {
-        self.cancel_reload();
-        events.push(WebEvent::ReloadFailed { reason });
-        self.finish_reload_round(now, events, false);
+    fn reload_log(&self) -> PathBuf {
+        self.paths
+            .logs_for("nginx")
+            .map(|d| d.join("reload.log"))
+            .unwrap_or_default()
     }
 
-    /// After a reload, successful or not: stop pools nobody uses and run the one that was
-    /// asked for in the meantime.
-    fn finish_reload_round(&mut self, now: Instant, events: &mut Vec<WebEvent>, ok: bool) {
-        if ok {
-            self.retire_unused(now);
+    /// The round failed: the files in `etc/nginx/` are untouched. If this was the first start
+    /// and an earlier configuration exists, Nginx starts with it.
+    fn fail_reload(&mut self, reason: String, now: Instant, events: &mut Vec<WebEvent>) {
+        let then_start = self.reload.as_ref().is_some_and(|r| r.then_start);
+        self.cancel_reload();
+        events.push(WebEvent::ReloadFailed { reason });
+        if then_start && self.running && self.main_conf().is_ok_and(|main| main.is_file()) {
+            self.start_nginx(now, events);
         }
-        if std::mem::take(&mut self.reload_again) {
+        self.finish_reload_round(now, false);
+    }
+
+    /// After a round, successful or not: stop pools nobody uses (after a grace period) and run
+    /// the round that was asked for in the meantime.
+    fn finish_reload_round(&mut self, now: Instant, ok: bool) {
+        if ok && !self.unused.is_empty() {
+            self.retire_at = Some(now + RETIRE_GRACE);
+        }
+        if std::mem::take(&mut self.reload_again) && self.running {
             self.request_reload(now);
-            events.push(WebEvent::ReloadStarted);
         }
     }
 
     fn retire_unused(&mut self, now: Instant) {
+        self.retire_at = None;
         for version in std::mem::take(&mut self.unused) {
             if let Some(mut pool) = self.pools.remove(&version) {
                 let _ = pool.service.stop(now);
                 self.stopping.push(pool.service);
             }
         }
-        let keep: BTreeSet<String> = self.pools.keys().cloned().collect();
-        let stopping_ports: BTreeSet<String> = self
-            .stopping
-            .iter()
-            .filter_map(|s| s.name().strip_prefix("php-").map(str::to_owned))
-            .collect();
-        self.ports
-            .retain(&keep.union(&stopping_ports).cloned().collect());
+        let mut keep: BTreeSet<String> = self.pools.keys().cloned().collect();
+        keep.extend(
+            self.stopping
+                .iter()
+                .filter_map(|s| s.name().strip_prefix("php-").map(str::to_owned)),
+        );
+        self.ports.retain(&keep);
     }
 
     fn tick_reload(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
@@ -566,16 +692,10 @@ impl WebStack {
         }
         match phase {
             Phase::Pools => {
-                let waiting = self.pools.values().any(|p| {
-                    matches!(
-                        p.service.state(),
-                        ServiceState::Starting | ServiceState::Stopped
-                    )
-                });
                 if !self.running {
                     self.cancel_reload();
-                } else if !waiting {
-                    self.begin_step(Phase::Test, &["-t"], now, events);
+                } else if self.awaiting.is_empty() {
+                    self.begin_test(false, now, events);
                 }
             }
             Phase::Test | Phase::Reload => {
@@ -587,55 +707,154 @@ impl WebStack {
                     Ok(ProcessStatus::Exited(ExitReason::Code(0))) => {
                         self.close_helper(group);
                         if phase == Phase::Test {
-                            self.begin_step(Phase::Reload, &["-s", "reload"], now, events);
+                            self.promote(now, events);
                         } else {
                             self.reload = None;
                             events.push(WebEvent::Reloaded);
-                            self.finish_reload_round(now, events, true);
+                            self.finish_reload_round(now, true);
                         }
                     }
                     _ => {
-                        let log = self
-                            .paths
-                            .logs_for("nginx")
-                            .map(|d| d.join("reload.log"))
-                            .unwrap_or_default();
                         let what = if phase == Phase::Test {
-                            "nginx rejected the new configuration"
+                            "nginx rejected the new configuration (the previous one stays in place)"
                         } else {
                             "nginx could not be asked to reload"
                         };
-                        self.fail_reload(format!("{what}; see {}", log.display()), now, events);
+                        let reason = format!("{what}; see {}", self.reload_log().display());
+                        self.fail_reload(reason, now, events);
                     }
                 }
             }
         }
     }
 
-    fn begin_step(
-        &mut self,
-        phase: Phase,
-        args: &[&str],
-        now: Instant,
-        events: &mut Vec<WebEvent>,
-    ) {
-        if phase == Phase::Test {
+    /// Stages what is wanted now and runs `nginx -t` on it.
+    fn begin_test(&mut self, then_start: bool, now: Instant, events: &mut Vec<WebEvent>) {
+        self.cancel_reload();
+        let Some(desired) = self.desired.clone() else {
+            return;
+        };
+        let staged = {
+            let entries = desired.entries();
+            let input = self.input(&desired, &entries);
+            match config_differs(&input) {
+                Ok(false) if self.main_conf().is_ok_and(|main| main.is_file()) => None,
+                Ok(_) => Some(stage_nginx_config(&input)),
+                Err(e) => Some(Err(e)),
+            }
+        };
+        let staged = match staged {
+            // The disk already has exactly this: nothing to test or reload.
+            None => {
+                if then_start {
+                    self.start_nginx(now, events);
+                }
+                self.finish_reload_round(now, true);
+                return;
+            }
+            Some(Ok(staged)) => staged,
+            Some(Err(e)) => {
+                self.reload = Some(Reload {
+                    phase: Phase::Test,
+                    since: now,
+                    helper: None,
+                    tested: None,
+                    then_start,
+                });
+                self.fail_reload(
+                    format!("could not prepare the configuration: {e}"),
+                    now,
+                    events,
+                );
+                return;
+            }
+        };
+        if !then_start {
             events.push(WebEvent::ReloadStarted);
         }
-        if let Some(reload) = &self.reload {
-            if let Some((group, _)) = reload.helper {
-                self.close_helper(group);
-            }
-        }
-        match self.run_nginx(args) {
+        match self.run_nginx(&staged.main, &["-t"]) {
             Ok(helper) => {
                 self.reload = Some(Reload {
-                    phase,
+                    phase: Phase::Test,
                     since: now,
                     helper: Some(helper),
+                    tested: Some(desired),
+                    then_start,
                 });
             }
-            Err(reason) => self.fail_reload(reason, now, events),
+            Err(reason) => {
+                self.reload = Some(Reload {
+                    phase: Phase::Test,
+                    since: now,
+                    helper: None,
+                    tested: None,
+                    then_start,
+                });
+                self.fail_reload(reason, now, events);
+            }
+        }
+    }
+
+    /// `nginx -t` passed: write the tested configuration to `etc/nginx/`, then reload (or, for
+    /// the first start, start Nginx).
+    fn promote(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
+        let Some(reload) = self.reload.take() else {
+            return;
+        };
+        let Some(tested) = reload.tested else {
+            return;
+        };
+        let written = {
+            let entries = tested.entries();
+            let input = self.input(&tested, &entries);
+            write_nginx_config(&input)
+        };
+        if let Some(stage) = crate::nginx::staging_dir(&self.paths) {
+            let _ = std::fs::remove_dir_all(stage);
+        }
+        if let Err(e) = written {
+            self.reload = Some(Reload {
+                tested: None,
+                helper: None,
+                phase: Phase::Test,
+                since: now,
+                then_start: reload.then_start,
+            });
+            self.fail_reload(
+                format!("could not write the configuration: {e}"),
+                now,
+                events,
+            );
+            return;
+        }
+        if reload.then_start {
+            self.start_nginx(now, events);
+            self.finish_reload_round(now, true);
+            return;
+        }
+        let Ok(main) = self.main_conf() else {
+            return;
+        };
+        match self.run_nginx(&main, &["-s", "reload"]) {
+            Ok(helper) => {
+                self.reload = Some(Reload {
+                    phase: Phase::Reload,
+                    since: now,
+                    helper: Some(helper),
+                    tested: None,
+                    then_start: false,
+                });
+            }
+            Err(reason) => {
+                self.reload = Some(Reload {
+                    phase: Phase::Reload,
+                    since: now,
+                    helper: None,
+                    tested: None,
+                    then_start: false,
+                });
+                self.fail_reload(reason, now, events);
+            }
         }
     }
 }

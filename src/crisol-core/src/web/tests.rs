@@ -23,16 +23,23 @@ struct Rig {
     probe: Arc<FakePortProbe>,
     stack: WebStack,
     t0: Instant,
+    /// Control commands started before the test began its own changes (the first start's).
+    baseline: usize,
 }
 
 impl Rig {
     fn new(php: &[&str]) -> Self {
+        Self::with_config(php, |_| {})
+    }
+
+    fn with_config(php: &[&str], adjust: impl FnOnce(&mut Config)) -> Self {
         let tmp = TempDir::new().unwrap();
         let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
         let mut config = Config::default();
         config.services.nginx.http_port = HTTP;
         config.php.base_port = 19100;
         config.php.workers = 2;
+        adjust(&mut config);
         for version in php {
             fs::create_dir_all(paths.bin_for("php", version).unwrap()).unwrap();
         }
@@ -56,6 +63,7 @@ impl Rig {
             probe,
             stack,
             t0: Instant::now(),
+            baseline: 0,
         }
     }
 
@@ -124,7 +132,21 @@ impl Rig {
     }
 
     fn control_commands(&self) -> Vec<Vec<String>> {
-        self.controls().into_iter().map(|(_, args)| args).collect()
+        self.controls()
+            .into_iter()
+            .skip(self.baseline)
+            .map(|(_, args)| args)
+            .collect()
+    }
+
+    /// `nginx -t` of the first start passes.
+    fn first_test_passes(&mut self, ms: u64) {
+        self.supervisor.exit(self.last_control(), 0).unwrap();
+        self.tick(ms);
+    }
+
+    fn final_conf(&self, relative: &str) -> PathBuf {
+        self.paths.etc_for("nginx").unwrap().join(relative)
     }
 
     fn last_control(&self) -> crate::process::ProcessId {
@@ -144,6 +166,7 @@ impl Rig {
         let plan = self.plan();
         self.stack.apply(&plan, self.at(0)).unwrap();
         self.stack.start(self.at(0));
+        self.first_test_passes(100);
         let mut ports = vec![HTTP];
         for version in plan.php_versions().keys() {
             ports.extend(self.stack.pool_ports(version).unwrap());
@@ -151,6 +174,7 @@ impl Rig {
         self.listen(&ports);
         self.tick(600);
         assert_eq!(self.stack.nginx_state(), Some(&ServiceState::Running));
+        self.baseline = self.controls().len();
     }
 }
 
@@ -227,8 +251,11 @@ fn applying_a_plan_to_a_stopped_stack_writes_the_files_and_runs_nothing() {
     let applied = rig.stack.apply(&plan, rig.at(0)).unwrap();
     assert_eq!(applied.new_pools, ["8.4.26"]);
     assert!(!applied.reload_requested);
-    let etc = rig.paths.etc_for("nginx").unwrap();
-    assert!(etc.join("nginx.conf").is_file() && etc.join("sites").join("shop.conf").is_file());
+    assert!(applied.config_changed);
+    assert!(
+        !rig.final_conf("nginx.conf").exists() && !rig.final_conf("sites").exists(),
+        "nothing is written before Nginx has accepted it"
+    );
     assert_eq!(rig.supervisor.spawned().len(), 0);
     assert!(!rig.stack.is_running());
 }
@@ -294,11 +321,19 @@ fn a_new_site_with_a_new_php_starts_its_pool_then_tests_then_reloads_in_that_ord
     rig.listen(&[19102, 19103]);
     rig.tick(1700);
     assert_eq!(rig.control_commands(), [["-t"]]);
-    // The test passes: only now the reload is requested.
+    // Staged, not real yet: the files Nginx would read on a restart are the old ones.
+    assert!(rig.final_conf("../nginx/.next/sites/legacy.conf").is_file());
+    assert!(!rig.final_conf("sites/legacy.conf").exists());
+    // The test passes: only now it is written and the reload is requested.
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     let events = rig.tick(2000);
     assert_eq!(events, vec![]);
     assert_eq!(rig.control_commands(), [vec!["-t"], vec!["-s", "reload"]]);
+    assert!(rig.final_conf("sites/legacy.conf").is_file());
+    assert!(
+        !rig.final_conf(".next").exists(),
+        "the staging folder is cleaned up"
+    );
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     let events = rig.tick(2300);
     assert_eq!(events, vec![WebEvent::Reloaded]);
@@ -311,6 +346,8 @@ fn a_configuration_nginx_rejects_is_reported_and_nothing_is_reloaded() {
     let mut rig = Rig::new(&["8.4.26"]);
     rig.site("shop", None);
     rig.run();
+    let before = fs::read(rig.final_conf("nginx.conf")).unwrap();
+    let shop_before = fs::read(rig.final_conf("sites/shop.conf")).unwrap();
     rig.site("blog", None);
     let plan = rig.plan();
     rig.stack.apply(&plan, rig.at(1000)).unwrap();
@@ -331,6 +368,13 @@ fn a_configuration_nginx_rejects_is_reported_and_nothing_is_reloaded() {
     }
     assert_eq!(rig.control_commands().len(), 1, "no reload was sent");
     assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
+    // What Nginx would read on its next start is exactly what worked before.
+    assert_eq!(fs::read(rig.final_conf("nginx.conf")).unwrap(), before);
+    assert_eq!(
+        fs::read(rig.final_conf("sites/shop.conf")).unwrap(),
+        shop_before
+    );
+    assert!(!rig.final_conf("sites/blog.conf").exists());
 }
 
 #[test]
@@ -365,18 +409,19 @@ fn changes_made_during_a_reload_are_merged_into_one_more_reload() {
     rig.stack.apply(&plan, rig.at(1200)).unwrap();
     let again = rig.stack.apply(&plan, rig.at(1250)).unwrap();
     assert!(
-        !again.reload_requested,
-        "the same plan again changes nothing"
+        again.reload_requested,
+        "a round is under way: it runs once more"
     );
 
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     rig.tick(1400); // -s reload
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     let events = rig.tick(1600);
-    assert_eq!(events, vec![WebEvent::Reloaded, WebEvent::ReloadStarted]);
+    assert_eq!(events, vec![WebEvent::Reloaded]);
 
     // The second round: test, reload, done. Three sites changed, one extra round.
-    rig.tick(1700);
+    let events = rig.tick(1700);
+    assert_eq!(events, vec![WebEvent::ReloadStarted]);
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     rig.tick(1900);
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
@@ -412,11 +457,18 @@ fn a_pool_nobody_uses_any_more_is_stopped_after_the_reload_not_before() {
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     rig.tick(1300);
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
-    rig.tick(1500);
+    let events = rig.tick(1500);
+    assert_eq!(events, vec![WebEvent::Reloaded]);
+    assert_eq!(
+        rig.stack.pool_state("8.3.35"),
+        Some(&ServiceState::Running),
+        "the old Nginx workers still use it for a moment after the signal"
+    );
+    rig.tick(4000);
+    assert_eq!(rig.stack.pool_state("8.3.35"), Some(&ServiceState::Running));
+    rig.tick(6600);
     assert_eq!(rig.stack.pool_state("8.3.35"), None, "gone from the stack");
-    // Its processes are being stopped.
-    rig.tick(1700);
-    rig.tick(2500);
+    rig.tick(6700);
     assert_eq!(rig.stack.pool_state("8.4.26"), Some(&ServiceState::Running));
     // Nginx and the two 8.4 workers are what is left.
     assert_eq!(rig.supervisor.alive_pids().len(), 3);
@@ -445,7 +497,7 @@ fn a_change_that_alters_nothing_reloads_nothing() {
     let plan = rig.plan();
     let applied = rig.stack.apply(&plan, rig.at(1000)).unwrap();
     assert!(!applied.reload_requested);
-    assert_eq!(applied.nginx.changed, Vec::<PathBuf>::new());
+    assert!(!applied.config_changed);
     assert_eq!(rig.control_commands(), Vec::<Vec<String>>::new());
 }
 
@@ -475,4 +527,140 @@ fn stopping_stops_everything_and_cancels_a_reload_under_way() {
     );
     assert_eq!(rig.supervisor.group_count(), 0);
     assert_eq!(rig.control_commands().len(), 1, "no reload after the stop");
+}
+
+// ---- review of phase 5 ------------------------------------------------------------
+
+#[test]
+fn the_first_start_waits_for_the_test_and_a_rejected_one_leaves_nothing_behind() {
+    let mut rig = Rig::new(&[]);
+    rig.site("a", None);
+    let plan = rig.plan();
+    rig.stack.apply(&plan, rig.at(0)).unwrap();
+    rig.stack.start(rig.at(0));
+    assert_eq!(rig.control_commands(), [["-t"]]);
+    assert_eq!(rig.started("nginx"), 0, "Nginx waits for the test");
+
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    let events = rig.tick(200);
+    assert!(
+        matches!(events.as_slice(), [WebEvent::ReloadFailed { .. }]),
+        "{events:?}"
+    );
+    assert_eq!(
+        rig.started("nginx"),
+        0,
+        "there is no earlier configuration to run"
+    );
+    assert!(!rig.final_conf("nginx.conf").exists());
+}
+
+#[test]
+fn a_rejected_new_configuration_at_start_falls_back_to_the_one_that_worked() {
+    let mut rig = Rig::new(&[]);
+    rig.site("a", None);
+    rig.run(); // writes the first, good configuration
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    assert!(rig.stack.is_stopped());
+    rig.probe.release(HTTP); // the processes are gone, so are their listeners
+    let good = fs::read(rig.final_conf("sites/a.conf")).unwrap();
+
+    rig.site("b", None);
+    let plan = rig.plan();
+    rig.stack.apply(&plan, rig.at(12_000)).unwrap();
+    rig.stack.start(rig.at(12_000));
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    let events = rig.tick(12_200);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, WebEvent::ReloadFailed { .. })),
+        "{events:?}"
+    );
+    assert_eq!(
+        rig.started("nginx"),
+        1,
+        "started again with the previous files"
+    );
+    assert_eq!(fs::read(rig.final_conf("sites/a.conf")).unwrap(), good);
+    assert!(!rig.final_conf("sites/b.conf").exists());
+}
+
+#[test]
+fn a_reload_only_waits_for_the_pools_it_created_not_for_one_that_is_restarting() {
+    let mut rig = Rig::new(&["8.3.35", "8.4.26"]);
+    rig.site("a", Some("8.4"));
+    rig.run();
+    // The only pool crashes completely and is waiting to be restarted.
+    let pool_workers: Vec<_> = rig
+        .supervisor
+        .spawned()
+        .into_iter()
+        .filter(|r| rig.supervisor.group_name(r.group).as_deref() == Some("php-8.4.26"))
+        .map(|r| r.process)
+        .collect();
+    for worker in pool_workers {
+        rig.supervisor.exit(worker, 1).unwrap();
+    }
+    rig.tick(700);
+    assert_eq!(
+        rig.stack.pool_state("8.4.26"),
+        Some(&ServiceState::Starting)
+    );
+
+    // A new site for the same PHP: nothing new to wait for.
+    rig.site("b", Some("8.4"));
+    let plan = rig.plan();
+    let applied = rig.stack.apply(&plan, rig.at(800)).unwrap();
+    assert!(applied.new_pools.is_empty() && applied.reload_requested);
+    rig.tick(900);
+    assert_eq!(rig.control_commands(), [["-t"]], "tested at once");
+}
+
+#[test]
+fn pool_ports_skip_the_ports_of_the_other_services() {
+    let mut rig = Rig::with_config(&["8.3.35", "8.4.26"], |config| {
+        // Where the second pool would go.
+        config.services.mysql.port = 19102;
+    });
+    rig.site("a", Some("8.3"));
+    rig.site("b", Some("8.4"));
+    let plan = rig.plan();
+    rig.stack.apply(&plan, rig.at(0)).unwrap();
+    assert_eq!(rig.stack.pool_ports("8.3.35"), Some(&[19100, 19101][..]));
+    assert_eq!(rig.stack.pool_ports("8.4.26"), Some(&[19104, 19105][..]));
+}
+
+#[test]
+fn the_terminal_override_does_not_reach_the_sites_and_resolution_warnings_are_kept() {
+    let rig = Rig::new(&["7.4.33", "8.4.26"]);
+    rig.site("shop", None);
+    rig.site("odd", Some("lts/*"));
+    let only_here = |name: &str| (name == "CRISOL_PHP").then(|| "7.4".to_owned());
+    let plan = plan_web(
+        &rig.paths,
+        &rig.config,
+        &SitesFile::default(),
+        &rig.catalog,
+        &TrustAllOwners,
+        &only_here,
+    );
+    // Highest installed, not the 7.4 of the terminal the daemon happened to start from.
+    assert_eq!(
+        versions(&plan),
+        [
+            ("odd".to_owned(), Some("8.4.26".to_owned())),
+            ("shop".to_owned(), Some("8.4.26".to_owned()))
+        ]
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.starts_with("odd.test: ignoring") && w.contains(".php-version")),
+        "{:?}",
+        plan.warnings
+    );
 }

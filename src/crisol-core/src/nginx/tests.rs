@@ -484,17 +484,34 @@ fn real_nginx_accepts_the_generated_configuration_and_serves_from_it() {
     let docs_root = paths.home().join("www").join("docs");
     fs::create_dir_all(&docs_root).unwrap();
     fs::write(docs_root.join("index.html"), "hello-crisol").unwrap();
-    fs::write(docs_root.join("info.php"), "<?php").unwrap();
+    fs::write(docs_root.join("info.php"), "<?php echo 'SECRET-SOURCE';").unwrap();
+    // The longest name a site may have, to be sure the server-names hash holds it.
+    let long_name = "a".repeat(63);
+    let long_root = paths.home().join("www").join(&long_name);
+    fs::create_dir_all(&long_root).unwrap();
+    fs::write(long_root.join("index.html"), "long-name").unwrap();
+    let long_site = site(
+        &long_name,
+        &long_root.to_string_lossy(),
+        DocRoot::Root,
+        SiteKind::Parked,
+    );
     let docs = site(
         "docs",
         &docs_root.to_string_lossy(),
         DocRoot::Root,
         SiteKind::Parked,
     );
-    let sites = [NginxSite {
-        site: &docs,
-        php: None,
-    }];
+    let sites = [
+        NginxSite {
+            site: &docs,
+            php: None,
+        },
+        NginxSite {
+            site: &long_site,
+            php: None,
+        },
+    ];
     let pools = PhpPools::default();
     let done = write_nginx_config(&NginxInput {
         paths: &paths,
@@ -552,16 +569,222 @@ fn real_nginx_accepts_the_generated_configuration_and_serves_from_it() {
             get("docs.test", "/"),
             get("docs.test", "/info.php"),
             get("nobody.test", "/"),
+            // The same file by other names on Windows: never sent as text.
+            ["/info.PHP", "/info.Php", "/info.php.", "/info.php%20"]
+                .map(|path| (path, get("docs.test", path))),
+            get(&format!("{long_name}.test"), "/"),
         )
     });
     let _ = nginx(&["-s", "stop"]);
     let _ = running.wait();
 
-    let (page, php, stranger) = answers.expect("nginx did not start listening");
+    let (page, php, stranger, aliases, long) = answers.expect("nginx did not start listening");
     assert!(
         page.starts_with("HTTP/1.1 200") && page.contains("hello-crisol"),
         "{page}"
     );
     assert!(php.starts_with("HTTP/1.1 503"), "{php}");
     assert_eq!(stranger, "", "an unknown host gets the connection closed");
+    for (path, answer) in &aliases {
+        assert!(
+            !answer.contains("SECRET-SOURCE") && !answer.contains("<?php"),
+            "{path} sent the source: {answer}"
+        );
+        assert!(answer.starts_with("HTTP/1.1 503"), "{path}: {answer}");
+    }
+    assert!(
+        long.contains("long-name"),
+        "a 63-character site name: {long}"
+    );
+}
+
+// ---- review of phase 5 ------------------------------------------------------------
+
+#[test]
+fn php_is_matched_without_regard_to_case_and_with_the_endings_windows_ignores() {
+    // On Windows `/wp-config.PHP`, `/wp-config.php.` and `/wp-config.php%20` are the same file
+    // as `wp-config.php`; if the PHP location misses them, Nginx sends the source as text.
+    let paths = home();
+    let blog = site("blog", "D:/blog", DocRoot::WordPress, SiteKind::Linked);
+    let pools = PhpPools::default().with("8.4.26", &[9100]);
+    let with_php = render_for(
+        &paths,
+        &[NginxSite {
+            site: &blog,
+            php: Some("8.4.26"),
+        }],
+        &pools,
+    );
+    let without = render_for(
+        &paths,
+        &[NginxSite {
+            site: &blog,
+            php: None,
+        }],
+        &PhpPools::default(),
+    );
+    for conf in [
+        &with_php.files["sites/blog.conf"],
+        &without.files["sites/blog.conf"],
+    ] {
+        assert!(conf.contains(r#"location ~* "\.php[. ]*$" {"#), "{conf}");
+        assert!(
+            !conf.contains(r"location ~ \.php$"),
+            "the case-sensitive form is gone"
+        );
+    }
+}
+
+#[test]
+fn long_site_names_fit_in_the_server_names_hash() {
+    let main = &render_for(&home(), &[], &PhpPools::default()).files["nginx.conf"];
+    assert!(
+        main.contains("server_names_hash_bucket_size 128;"),
+        "{main}"
+    );
+}
+
+fn staged_input<'a>(
+    paths: &'a CrisolPaths,
+    dir: &'a Path,
+    sites: &'a [NginxSite<'a>],
+    pools: &'a PhpPools,
+) -> NginxInput<'a> {
+    NginxInput {
+        paths,
+        nginx_dir: dir,
+        http_port: 80,
+        sites,
+        pools,
+    }
+}
+
+#[test]
+fn a_staged_configuration_has_its_own_paths_and_leaves_the_real_one_alone() {
+    let (_tmp, paths) = temp_home();
+    let a = site("a", "D:/a", DocRoot::Root, SiteKind::Parked);
+    let dir = nginx_dir();
+    let pools = PhpPools::default();
+    let one = [NginxSite {
+        site: &a,
+        php: None,
+    }];
+    write_nginx_config(&staged_input(&paths, &dir, &one, &pools)).unwrap();
+    let real = fs::read_to_string(paths.etc_for("nginx").unwrap().join("nginx.conf")).unwrap();
+
+    // A second site is staged: the real files do not change, the staged ones point at themselves.
+    let b = site("b", "D:/b", DocRoot::Root, SiteKind::Parked);
+    let two = [
+        NginxSite {
+            site: &a,
+            php: None,
+        },
+        NginxSite {
+            site: &b,
+            php: None,
+        },
+    ];
+    let staged = stage_nginx_config(&staged_input(&paths, &dir, &two, &pools)).unwrap();
+    let etc = paths.etc_for("nginx").unwrap();
+    assert_eq!(staged.main, etc.join(".next").join("nginx.conf"));
+    assert_eq!(
+        fs::read_to_string(etc.join("nginx.conf")).unwrap(),
+        real,
+        "the real main file is untouched"
+    );
+    assert!(!etc.join("sites").join("b.conf").exists());
+    assert!(etc.join(".next").join("sites").join("b.conf").is_file());
+
+    let text = normalised(&fs::read_to_string(&staged.main).unwrap()).replace('\\', "/");
+    assert!(
+        text.contains("/etc/nginx/.next/php_upstream.conf"),
+        "{text}"
+    );
+    assert!(text.contains("/etc/nginx/.next/sites/*.conf"), "{text}");
+    // The user's overrides are the real ones in both.
+    assert!(text.contains("/etc/nginx/overrides/*.conf"), "{text}");
+    assert!(!text.contains(".next/overrides"), "{text}");
+}
+
+#[test]
+fn staging_replaces_whatever_was_staged_before() {
+    let (_tmp, paths) = temp_home();
+    let dir = nginx_dir();
+    let pools = PhpPools::default();
+    let a = site("a", "D:/a", DocRoot::Root, SiteKind::Parked);
+    let b = site("b", "D:/b", DocRoot::Root, SiteKind::Parked);
+    stage_nginx_config(&staged_input(
+        &paths,
+        &dir,
+        &[NginxSite {
+            site: &a,
+            php: None,
+        }],
+        &pools,
+    ))
+    .unwrap();
+    let staged = stage_nginx_config(&staged_input(
+        &paths,
+        &dir,
+        &[NginxSite {
+            site: &b,
+            php: None,
+        }],
+        &pools,
+    ))
+    .unwrap();
+    let sites = staged.main.parent().unwrap().join("sites");
+    assert!(sites.join("b.conf").is_file() && !sites.join("a.conf").exists());
+}
+
+#[test]
+fn the_disk_is_compared_with_what_would_be_written() {
+    let (_tmp, paths) = temp_home();
+    let dir = nginx_dir();
+    let pools = PhpPools::default();
+    let a = site("a", "D:/a", DocRoot::Root, SiteKind::Parked);
+    let b = site("b", "D:/b", DocRoot::Root, SiteKind::Parked);
+    let one = [NginxSite {
+        site: &a,
+        php: None,
+    }];
+    let two = [
+        NginxSite {
+            site: &a,
+            php: None,
+        },
+        NginxSite {
+            site: &b,
+            php: None,
+        },
+    ];
+    assert!(
+        config_differs(&staged_input(&paths, &dir, &one, &pools)).unwrap(),
+        "nothing yet"
+    );
+    write_nginx_config(&staged_input(&paths, &dir, &two, &pools)).unwrap();
+    assert!(!config_differs(&staged_input(&paths, &dir, &two, &pools)).unwrap());
+    assert!(
+        config_differs(&staged_input(&paths, &dir, &one, &pools)).unwrap(),
+        "b is stale"
+    );
+    fs::write(
+        paths.etc_for("nginx").unwrap().join("nginx.conf"),
+        "tampered",
+    )
+    .unwrap();
+    assert!(config_differs(&staged_input(&paths, &dir, &two, &pools)).unwrap());
+}
+
+#[test]
+fn pools_keep_away_from_the_reserved_ports() {
+    let mut pools = PhpPools::default();
+    let reserved: BTreeSet<u16> = [9102, 9105].into_iter().collect();
+    assert!(pools.ensure("8.3.35", 9100, 2, &reserved));
+    assert!(pools.ensure("8.4.26", 9100, 2, &reserved));
+    assert!(pools.ensure("8.5.0", 9100, 2, &reserved));
+    assert_eq!(pools.ports("8.3.35"), Some(&[9100, 9101][..]));
+    // 9102-9103 clashes with 9102; 9104-9105 clashes with 9105; 9106-9107 is free.
+    assert_eq!(pools.ports("8.4.26"), Some(&[9106, 9107][..]));
+    assert_eq!(pools.ports("8.5.0"), Some(&[9108, 9109][..]));
 }

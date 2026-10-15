@@ -414,6 +414,17 @@ impl Config {
             .collect()
     }
 
+    /// The ports of every single-port service (Nginx, databases, Mailpit…), enabled or not:
+    /// what a PHP pool must keep away from. The pool's own range is not in the list.
+    #[must_use]
+    pub fn reserved_ports(&self) -> std::collections::BTreeSet<u16> {
+        self.single_ports()
+            .into_iter()
+            .filter(|(field, _)| *field != "php.base_port")
+            .map(|(_, port)| port)
+            .collect()
+    }
+
     fn single_ports(&self) -> Vec<(&'static str, u16)> {
         let s = &self.services;
         vec![

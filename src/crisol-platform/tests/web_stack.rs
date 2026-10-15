@@ -235,6 +235,47 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
         }
         assert_eq!(gone, "", "an unknown host is cut");
         assert!(get("old.test", "/").contains("old PHP 7.4.33"));
+
+        // A mistake in a user override: the new configuration is rejected in the staging
+        // folder, the files on disk stay as they were and the running sites are not touched.
+        let overrides = paths.overrides_for("nginx").unwrap();
+        fs::create_dir_all(&overrides).unwrap();
+        fs::write(overrides.join("broken.conf"), "this is not nginx;\n").unwrap();
+        let main = paths.etc_for("nginx").unwrap().join("nginx.conf");
+        let before = fs::read(&main).unwrap();
+        site(&paths, "third", None);
+        let plan = plan_now();
+        run.events.clear();
+        run.stack.apply(&plan, Instant::now()).unwrap();
+        run.tick_until("the rejected reload", |r| {
+            r.events
+                .iter()
+                .any(|e| matches!(e, WebEvent::ReloadFailed { .. }))
+        });
+        assert_eq!(fs::read(&main).unwrap(), before, "etc/nginx/ is untouched");
+        assert!(!paths
+            .etc_for("nginx")
+            .unwrap()
+            .join("sites")
+            .join("third.conf")
+            .exists());
+        assert!(get("old.test", "/").contains("old PHP 7.4.33"));
+        assert_eq!(get("third.test", "/"), "", "the new site is not served");
+
+        // The override is fixed: the same change now goes through.
+        fs::remove_file(overrides.join("broken.conf")).unwrap();
+        run.events.clear();
+        run.stack.apply(&plan_now(), Instant::now()).unwrap();
+        run.tick_until("the reload after the fix", |r| r.saw(&WebEvent::Reloaded));
+        let mut third = get("third.test", "/");
+        for _ in 0..50 {
+            if !third.is_empty() {
+                break;
+            }
+            run.tick_for(Duration::from_millis(100));
+            third = get("third.test", "/");
+        }
+        assert!(third.contains("third PHP 8.4.26"), "{third}");
     }));
 
     // Stop before judging, so a failure leaves nothing running.

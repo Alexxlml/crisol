@@ -1048,10 +1048,10 @@ fn a_worker_that_exits_with_zero_is_recycled_at_once_without_counting_or_changin
     let before = rig.pool_processes();
     assert_eq!(before.len(), WORKERS);
 
-    for round in 0..10 {
-        let worker = rig.live_workers()[round % WORKERS];
+    for round in 0..10_u32 {
+        let worker = rig.live_workers()[0]; // the oldest, long past the minimum uptime
         rig.supervisor.exit(worker, 0).unwrap();
-        let events = rig.tick(now + 100 * (round as u64 + 1));
+        let events = rig.tick(now + 300 * (u64::from(round) + 1));
         assert_eq!(events, vec![], "a recycle is silent: {events:?}");
         assert_eq!(rig.state(), ServiceState::Running);
     }
@@ -1272,4 +1272,58 @@ fn a_pool_stops_like_any_service_even_with_workers_waiting_to_come_back() {
     assert_eq!(rig.state(), ServiceState::Stopped);
     assert_eq!(rig.supervisor.alive_pids().len(), 0);
     assert_eq!(rig.supervisor.group_count(), 0);
+}
+
+#[test]
+fn a_worker_that_exits_with_zero_right_after_it_started_is_a_crash_not_a_recycle() {
+    // Review of phase 5, finding 5: a php-cgi that always exits 0 at once must not be
+    // relaunched forever without being counted.
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let worker = rig.live_workers()[0];
+    rig.supervisor.exit(worker, 0).unwrap();
+    assert_eq!(
+        rig.tick(now + 100),
+        vec![],
+        "a normal recycle (it ran 600 ms)"
+    );
+
+    // The replacement dies at once, again with 0: that is a failure to run.
+    let replacement = rig.live_workers().into_iter().last().unwrap();
+    rig.supervisor.exit(replacement, 0).unwrap();
+    let events = rig.tick(now + 150);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            ServiceEvent::WorkerCrashed {
+                index: 0,
+                code: Some(0),
+                crashes: 1,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+
+    // Keep failing and the pool gives up instead of looping.
+    let mut ms = now + 150;
+    for _ in 0..6 {
+        ms += 1500; // the restart delay
+        rig.tick(ms);
+        if matches!(rig.state(), ServiceState::Failed(_)) {
+            break;
+        }
+        let again = rig.live_workers().into_iter().last().unwrap();
+        rig.supervisor.exit(again, 0).unwrap();
+        ms += 50;
+        rig.tick(ms);
+    }
+    assert!(
+        matches!(
+            rig.state(),
+            ServiceState::Failed(FailureReason::TooManyCrashes { .. })
+        ),
+        "{:?}",
+        rig.state()
+    );
 }

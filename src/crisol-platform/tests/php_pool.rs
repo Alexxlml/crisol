@@ -190,6 +190,13 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
         assert_eq!(*pool.state(), ServiceState::Running, "round {round}");
     }
 
+    // The same script by the names Windows treats as the same file: it runs, it is never
+    // sent as text.
+    let aliases: Vec<(&str, String)> = ["/v.PHP", "/v.Php", "/v.php.", "/v.php%20"]
+        .into_iter()
+        .map(|path| (path, get(path)))
+        .collect();
+
     // Stop everything before judging, so a failed assertion leaves nothing running.
     let _ = nginx(&nginx_dir, &written.main, &["-s", "stop"]);
     let _ = running.wait();
@@ -203,6 +210,12 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
 
     assert_eq!(*pool.state(), ServiceState::Stopped);
     assert!(failures.is_empty(), "requests that failed: {failures:?}");
+    for (path, answer) in &aliases {
+        assert!(
+            answer.contains("PHP 7.4.33 pid ") && !answer.contains("<?php"),
+            "{path}: {answer}"
+        );
+    }
     assert!(
         pids.len() >= 3,
         "workers should have been recycled, saw pids {pids:?}"

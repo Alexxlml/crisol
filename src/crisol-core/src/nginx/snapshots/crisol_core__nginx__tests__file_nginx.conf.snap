@@ -22,7 +22,7 @@ http {
     sendfile on;
     keepalive_timeout 65;
     client_max_body_size 128m;
-    server_names_hash_bucket_size 64;
+    server_names_hash_bucket_size 128;
     client_body_temp_path "<home>/state/nginx/client_body_temp";
     proxy_temp_path "<home>/state/nginx/proxy_temp";
     fastcgi_temp_path "<home>/state/nginx/fastcgi_temp";
