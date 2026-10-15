@@ -12,6 +12,7 @@ pub mod manage;
 pub mod nginx;
 pub mod paths;
 pub mod phpini;
+pub mod phppool;
 pub mod pin;
 pub mod ports;
 pub mod process;

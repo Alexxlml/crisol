@@ -30,6 +30,12 @@
 //! - **Readiness only looks.** A port health check reads the listener tables
 //!   ([`PortProbe::is_listening`]); it never tries to claim the port, which could make the
 //!   starting service lose its own bind.
+//! - **A pool restarts worker by worker** (ADR-0009, [`ServiceSpec::pool`]). A worker that
+//!   exits with code 0 was recycled (`PHP_FCGI_MAX_REQUESTS`): it is relaunched at once and is
+//!   not a crash. Any other exit is a crash of that worker: it is relaunched after
+//!   `restart_delay` and counts towards `max_crashes`. The service stays `Running` while any
+//!   worker lives, saying so with [`ServiceEvent::Degraded`] and [`ServiceEvent::Recovered`];
+//!   only when every worker is gone does it behave as a crashed service.
 //! - **Stopping is graceful first**: an optional command (e.g. `nginx -s quit`) gets a grace
 //!   period, then the whole group is killed. A group that survives the kill is reported as
 //!   a failure; it is never ignored.
@@ -117,6 +123,8 @@ pub struct ServiceSpec {
     pub graceful_stop: Option<ProcessSpec>,
     /// Timing and restart behaviour.
     pub policy: LifecyclePolicy,
+    /// The processes are interchangeable workers of a pool, restarted one by one.
+    pub pool: bool,
 }
 
 impl ServiceSpec {
@@ -130,7 +138,15 @@ impl ServiceSpec {
             health: HealthCheck::None,
             graceful_stop: None,
             policy: LifecyclePolicy::default(),
+            pool: false,
         }
+    }
+
+    /// Marks the processes as the workers of a pool (ADR-0009).
+    #[must_use]
+    pub fn pool(mut self) -> Self {
+        self.pool = true;
+        self
     }
 
     /// Adds a process to start.
@@ -290,6 +306,29 @@ pub enum ServiceEvent {
         /// Wait before the restart.
         delay: Duration,
     },
+    /// A worker of a pool crashed and will be relaunched after `delay`.
+    WorkerCrashed {
+        /// Position of the worker in the spec.
+        index: usize,
+        /// Its exit code, if it exited by itself.
+        code: Option<i32>,
+        /// Crashes counted in the window, this one included.
+        crashes: u32,
+        /// Wait before it is relaunched.
+        delay: Duration,
+    },
+    /// A pool is running with fewer workers than it should have.
+    Degraded {
+        /// Workers alive.
+        alive: usize,
+        /// Workers expected.
+        expected: usize,
+    },
+    /// A degraded pool has all its workers again.
+    Recovered {
+        /// Workers alive (all of them).
+        expected: usize,
+    },
 }
 
 /// Why a command was refused.
@@ -303,7 +342,10 @@ pub enum LifecycleError {
 #[derive(Debug)]
 struct Run {
     group: GroupId,
+    /// One per process of the spec; in a pool, the current process of each worker.
     processes: Vec<ProcessId>,
+    /// Pool only: when a crashed worker is to be relaunched (`None`: it is not waiting).
+    relaunch_at: Vec<Option<Instant>>,
 }
 
 #[derive(Debug)]
@@ -336,6 +378,8 @@ pub struct Service {
     restarting: bool,
     crashes: VecDeque<Instant>,
     stopping: Option<Stopping>,
+    /// Pool only: the last [`ServiceEvent::Degraded`] has not been followed by a recovery.
+    degraded: bool,
     events: Vec<ServiceEvent>,
 }
 
@@ -376,6 +420,7 @@ impl Service {
             restarting: false,
             crashes: VecDeque::new(),
             stopping: None,
+            degraded: false,
             events: Vec::new(),
         }
     }
@@ -461,7 +506,13 @@ impl Service {
                 }
             }
         }
-        self.run = Some(Run { group, processes });
+        let relaunch_at = vec![None; processes.len()];
+        self.degraded = false;
+        self.run = Some(Run {
+            group,
+            processes,
+            relaunch_at,
+        });
         self.started = Some(now);
         self.next_probe = Some(now + self.spec.policy.probe_interval);
         self.set_state(ServiceState::Starting);
@@ -593,6 +644,10 @@ impl Service {
     // ---- running --------------------------------------------------------------------
 
     fn tick_running(&mut self, now: Instant) {
+        if self.spec.pool {
+            self.tick_pool(now);
+            return;
+        }
         let Some(survey) = self.survey() else {
             return;
         };
@@ -603,10 +658,145 @@ impl Service {
         self.on_crash(now, survey.code, None);
     }
 
-    /// Counts a crash and either schedules a restart or gives up. `cause` is the specific
-    /// failure to report if this is the end of the line (a restart that could not start);
-    /// otherwise the generic reasons are used.
-    fn on_crash(&mut self, now: Instant, code: Option<i32>, cause: Option<FailureReason>) {
+    /// A pool: recycled workers are relaunched at once, crashed ones after the delay, and the
+    /// service only crashes when no worker is left (ADR-0009).
+    fn tick_pool(&mut self, now: Instant) {
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let expected = run.processes.len();
+        let mut alive = 0;
+        let mut recycled = Vec::new();
+        let mut crashed = Vec::new();
+        for (index, process) in run.processes.iter().enumerate() {
+            if run.relaunch_at[index].is_some() {
+                continue; // already known to be down
+            }
+            match self.supervisor.status(*process) {
+                Ok(ProcessStatus::Running) => alive += 1,
+                Ok(ProcessStatus::Exited(ExitReason::Code(0))) => recycled.push(index),
+                Ok(ProcessStatus::Exited(ExitReason::Code(code))) => {
+                    crashed.push((index, Some(code)));
+                }
+                Ok(ProcessStatus::Exited(ExitReason::Killed)) | Err(_) => {
+                    crashed.push((index, None));
+                }
+            }
+        }
+
+        // Nothing left alive and something did not exit cleanly (or workers were already
+        // waiting to come back): the service itself crashed.
+        let waiting = run.relaunch_at.iter().flatten().count();
+        if alive == 0 && recycled.is_empty() && (!crashed.is_empty() || waiting > 0) {
+            let code = crashed.iter().find_map(|(_, code)| *code);
+            self.teardown();
+            self.on_crash(now, code, None);
+            return;
+        }
+
+        for index in recycled {
+            if self.respawn_worker(index).is_err() {
+                crashed.push((index, None));
+            }
+        }
+        for (index, code) in crashed {
+            if !self.worker_crashed(index, code, now) {
+                return;
+            }
+        }
+        if !self.relaunch_due_workers(now) {
+            return;
+        }
+        self.track_degradation(expected);
+    }
+
+    /// Launches worker `index` again in the group it belongs to.
+    fn respawn_worker(&mut self, index: usize) -> Result<(), SupervisorError> {
+        let Some(run) = self.run.as_mut() else {
+            return Ok(());
+        };
+        let id = self
+            .supervisor
+            .spawn(run.group, &self.spec.processes[index])?;
+        run.processes[index] = id;
+        run.relaunch_at[index] = None;
+        Ok(())
+    }
+
+    /// Counts the crash of one worker and schedules its relaunch. Returns `false` when that
+    /// ended the service (too many crashes, or restarts are off).
+    fn worker_crashed(&mut self, index: usize, code: Option<i32>, now: Instant) -> bool {
+        let crashes = self.record_crash(now);
+        let policy = &self.spec.policy;
+        if !policy.auto_restart {
+            self.fail(FailureReason::Crashed { code });
+            return false;
+        }
+        if crashes >= policy.max_crashes {
+            let window = policy.crash_window;
+            self.fail(FailureReason::TooManyCrashes { crashes, window });
+            return false;
+        }
+        let delay = policy.restart_delay;
+        if let Some(run) = self.run.as_mut() {
+            run.relaunch_at[index] = Some(now + delay);
+        }
+        self.events.push(ServiceEvent::WorkerCrashed {
+            index,
+            code,
+            crashes,
+            delay,
+        });
+        true
+    }
+
+    /// Relaunches the crashed workers whose wait is over. A relaunch that fails is another
+    /// crash. Returns `false` when that ended the service.
+    fn relaunch_due_workers(&mut self, now: Instant) -> bool {
+        let due: Vec<usize> = self.run.as_ref().map_or_else(Vec::new, |run| {
+            run.relaunch_at
+                .iter()
+                .enumerate()
+                .filter(|(_, at)| at.is_some_and(|at| now >= at))
+                .map(|(index, _)| index)
+                .collect()
+        });
+        for index in due {
+            if self.respawn_worker(index).is_err() && !self.worker_crashed(index, None, now) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Emits `Degraded` / `Recovered` when the number of workers alive crosses the line.
+    fn track_degradation(&mut self, expected: usize) {
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let alive = run
+            .processes
+            .iter()
+            .zip(&run.relaunch_at)
+            .filter(|(process, waiting)| {
+                waiting.is_none()
+                    && matches!(
+                        self.supervisor.status(**process),
+                        Ok(ProcessStatus::Running)
+                    )
+            })
+            .count();
+        if alive < expected && !self.degraded {
+            self.degraded = true;
+            self.events.push(ServiceEvent::Degraded { alive, expected });
+        } else if alive == expected && self.degraded {
+            self.degraded = false;
+            self.events.push(ServiceEvent::Recovered { expected });
+        }
+    }
+
+    /// Records a crash in the window and returns how many are in it.
+    fn record_crash(&mut self, now: Instant) -> u32 {
         self.crashes.push_back(now);
         let window = self.spec.policy.crash_window;
         while self
@@ -616,7 +806,15 @@ impl Service {
         {
             self.crashes.pop_front();
         }
-        let crashes = u32::try_from(self.crashes.len()).unwrap_or(u32::MAX);
+        u32::try_from(self.crashes.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Counts a crash and either schedules a restart or gives up. `cause` is the specific
+    /// failure to report if this is the end of the line (a restart that could not start);
+    /// otherwise the generic reasons are used.
+    fn on_crash(&mut self, now: Instant, code: Option<i32>, cause: Option<FailureReason>) {
+        let crashes = self.record_crash(now);
+        let window = self.spec.policy.crash_window;
 
         if !self.spec.policy.auto_restart {
             let reason = cause.unwrap_or(FailureReason::Crashed { code });

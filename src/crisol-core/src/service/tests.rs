@@ -112,7 +112,7 @@ fn changes(events: &[ServiceEvent]) -> Vec<ServiceState> {
         .iter()
         .filter_map(|e| match e {
             ServiceEvent::StateChanged { to, .. } => Some(to.clone()),
-            ServiceEvent::Restarting { .. } => None,
+            _ => None,
         })
         .collect()
 }
@@ -544,7 +544,7 @@ fn a_restart_that_dies_before_it_is_healthy_counts_as_a_crash() {
         .iter()
         .filter_map(|e| match e {
             ServiceEvent::Restarting { crashes, .. } => Some(*crashes),
-            ServiceEvent::StateChanged { .. } => None,
+            _ => None,
         })
         .collect();
     assert_eq!(restarts, [1, 2], "the failed restart was counted");
@@ -985,4 +985,291 @@ fn the_service_is_debuggable_and_exposes_its_name() {
     let rig = Rig::new(nginx());
     assert_eq!(rig.service.name(), "nginx");
     assert!(format!("{:?}", rig.service).contains("Stopped"));
+}
+
+// ---- a pool of workers (ADR-0009) -------------------------------------------------------
+
+const POOL_BASE: u16 = 9100;
+const WORKERS: usize = 4;
+
+fn pool_spec() -> ServiceSpec {
+    let mut spec = ServiceSpec::new("php").pool();
+    for i in 0..WORKERS {
+        let port = POOL_BASE + u16::try_from(i).unwrap();
+        spec = spec
+            .process(ProcessSpec::new("php-cgi.exe").args(["-b", &format!("127.0.0.1:{port}")]))
+            .port(port);
+    }
+    spec.health(HealthCheck::Ports(
+        (0..WORKERS)
+            .map(|i| POOL_BASE + u16::try_from(i).unwrap())
+            .collect(),
+    ))
+}
+
+impl Rig {
+    fn pool_processes(&self) -> Vec<crate::process::ProcessId> {
+        self.supervisor
+            .spawned()
+            .into_iter()
+            .filter(|r| self.supervisor.group_name(r.group).as_deref() == Some("php"))
+            .map(|r| r.process)
+            .collect()
+    }
+
+    /// The workers that are running now, oldest first.
+    fn live_workers(&self) -> Vec<crate::process::ProcessId> {
+        self.pool_processes()
+            .into_iter()
+            .filter(|p| matches!(self.supervisor.status(*p), Ok(ProcessStatus::Running)))
+            .collect()
+    }
+
+    /// Starts the pool and brings it to `Running`; returns the time reached.
+    fn run_pool(&mut self, ms: u64) -> u64 {
+        self.start(ms);
+        for i in 0..WORKERS {
+            self.listen(POOL_BASE + u16::try_from(i).unwrap());
+        }
+        self.tick(ms + 500);
+        assert_eq!(self.state(), ServiceState::Running);
+        ms + 500
+    }
+}
+
+fn pool_rig() -> Rig {
+    Rig::new(pool_spec())
+}
+
+#[test]
+fn a_worker_that_exits_with_zero_is_recycled_at_once_without_counting_or_changing_state() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let before = rig.pool_processes();
+    assert_eq!(before.len(), WORKERS);
+
+    for round in 0..10 {
+        let worker = rig.live_workers()[round % WORKERS];
+        rig.supervisor.exit(worker, 0).unwrap();
+        let events = rig.tick(now + 100 * (round as u64 + 1));
+        assert_eq!(events, vec![], "a recycle is silent: {events:?}");
+        assert_eq!(rig.state(), ServiceState::Running);
+    }
+    // Ten recycles later it still has four live workers, and none of it was a crash: three
+    // real crashes would give up (max_crashes = 3), and this did not.
+    assert_eq!(rig.pool_processes().len(), WORKERS + 10);
+    assert_eq!(rig.supervisor.alive_pids().len(), WORKERS);
+}
+
+#[test]
+fn every_worker_recycling_in_the_same_tick_is_not_a_crash() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    for worker in rig.pool_processes() {
+        rig.supervisor.exit(worker, 0).unwrap();
+    }
+    assert_eq!(rig.tick(now + 100), vec![]);
+    assert_eq!(rig.state(), ServiceState::Running);
+    assert_eq!(rig.supervisor.alive_pids().len(), WORKERS);
+}
+
+#[test]
+fn a_crashed_worker_comes_back_after_the_delay_and_the_pool_says_it_was_degraded() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let worker = rig.pool_processes()[1];
+    rig.supervisor.exit(worker, 255).unwrap();
+
+    let events = rig.tick(now + 100);
+    assert_eq!(
+        events,
+        vec![
+            ServiceEvent::WorkerCrashed {
+                index: 1,
+                code: Some(255),
+                crashes: 1,
+                delay: Duration::from_millis(1500),
+            },
+            ServiceEvent::Degraded {
+                alive: 3,
+                expected: 4
+            },
+        ]
+    );
+    assert_eq!(
+        rig.state(),
+        ServiceState::Running,
+        "the others keep serving"
+    );
+    assert_eq!(rig.supervisor.alive_pids().len(), 3);
+
+    // Nothing happens before the delay is over...
+    assert_eq!(rig.tick(now + 1000), vec![]);
+    assert_eq!(rig.supervisor.alive_pids().len(), 3);
+    // ...and then the worker is relaunched and the pool is whole again.
+    let events = rig.tick(now + 1700);
+    assert_eq!(events, vec![ServiceEvent::Recovered { expected: 4 }]);
+    assert_eq!(rig.supervisor.alive_pids().len(), 4);
+    assert_eq!(rig.state(), ServiceState::Running);
+}
+
+#[test]
+fn the_new_worker_runs_the_same_program_as_the_one_it_replaces() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let worker = rig.pool_processes()[2];
+    rig.supervisor.exit(worker, 1).unwrap();
+    rig.tick(now + 100);
+    rig.tick(now + 2000);
+    let records = rig.supervisor.spawned();
+    let last = records.last().unwrap();
+    assert_eq!(
+        last.spec.args[1], "127.0.0.1:9102",
+        "the third worker's port"
+    );
+}
+
+#[test]
+fn crashes_of_different_workers_add_up_to_the_limit() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let [a, b, c, ..] = rig.pool_processes()[..] else {
+        panic!("four workers")
+    };
+    for (n, worker) in [a, b].into_iter().enumerate() {
+        rig.supervisor.exit(worker, 1).unwrap();
+        rig.tick(now + 100 * (n as u64 + 1));
+    }
+    assert_eq!(
+        rig.state(),
+        ServiceState::Running,
+        "two crashes are tolerated"
+    );
+    rig.supervisor.exit(c, 1).unwrap();
+    rig.tick(now + 400);
+    assert_eq!(
+        rig.state(),
+        ServiceState::Failed(FailureReason::TooManyCrashes {
+            crashes: 3,
+            window: Duration::from_secs(60)
+        })
+    );
+    assert_eq!(
+        rig.supervisor.alive_pids().len(),
+        0,
+        "nothing is left behind"
+    );
+}
+
+#[test]
+fn when_every_worker_dies_it_is_a_crash_of_the_service() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    for worker in rig.pool_processes() {
+        rig.supervisor.exit(worker, 3).unwrap();
+    }
+    let events = rig.tick(now + 100);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ServiceEvent::Restarting { crashes: 1, .. })),
+        "{events:?}"
+    );
+    assert_eq!(
+        rig.state(),
+        ServiceState::Starting,
+        "the whole pool restarts"
+    );
+}
+
+#[test]
+fn the_last_worker_dying_while_others_wait_to_come_back_is_a_crash_of_the_service() {
+    let mut spec = pool_spec();
+    spec.policy.max_crashes = 10;
+    let mut rig = Rig::new(spec);
+    let now = rig.run_pool(0);
+    let workers = rig.pool_processes();
+    for (n, worker) in workers[..3].iter().enumerate() {
+        rig.supervisor.exit(*worker, 1).unwrap();
+        // One at a time, inside the delay: they are all down and waiting.
+        let _ = n;
+    }
+    rig.tick(now + 100);
+    assert_eq!(
+        rig.state(),
+        ServiceState::Running,
+        "one worker is still alive"
+    );
+    rig.supervisor.exit(workers[3], 1).unwrap();
+    let events = rig.tick(now + 200);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ServiceEvent::Restarting { .. })),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_relaunch_that_cannot_start_counts_as_another_crash() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let worker = rig.pool_processes()[0];
+    rig.supervisor.exit(worker, 1).unwrap();
+    rig.tick(now + 100);
+    rig.supervisor
+        .fail_next_spawn(SupervisorError::Os("no memory".to_owned()));
+    let events = rig.tick(now + 1700);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ServiceEvent::WorkerCrashed { crashes: 2, .. })),
+        "{events:?}"
+    );
+    assert_eq!(rig.state(), ServiceState::Running);
+}
+
+#[test]
+fn without_auto_restart_a_worker_crash_fails_the_pool() {
+    let mut spec = pool_spec();
+    spec.policy.auto_restart = false;
+    let mut rig = Rig::new(spec);
+    let now = rig.run_pool(0);
+    let worker = rig.pool_processes()[0];
+    rig.supervisor.exit(worker, 9).unwrap();
+    rig.tick(now + 100);
+    assert_eq!(
+        rig.state(),
+        ServiceState::Failed(FailureReason::Crashed { code: Some(9) })
+    );
+}
+
+#[test]
+fn a_single_process_service_still_treats_exit_zero_as_a_crash() {
+    // ADR-0009: "exit 0 is a recycle" is only for the workers of a pool.
+    let mut rig = Rig::new(nginx());
+    let now = rig.run(0);
+    let process = rig.service_processes()[0];
+    rig.supervisor.exit(process, 0).unwrap();
+    let events = rig.tick(now + 100);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ServiceEvent::Restarting { .. })),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_pool_stops_like_any_service_even_with_workers_waiting_to_come_back() {
+    let mut rig = pool_rig();
+    let now = rig.run_pool(0);
+    let worker = rig.pool_processes()[0];
+    rig.supervisor.exit(worker, 1).unwrap();
+    rig.tick(now + 100);
+    rig.stop(now + 200);
+    rig.tick(now + 300);
+    assert_eq!(rig.state(), ServiceState::Stopped);
+    assert_eq!(rig.supervisor.alive_pids().len(), 0);
+    assert_eq!(rig.supervisor.group_count(), 0);
 }

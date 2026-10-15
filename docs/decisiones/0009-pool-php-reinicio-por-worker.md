@@ -1,6 +1,6 @@
 # ADR-0009 — El pool de `php-cgi` se reinicia por worker
 
-- **Estado:** aceptada (decidida por el usuario el 2026-10-14, a raíz de la revisión externa, hallazgo 5)
+- **Estado:** aceptada (decidida por el usuario el 2026-10-14, a raíz de la revisión externa, hallazgo 5); **implementada** con F5.3 el 2026-10-14
 - **Fecha:** 2026-10-14
 
 ## Contexto
