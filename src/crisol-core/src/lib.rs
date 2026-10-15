@@ -23,6 +23,7 @@ pub mod shims;
 pub mod sites;
 pub mod userpath;
 pub mod version;
+pub mod web;
 
 pub use catalog::{Catalog, CatalogError, Package, Target};
 pub use config::{Config, ConfigError, ConfigWarning, LoadedConfig};

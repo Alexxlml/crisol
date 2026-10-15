@@ -82,6 +82,41 @@ impl PhpPools {
         self
     }
 
+    /// Gives `version` a block of `workers` ports if it has none, in the first place from
+    /// `base_port` on that overlaps no other pool, and returns whether it was added. Pools
+    /// that already exist keep their ports, so adding a version never moves a running one.
+    /// A version that does not fit below 65535 gets none.
+    pub fn ensure(&mut self, version: &str, base_port: u16, workers: u16) -> bool {
+        if self.ports.contains_key(version) {
+            return false;
+        }
+        let workers = u32::from(workers.max(1));
+        let mut start = u32::from(base_port);
+        loop {
+            let end = start + workers - 1;
+            if end > 65535 {
+                return false;
+            }
+            let clash = self.ports.values().flatten().any(|p| {
+                let p = u32::from(*p);
+                p >= start && p <= end
+            });
+            if !clash {
+                let block = (start..=end)
+                    .filter_map(|p| u16::try_from(p).ok())
+                    .collect();
+                self.ports.insert(version.to_owned(), block);
+                return true;
+            }
+            start += workers;
+        }
+    }
+
+    /// Forgets every version not in `keep`, freeing its ports.
+    pub fn retain(&mut self, keep: &BTreeSet<String>) {
+        self.ports.retain(|version, _| keep.contains(version));
+    }
+
     /// The ports of `version`, if it has a pool.
     #[must_use]
     pub fn ports(&self, version: &str) -> Option<&[u16]> {
