@@ -11,6 +11,7 @@ pub mod log;
 pub mod manage;
 pub mod paths;
 pub mod phpini;
+pub mod pin;
 pub mod ports;
 pub mod process;
 pub mod project;
