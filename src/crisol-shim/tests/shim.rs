@@ -319,12 +319,59 @@ fn node_commands_follow_the_node_version() {
 }
 
 #[test]
-fn composer_is_not_supported_yet_and_says_so() {
+fn composer_runs_the_phar_with_the_php_that_applies_to_the_directory() {
+    let rig = Rig::new();
+    rig.install("php", "8.2.28", &exe_name("php"));
+    rig.install("php", "8.4.26", &exe_name("php"));
+    let old = rig.home.join("bin").join("composer").join("2.7.0");
+    let new = rig.home.join("bin").join("composer").join("2.10.3");
+    for dir in [&old, &new] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("composer.phar"), "<?php").unwrap();
+    }
+    fs::write(rig.work.join(".php-version"), "8.2\n").unwrap();
+    let composer = rig.shim("composer");
+
+    let output = rig.run(&composer, &["install", "--no-dev", "a b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("8.2.28"),
+        "the PHP of the project ran: {text}"
+    );
+    let args = args_seen(&output);
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert!(
+        args[0].ends_with("composer.phar") && args[0].contains("2.10.3"),
+        "the newest Composer is the one run: {args:?}"
+    );
+    assert_eq!(&args[1..], ["install", "--no-dev", "a b"]);
+}
+
+#[test]
+fn composer_without_the_phar_installed_says_how_to_get_it() {
     let rig = Rig::new();
     rig.install("php", "8.4.26", &exe_name("php"));
     let output = rig.run(&rig.shim("composer"), &[]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("F4.3"), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("no composer version is installed"), "{text}");
+    assert!(text.contains("crisol install composer"), "{text}");
+}
+
+#[test]
+fn composer_without_a_php_says_so_too() {
+    let rig = Rig::new();
+    let dir = rig.home.join("bin").join("composer").join("2.10.3");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("composer.phar"), "<?php").unwrap();
+    let output = rig.run(&rig.shim("composer"), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no php version is installed"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -381,6 +428,40 @@ fn shim_overhead_is_small() {
     assert!(overhead < 20.0, "the shim adds {overhead:.1} ms");
 }
 
+/// Installs real, already downloaded packages (`CRISOL_TEST_DOWNLOADS`) into the rig's
+/// temporary home, through the real installer, and returns the paths.
+fn install_downloaded(rig: &Rig, wanted: &[(&str, &str)]) -> crisol_core::paths::CrisolPaths {
+    use crisol_core::catalog::Catalog;
+    use crisol_core::fetch::fake::FakeFetcher;
+    use crisol_core::install::{install, InstallOptions};
+
+    let Some(folder) = std::env::var_os("CRISOL_TEST_DOWNLOADS").map(PathBuf::from) else {
+        panic!("set CRISOL_TEST_DOWNLOADS to the folder with the downloaded files");
+    };
+    let catalog = Catalog::embedded().unwrap();
+    let paths = crisol_core::paths::CrisolPaths::new(&rig.home).unwrap();
+    let fetcher = FakeFetcher::new();
+    for (service, version) in wanted {
+        let package = catalog
+            .packages()
+            .iter()
+            .find(|p| p.service == *service && p.version.to_string() == *version)
+            .unwrap();
+        let file = folder.join(package.url.rsplit('/').next().unwrap());
+        assert!(file.is_file(), "{} is not there", file.display());
+        fetcher.serve(&package.url, fs::read(&file).unwrap());
+        install(
+            package,
+            &paths,
+            &fetcher,
+            &InstallOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    paths
+}
+
 /// The whole chain with the real thing: an official PHP is installed, its `php.ini` is
 /// generated, and the shim runs it. Arguments with quotes arrive intact, the exit code comes
 /// back, and the generated `php.ini` is the one PHP reads (no start-up warnings, the
@@ -392,36 +473,10 @@ fn shim_overhead_is_small() {
 #[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the downloaded official PHP archive (Windows)"]
 fn real_php_runs_through_the_shim() {
-    use crisol_core::catalog::Catalog;
-    use crisol_core::fetch::fake::FakeFetcher;
-    use crisol_core::install::{install, InstallOptions};
-    use crisol_core::paths::CrisolPaths;
     use crisol_core::phpini::{write_php_ini, PhpIniSettings};
 
-    let Some(folder) = std::env::var_os("CRISOL_TEST_DOWNLOADS").map(PathBuf::from) else {
-        panic!("set CRISOL_TEST_DOWNLOADS to the folder with the downloaded archives");
-    };
-    let catalog = Catalog::embedded().unwrap();
-    let package = catalog
-        .packages()
-        .iter()
-        .find(|p| p.service == "php" && p.version.to_string() == "8.4.26")
-        .unwrap();
-    let archive = folder.join(package.url.rsplit('/').next().unwrap());
-    assert!(archive.is_file(), "{} is not there", archive.display());
-
     let rig = Rig::new();
-    let paths = CrisolPaths::new(&rig.home).unwrap();
-    let fetcher = FakeFetcher::new();
-    fetcher.serve(&package.url, fs::read(&archive).unwrap());
-    install(
-        package,
-        &paths,
-        &fetcher,
-        &InstallOptions::default(),
-        &mut |_| {},
-    )
-    .unwrap();
+    let paths = install_downloaded(&rig, &[("php", "8.4.26")]);
     write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
     let php = rig.shim("php");
 
@@ -496,38 +551,11 @@ fn serde_json_like(text: &str) -> Vec<String> {
 #[ignore = "needs the network and the downloaded PHP archive and CA bundle (Windows)"]
 fn real_curl_trusts_https_with_the_generated_bundle() {
     use crisol_core::cacert::write_php_cacert;
-    use crisol_core::catalog::Catalog;
-    use crisol_core::fetch::fake::FakeFetcher;
-    use crisol_core::install::{install, InstallOptions};
-    use crisol_core::paths::CrisolPaths;
     use crisol_core::phpini::{write_php_ini, PhpIniSettings};
     use crisol_platform::WindowsRootCertificates;
 
-    let Some(folder) = std::env::var_os("CRISOL_TEST_DOWNLOADS").map(PathBuf::from) else {
-        panic!("set CRISOL_TEST_DOWNLOADS to the folder with the downloaded files");
-    };
-    let catalog = Catalog::embedded().unwrap();
     let rig = Rig::new();
-    let paths = CrisolPaths::new(&rig.home).unwrap();
-    let fetcher = FakeFetcher::new();
-    for (service, version) in [("php", "8.4.26"), ("cacert", "2026.9.25")] {
-        let package = catalog
-            .packages()
-            .iter()
-            .find(|p| p.service == service && p.version.to_string() == version)
-            .unwrap();
-        let file = folder.join(package.url.rsplit('/').next().unwrap());
-        assert!(file.is_file(), "{} is not there", file.display());
-        fetcher.serve(&package.url, fs::read(&file).unwrap());
-        install(
-            package,
-            &paths,
-            &fetcher,
-            &InstallOptions::default(),
-            &mut |_| {},
-        )
-        .unwrap();
-    }
+    let paths = install_downloaded(&rig, &[("php", "8.4.26"), ("cacert", "2026.9.25")]);
     let php = rig.shim("php");
     let script = r"
         $c = curl_init('https://getcomposer.org/versions');
@@ -578,4 +606,114 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     let streams =
         r"echo @file_get_contents('https://getcomposer.org/versions') === false ? 'FAIL' : 'OK';";
     assert_eq!(stdout(&rig.run(&php, &["-r", streams])).trim(), "OK");
+}
+
+/// Composer for real, through the shim: `composer.phar` runs on the resolved PHP and can talk
+/// to Packagist over HTTPS **with and without** Crisol's CA bundle. That settles the open
+/// question of ADR-0011: Composer ships its own certificates (`composer/ca-bundle`) and does
+/// not need the bundle that PHP's plain cURL does.
+///
+/// Needs the network (a read-only query to packagist.org) and, in `CRISOL_TEST_DOWNLOADS`,
+/// `php-8.4.26-nts-Win32-vs17-x64.zip`, `composer.phar` and `cacert-2026-09-25.pem`. Composer's
+/// home and cache are pointed at the temporary folder: nothing of the user's is read or written.
+///
+/// ```text
+/// CRISOL_TEST_DOWNLOADS=<folder> cargo test -p crisol-shim real_composer -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the network and the downloaded PHP archive, composer.phar and CA bundle (Windows)"]
+fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
+    use crisol_core::cacert::write_php_cacert;
+    use crisol_core::phpini::{write_php_ini, PhpIniSettings};
+    use crisol_platform::WindowsRootCertificates;
+
+    let rig = Rig::new();
+    let paths = install_downloaded(
+        &rig,
+        &[
+            ("php", "8.4.26"),
+            ("composer", "2.10.3"),
+            ("cacert", "2026.9.25"),
+        ],
+    );
+    let composer = rig.shim("composer");
+    let composer_home = rig.work.join("composer-home");
+    let run = |args: &[&str]| {
+        rig.command(&composer)
+            .env("COMPOSER_HOME", &composer_home)
+            .env("COMPOSER_CACHE_DIR", composer_home.join("cache"))
+            .env("COMPOSER_NO_INTERACTION", "1")
+            .env("COMPOSER_DISABLE_NETWORK", "")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    // It runs, on the PHP Crisol resolved, with the generated php.ini.
+    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let output = run(&["--version", "--no-ansi"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("Composer version 2.10.3"),
+        "{}",
+        stdout(&output)
+    );
+    // `show -p` lists the platform packages: which PHP, and with which extensions.
+    let platform = run(&["show", "-p", "--no-ansi"]);
+    assert!(
+        platform.status.success(),
+        "{}{}",
+        stdout(&platform),
+        stderr(&platform)
+    );
+    let text = stdout(&platform);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("php ") && l.contains("8.4.26")),
+        "{text}"
+    );
+    assert!(
+        text.contains("ext-curl") && text.contains("ext-openssl"),
+        "{text}"
+    );
+
+    // HTTPS to Packagist, first with no CA bundle in the php.ini (cURL would fail there).
+    let query = ["show", "--all", "--no-ansi", "psr/log"];
+    let without = run(&query);
+    eprintln!(
+        "without the bundle: exit {:?}\n{}{}",
+        without.status.code(),
+        stdout(&without)
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        stderr(&without)
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        without.status.success(),
+        "{}{}",
+        stdout(&without),
+        stderr(&without)
+    );
+    assert!(stdout(&without).contains("psr/log"), "{}", stdout(&without));
+
+    // And with Crisol's bundle in place.
+    write_php_cacert(&paths, &WindowsRootCertificates)
+        .unwrap()
+        .unwrap();
+    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    fs::remove_dir_all(&composer_home).unwrap();
+    let with = run(&query);
+    assert!(with.status.success(), "{}{}", stdout(&with), stderr(&with));
+    assert!(stdout(&with).contains("psr/log"), "{}", stdout(&with));
 }

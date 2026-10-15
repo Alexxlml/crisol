@@ -15,7 +15,9 @@ use std::process::{self, Command as Process};
 
 use crisol_core::paths::CrisolPaths;
 use crisol_core::project::FileOwners;
-use crisol_core::resolve::{resolve, Command, ResolveContext, ResolveError};
+use crisol_core::resolve::{
+    resolve, resolve_composer, Command, ResolveContext, ResolveError, COMPOSER_PHAR,
+};
 
 /// The exit code when the shim itself cannot do its job (no version, no binary).
 const FAILURE: i32 = 1;
@@ -83,9 +85,9 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
     }
 
     let install = &resolution.resolved.version.path;
-    let program = program_for(command, install)?;
+    let (program, leading) = program_for(command, install, &paths)?;
     let mut process = Process::new(&program);
-    process.args(args);
+    process.args(leading).args(args);
     if let Some(ini) = php_ini_for(
         command,
         &paths,
@@ -112,16 +114,19 @@ fn explain(error: ResolveError) -> String {
     }
 }
 
-/// The executable that runs `command` inside an installation.
-fn program_for(command: Command, install: &Path) -> Result<PathBuf, String> {
+/// The executable that runs `command` inside an installation, and the arguments that go
+/// before the user's own. For everything but Composer there are none; Composer is a PHAR, so
+/// it runs as `php composer.phar …` with the PHP that was resolved.
+fn program_for(
+    command: Command,
+    install: &Path,
+    paths: &CrisolPaths,
+) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let name = match command {
-        Command::Php => "php",
+        Command::Php | Command::Composer => "php",
         Command::Node => "node",
         Command::Npm => "npm",
         Command::Npx => "npx",
-        Command::Composer => {
-            return Err("composer is not supported by the shim yet (F4.3)".to_owned());
-        }
     };
     let file = match (cfg!(windows), command) {
         (true, Command::Npm | Command::Npx) => format!("{name}.cmd"),
@@ -129,14 +134,25 @@ fn program_for(command: Command, install: &Path) -> Result<PathBuf, String> {
         (false, _) => name.to_owned(),
     };
     let program = install.join(file);
-    if program.is_file() {
-        Ok(program)
-    } else {
-        Err(format!(
+    if !program.is_file() {
+        return Err(format!(
             "`{}` is not there: the installation looks damaged",
             program.display()
-        ))
+        ));
     }
+    if command != Command::Composer {
+        return Ok((program, Vec::new()));
+    }
+    let composer = resolve_composer(paths)
+        .map_err(|e| format!("{e}. Install it with `crisol install composer`"))?;
+    let phar = composer.path.join(COMPOSER_PHAR);
+    if !phar.is_file() {
+        return Err(format!(
+            "`{}` is not there: the installation looks damaged",
+            phar.display()
+        ));
+    }
+    Ok((program, vec![phar]))
 }
 
 /// The generated `php.ini` of this version, if it exists and the user has not chosen their

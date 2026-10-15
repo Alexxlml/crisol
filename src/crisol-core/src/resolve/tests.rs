@@ -92,6 +92,28 @@ fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
 const PHPS: [&str; 4] = ["8.2.28", "8.3.35", "8.4.20", "8.4.26"];
 
 #[test]
+fn composer_is_the_highest_installed_and_does_not_depend_on_the_project() {
+    let world = World::new(&PHPS, &[]);
+    for version in ["2.7.0", "2.10.3", "2.9.1"] {
+        fs::create_dir_all(world.paths.bin_for(COMPOSER_SERVICE, version).unwrap()).unwrap();
+    }
+    write(&world.app, ".crisol.toml", "php = \"8.2\"\n");
+    let composer = resolve_composer(&world.paths).unwrap();
+    assert_eq!(composer.version.to_string(), "2.10.3");
+    assert!(composer.path.ends_with("2.10.3"));
+}
+
+#[test]
+fn without_composer_installed_that_is_what_is_reported() {
+    let world = World::new(&PHPS, &[]);
+    let error = resolve_composer(&world.paths).unwrap_err();
+    assert!(
+        matches!(error, ResolveError::NothingInstalled("composer")),
+        "{error}"
+    );
+}
+
+#[test]
 fn commands_know_which_tool_they_follow() {
     for (name, command, tool) in [
         ("php", Command::Php, Tool::Php),

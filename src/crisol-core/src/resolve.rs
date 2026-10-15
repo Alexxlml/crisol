@@ -331,6 +331,24 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
     })
 }
 
+/// The Composer to run: the highest installed version of the `composer` package (F4.3).
+///
+/// Composer is a single PHAR file that PHP runs, so unlike PHP or Node it is not chosen per
+/// project: what varies from project to project is the PHP that runs it, and that is
+/// [`resolve`] with [`Tool::Php`].
+pub fn resolve_composer(paths: &CrisolPaths) -> Result<InstalledVersion, ResolveError> {
+    list_installed(paths)?
+        .into_iter()
+        .rfind(|i| i.service == COMPOSER_SERVICE)
+        .ok_or(ResolveError::NothingInstalled(COMPOSER_SERVICE))
+}
+
+/// The catalog service that holds `composer.phar`.
+pub const COMPOSER_SERVICE: &str = "composer";
+
+/// The file inside a Composer installation that PHP runs.
+pub const COMPOSER_PHAR: &str = "composer.phar";
+
 fn dedup(warnings: Vec<String>) -> Vec<String> {
     let mut seen = Vec::new();
     for warning in warnings {
