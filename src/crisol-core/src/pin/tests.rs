@@ -36,6 +36,7 @@ fn no_env(_: &str) -> Option<String> {
 /// What the shim would pick in `dir`.
 fn picked(world: &World, tool: Tool, dir: &Path) -> String {
     let ceiling = dir.parent().unwrap().to_path_buf();
+    let catalog = crate::catalog::Catalog::embedded().unwrap();
     resolve(
         tool,
         &ResolveContext {
@@ -44,6 +45,7 @@ fn picked(world: &World, tool: Tool, dir: &Path) -> String {
             ceiling: Some(&ceiling),
             owners: &TrustAllOwners,
             env: &no_env,
+            catalog: &catalog,
         },
     )
     .unwrap()

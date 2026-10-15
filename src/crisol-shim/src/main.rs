@@ -13,6 +13,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command as Process};
 
+use crisol_core::catalog::Catalog;
 use crisol_core::paths::CrisolPaths;
 use crisol_core::project::FileOwners;
 use crisol_core::resolve::{
@@ -69,6 +70,8 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
     let owners = file_owners();
     let lookup = |name: &str| std::env::var(name).ok();
+    let catalog =
+        Catalog::embedded().map_err(|e| format!("the built-in catalog is broken: {e}"))?;
     let resolution = resolve(
         command.tool(),
         &ResolveContext {
@@ -77,6 +80,7 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
             ceiling: None,
             owners: owners.as_ref(),
             env: &lookup,
+            catalog: &catalog,
         },
     )
     .map_err(explain)?;

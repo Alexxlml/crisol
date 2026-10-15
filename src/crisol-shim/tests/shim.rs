@@ -509,6 +509,69 @@ fn real_php_runs_through_the_shim() {
     );
 }
 
+/// PHP 7.4 (ADR-0012), the old line kept for old projects, with the generated `php.ini` and the
+/// CA bundle: it starts without warnings, loads its extensions and cURL reaches an HTTPS site.
+///
+/// Needs the network (one GET to getcomposer.org) and, in `CRISOL_TEST_DOWNLOADS`,
+/// `php-7.4.33-nts-Win32-vc15-x64.zip` and `cacert-2026-09-25.pem`.
+///
+/// ```text
+/// CRISOL_TEST_DOWNLOADS=<folder> cargo test -p crisol-shim real_php_7_4 -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the network and the downloaded PHP 7.4 archive and CA bundle (Windows)"]
+fn real_php_7_4_runs_with_the_generated_ini_and_bundle() {
+    use crisol_core::cacert::write_php_cacert;
+    use crisol_core::phpini::{write_php_ini, PhpIniSettings};
+    use crisol_platform::WindowsRootCertificates;
+
+    let rig = Rig::new();
+    let paths = install_downloaded(&rig, &[("php", "7.4.33"), ("cacert", "2026.9.25")]);
+    write_php_cacert(&paths, &WindowsRootCertificates)
+        .unwrap()
+        .unwrap();
+    let written = write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
+    assert!(written.warnings.is_empty(), "{:?}", written.warnings);
+    let php = rig.shim("php");
+
+    let output = rig.run(&php, &["-v"]);
+    assert!(
+        stdout(&output).starts_with("PHP 7.4.33"),
+        "{}",
+        stdout(&output)
+    );
+
+    let output = rig.run(&php, &["-m"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output).trim(), "", "start-up warnings");
+    let modules = stdout(&output).to_lowercase();
+    for extension in ["curl", "mbstring", "openssl", "pdo_sqlite", "zend opcache"] {
+        assert!(
+            modules.lines().any(|l| l.trim() == extension),
+            "{extension} in:
+{modules}"
+        );
+    }
+
+    let script = r"
+        $c = curl_init('https://getcomposer.org/versions');
+        curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30]);
+        $body = curl_exec($c);
+        echo $body === false ? 'FAIL: ' . curl_error($c) : 'OK ' . curl_getinfo($c, CURLINFO_HTTP_CODE);
+    ";
+    let output = rig.run(&php, &["-r", script]);
+    assert_eq!(
+        stdout(&output).trim(),
+        "OK 200",
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let streams =
+        r"echo @file_get_contents('https://getcomposer.org/versions') === false ? 'FAIL' : 'OK';";
+    assert_eq!(stdout(&rig.run(&php, &["-r", streams])).trim(), "OK");
+}
+
 /// Reads a JSON array of strings, which is all the test needs (no JSON crate in this one).
 fn serde_json_like(text: &str) -> Vec<String> {
     let body = text.trim().trim_start_matches('[').trim_end_matches(']');

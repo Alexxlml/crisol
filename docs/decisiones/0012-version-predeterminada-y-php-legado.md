@@ -1,6 +1,6 @@
 # ADR-0012 — Versión de PHP predeterminada y PHP 7.4 como compatibilidad
 
-- **Estado:** aceptada (decidida por el usuario el 2026-10-14, a raíz de la revisión de la Fase 4, hallazgo 9). Pendiente de implementar.
+- **Estado:** aceptada (decidida por el usuario el 2026-10-14, a raíz de la revisión de la Fase 4, hallazgo 9). **Implementada** el 2026-10-14.
 - **Fecha:** 2026-10-14
 
 ## Contexto
@@ -37,3 +37,11 @@ Interpretación del "8.4^" del usuario: la **línea 8.4** (cualquier 8.4.x, el p
   - Su `php.ini-development` es más antiguo: F4.1 ya omite las extensiones cuya DLL falta, pero hay que comprobar el `php.ini` generado con la 7.4 real.
   - La extensión `openssl` de 7.4 y su cURL también usan el `curl.cainfo` del ADR-0011.
 - Las líneas intermedias (8.0, 8.1, 8.2) no se deciden aquí. Si hacen falta, se añaden con el mismo criterio (8.0 sin soporte; 8.1 y 8.2 según su estado en ese momento).
+
+## Implementación (2026-10-14)
+
+- Catálogo (`serial = 4`): sección `[recommended]` (`php = "8.4"`), campo `end_of_life` por paquete y PHP 7.4.33 (`vc15`). `Catalog::recommended`, `Catalog::is_end_of_life`; `latest` prefiere una versión con soporte. `Installed::end_of_life` avisa a quien instala.
+- `resolve`: `ResolveContext` recibe el catálogo. La predeterminada efectiva (`[defaults]` o la línea recomendada) se calcula antes del paso 4; con una restricción abierta se usa si la cumple y, si no, la más alta que la cumpla. El paso 6 elige la línea recomendada si está instalada (`Source::CatalogRecommendation`) y, si no, la más alta estable **con soporte**; una sin soporte solo si no hay otra. Las versiones fijadas a mano no cambian.
+- Comprobado con PHP 7.4.33 real: arranca con el `php.ini` generado sin advertencias, carga `curl`, `mbstring`, `openssl`, `pdo_sqlite` y `opcache`, y cURL con el bundle del ADR-0011 llega a un sitio HTTPS. El redistribuible 2015-2022 de esta máquina basta para la `vc15`.
+- El ZIP de 7.4.33 no trae hash ni firma del proveedor: ver la tabla de `analisis/fuentes-binarios.md` (certeza menor).
+- Sigue sin hacer: el aviso al instalar y la lista en `doctor` (CLI, Fase 8 y F11.1).

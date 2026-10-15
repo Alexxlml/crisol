@@ -11,6 +11,7 @@ Qué se descarga, de dónde, qué publica cada proveedor para verificarlo y qué
 | Herramienta | Sitio oficial | Qué publica el proveedor | Comprobación hecha | Resultado |
 |---|---|---|---|---|
 | PHP 8.3.35, 8.4.26, 8.5.11 (NTS x64) | `windows.php.net` | SHA-256 en `releases.json` | Hash calculado = hash publicado; la URL de `archives/` entrega los mismos bytes | ✅ coincide |
+| PHP 7.4.33 (NTS x64, vc15) | `windows.php.net/downloads/releases/archives/` | **Nada**: ni hash ni firma para versiones archivadas (`releases.json` ya no la lista; `php.net` publica hashes solo del código fuente) | Hash calculado = `14ae3250…8aace`, idéntico en **dos descargas** HTTPS separadas; `unzip -t` sin errores; nombres sin rutas absolutas, `..` ni unidades; `php.exe -v` imprime `PHP 7.4.33 … NTS Visual C++ 2017 x64`; `php -m` limpio con el `php.ini` generado y cURL con el bundle del ADR-0011 llega a un sitio HTTPS | ⚠️ **certeza menor**: integridad de la transferencia, no autenticidad contra el proveedor |
 | Nginx 1.28.3, 1.30.5, 1.31.6 | `nginx.org` | **Solo** firma PGP (`.zip.asc`); sin hash | Firma verificada con `gpg` y la clave publicada por nginx.org | ✅ firma válida |
 | Node 22.23.3, 24.21.0 (win-x64) | `nodejs.org` | `SHASUMS256.txt` firmado con PGP | Hash calculado = hash publicado; firma de `SHASUMS256.txt` verificada con la clave de `nodejs/release-keys` | ✅ coincide y firma válida |
 | Composer 2.10.3 | `getcomposer.org` | `composer.phar.sha256sum` y firma PGP (`.asc`) | Hash calculado = hash publicado; firma verificada con la clave de `keys.openpgp.org` | ✅ coincide y firma válida |
@@ -23,7 +24,7 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 
 - **Fuente:** `https://windows.php.net/downloads/releases/`. El índice `releases.json` trae, por rama, el nombre del ZIP y su `sha256`.
 - **Build elegida:** `nts` (sin hilos), `x64`. Crisol ejecuta PHP con `php-cgi.exe` (sin php-fpm en Windows), y ese modo es el de la build NTS.
-- **Versiones:** una por rama con soporte activo o de seguridad: **8.3.35** (compilada con VS16), **8.4.26** y **8.5.11** (VS17). No se incluyen 8.2 ni anteriores.
+- **Versiones:** una por rama con soporte activo o de seguridad: **8.3.35** (compilada con VS16), **8.4.26** y **8.5.11** (VS17). No se incluyen 8.2 ni anteriores, con **una excepción**: **7.4.33** (`vc15`, 26 132 214 bytes), última versión de la rama, marcada `end_of_life` en el catálogo para poder levantar proyectos viejos (ADR-0012). Sin hash del proveedor (ver la tabla); comprobada con una prueba real (`real_php_7_4_runs_with_the_generated_ini_and_bundle`, `#[ignore]`).
 - **URL permanente:** la carpeta `releases/` solo conserva el último release de cada rama (8.4.25 ya devuelve 404 ahí); `releases/archives/` conserva **todos**, incluidos los vigentes. Las entradas usan `archives/`, así la URL no caduca cuando sale el siguiente parche. Se descargó también desde `archives/` y los tres hashes coinciden con los publicados.
 - **Ejecutable:** `php.exe`; `php-cgi.exe` queda a su lado. El ZIP no trae carpeta raíz.
 - **Dependencia del sistema:** las builds VS16 y VS17 necesitan el *Microsoft Visual C++ Redistributable* (2015–2022, x64). Debe revisarlo `crisol doctor` (F11.1).

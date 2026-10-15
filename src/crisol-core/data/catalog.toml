@@ -14,8 +14,29 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 3
+serial = 4
 generated = "2026-10-14"
+
+# The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
+# and when a project's open constraint (">=7.4") is satisfied by it. Change it with a new serial.
+[recommended]
+php = "8.4"
+
+# PHP 7.4 is here only so that old projects can be started (ADR-0012). It no longer receives
+# security fixes (`end_of_life`), so it is never a default. windows.php.net publishes no hash for
+# archived releases: this one was computed on a download over HTTPS and is the same on two
+# separate downloads (analisis/fuentes-binarios.md).
+[[package]]
+service = "php"
+version = "7.4.33"
+os = "windows"
+arch = "x86_64"
+url = "https://windows.php.net/downloads/releases/archives/php-7.4.33-nts-Win32-vc15-x64.zip"
+sha256 = "14ae3250d4447c8ccfc4c45a70d90adfbcd61e728d85f0be56a7ddf8f9c8aace"
+format = "zip"
+executable = "php.exe"
+size = 26132214
+end_of_life = true
 
 [[package]]
 service = "php"

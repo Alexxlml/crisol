@@ -7,6 +7,7 @@ use std::io;
 use tempfile::TempDir;
 
 use super::*;
+use crate::catalog::Catalog;
 use crate::project::{FileOwner, TrustAllOwners};
 
 /// A `CRISOL_HOME` with some versions "installed" (empty folders are enough) and a project
@@ -18,6 +19,7 @@ struct World {
     app: PathBuf,
     src: PathBuf,
     env: HashMap<String, String>,
+    catalog: Catalog,
 }
 
 impl World {
@@ -40,7 +42,24 @@ impl World {
             app,
             src,
             env: HashMap::new(),
+            // No recommendation and no unsupported versions, unless a test says otherwise.
+            catalog: Catalog::parse(
+                "schema = 1
+serial = 1
+",
+            )
+            .unwrap(),
         }
+    }
+
+    /// Uses a catalog with a `[recommended]` section and/or `end_of_life` entries.
+    fn catalog(&mut self, text: &str) {
+        self.catalog = Catalog::parse(&format!(
+            "schema = 1
+serial = 1
+{text}"
+        ))
+        .unwrap();
     }
 
     fn config(&self, text: &str) {
@@ -61,6 +80,7 @@ impl World {
                 ceiling: Some(&self.root),
                 owners,
                 env: &lookup,
+                catalog: &self.catalog,
             },
         )
     }
@@ -483,4 +503,164 @@ fn the_walk_stops_at_the_first_git_folder() {
     write(&world.root, ".php-version", "8.2\n"); // outside the repository
     fs::create_dir(world.app.join(".git")).unwrap();
     assert_eq!(picked(world.php()).1, Source::HighestInstalled);
+}
+
+// ---- the default version (ADR-0012) -----------------------------------------------------
+
+const RECOMMEND_84: &str = "
+[recommended]
+php = \"8.4\"
+";
+
+/// A catalog entry marked as unsupported; only its service and version matter here.
+fn eol_entry(service: &str, version: &str) -> String {
+    format!(
+        "
+[[package]]
+service = \"{service}\"
+version = \"{version}\"
+os = \"windows\"
+arch = \"x86_64\"
+         url = \"https://example.invalid/x.zip\"
+sha256 = \"{}\"
+format = \"zip\"
+executable = \"{service}.exe\"
+end_of_life = true
+",
+        "ab".repeat(32)
+    )
+}
+
+fn require_php(world: &World, constraint: &str) {
+    write(
+        &world.app,
+        "composer.json",
+        &format!(r#"{{"require":{{"php":"{constraint}"}}}}"#),
+    );
+}
+
+#[test]
+fn with_no_hint_the_recommended_line_wins_over_a_higher_version() {
+    let mut world = World::new(&["8.3.35", "8.4.20", "8.4.26", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    let (version, source) = picked(world.php());
+    assert_eq!(version, "8.4.26", "the highest patch of the line");
+    assert_eq!(source, Source::CatalogRecommendation);
+}
+
+#[test]
+fn if_the_recommended_line_is_not_installed_the_highest_one_is_used() {
+    let mut world = World::new(&["8.3.35", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    let (version, source) = picked(world.php());
+    assert_eq!(
+        (version.as_str(), source),
+        ("8.5.11", Source::HighestInstalled)
+    );
+}
+
+#[test]
+fn the_users_default_beats_the_recommendation() {
+    let mut world = World::new(&["8.3.35", "8.4.26", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    world.config(
+        "[defaults]
+php = \"8.5\"
+",
+    );
+    let (version, source) = picked(world.php());
+    assert_eq!(
+        (version.as_str(), source),
+        ("8.5.11", Source::GlobalDefault)
+    );
+}
+
+#[test]
+fn an_open_constraint_gets_the_default_when_it_satisfies_it() {
+    let mut world = World::new(&["7.4.33", "8.4.26", "8.5.11"], &[]);
+    world.catalog(&format!("{RECOMMEND_84}{}", eol_entry("php", "7.4.33")));
+    require_php(&world, ">=7.4");
+    assert_eq!(
+        picked(world.php()).0,
+        "8.4.26",
+        "not the newest, the default"
+    );
+
+    // The user's default is the one that counts when there is one.
+    world.config(
+        "[defaults]
+php = \"8.5\"
+",
+    );
+    assert_eq!(picked(world.php()).0, "8.5.11");
+}
+
+#[test]
+fn an_open_constraint_the_default_does_not_satisfy_gets_the_highest_that_does() {
+    let mut world = World::new(&["7.4.33", "8.4.26", "8.5.11"], &[]);
+    world.catalog(&format!("{RECOMMEND_84}{}", eol_entry("php", "7.4.33")));
+
+    require_php(&world, ">=7.4 <8.0");
+    assert_eq!(picked(world.php()).0, "7.4.33");
+
+    require_php(&world, "^8.5");
+    assert_eq!(picked(world.php()).0, "8.5.11");
+
+    // And a default that is not installed does not get in the way.
+    let mut world = World::new(&["8.3.35", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    require_php(&world, ">=7.4");
+    assert_eq!(picked(world.php()).0, "8.5.11");
+}
+
+#[test]
+fn without_a_recommendation_an_open_constraint_still_takes_the_highest() {
+    let world = World::new(&["7.4.33", "8.4.26", "8.5.11"], &[]);
+    require_php(&world, ">=7.4");
+    assert_eq!(picked(world.php()).0, "8.5.11");
+}
+
+#[test]
+fn an_unsupported_version_is_never_chosen_by_default_while_another_is_installed() {
+    let mut world = World::new(&["7.4.33", "8.3.35"], &[]);
+    world.catalog(&eol_entry("php", "7.4.33"));
+    let (version, source) = picked(world.php());
+    assert_eq!(
+        (version.as_str(), source),
+        ("8.3.35", Source::HighestInstalled)
+    );
+
+    // Even if it were the highest number (a made-up case: 9.x unsupported).
+    let mut world = World::new(&["8.3.35", "9.0.1"], &[]);
+    world.catalog(&eol_entry("php", "9.0.1"));
+    assert_eq!(picked(world.php()).0, "8.3.35");
+
+    // But it is what there is when nothing else is installed.
+    let mut world = World::new(&["7.4.33"], &[]);
+    world.catalog(&eol_entry("php", "7.4.33"));
+    assert_eq!(picked(world.php()).0, "7.4.33");
+}
+
+#[test]
+fn a_version_pinned_by_hand_is_respected_even_if_unsupported() {
+    let mut world = World::new(&["7.4.33", "8.4.26"], &[]);
+    world.catalog(&format!("{RECOMMEND_84}{}", eol_entry("php", "7.4.33")));
+    write(
+        &world.app,
+        ".php-version",
+        "7.4
+",
+    );
+    assert_eq!(picked(world.php()).0, "7.4.33");
+}
+
+#[test]
+fn node_has_no_recommendation_and_is_unaffected() {
+    let mut world = World::new(&[], &["22.23.3", "24.21.0"]);
+    world.catalog(RECOMMEND_84);
+    let (version, source) = picked(world.node());
+    assert_eq!(
+        (version.as_str(), source),
+        ("24.21.0", Source::HighestInstalled)
+    );
 }

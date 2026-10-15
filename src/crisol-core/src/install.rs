@@ -110,6 +110,9 @@ pub struct Installed {
     pub downloaded: u64,
     /// Files written.
     pub files: u64,
+    /// The version no longer receives security fixes (the catalog says so): the caller should
+    /// tell the user (ADR-0012).
+    pub end_of_life: bool,
 }
 
 /// Why an installation failed. In every case nothing is left installed.
@@ -272,6 +275,7 @@ pub fn install(
         path: dest,
         downloaded,
         files,
+        end_of_life: package.end_of_life,
     })
 }
 

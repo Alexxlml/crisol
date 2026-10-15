@@ -9,6 +9,9 @@ schema    = 1             # único formato que existe hoy
 serial    = 7             # sube con cada catálogo publicado
 generated = "2026-10-14"  # informativo
 
+[recommended]             # opcional: la línea que Crisol usa por defecto (ADR-0012)
+php = "8.4"
+
 [[package]]
 service    = "nginx"      # minúsculas, dígitos, "-" y "_"
 version    = "1.28.2"     # números separados por puntos; "-rc1" para preliminares
@@ -20,10 +23,13 @@ format     = "zip"        # zip | tar.gz | tar.xz | file
 root       = "nginx-1.28.2"   # opcional: carpeta del archivo que se sube al nivel raíz
 executable = "nginx.exe"  # ejecutable principal, relativo a la carpeta de instalación
 size       = 1802240      # opcional, bytes
+end_of_life = true        # opcional: ya no recibe parches de seguridad (ADR-0012)
 ```
 
 - `format = "file"` es un archivo suelto que se instala tal cual (por ejemplo `composer.phar`); `executable` es el nombre con el que queda.
 - `root` evita que el ejecutable quede en una carpeta intermedia: Nginx y Node empaquetan todo dentro de una carpeta con el nombre de la versión.
+- `[recommended]` asigna a cada servicio la **línea** (`8.4`, no una versión exacta) que se usa cuando nada pide otra cosa y cuando la restricción abierta de un proyecto (`>=7.4`) la cumple. Vive en el catálogo y no en el binario para poder cambiarla (a `8.5`) publicando un catálogo firmado nuevo. Un catálogo sin esta sección es válido. La clave debe ser un nombre de servicio válido y el valor, una línea de versión.
+- `end_of_life = true` marca una versión que se puede instalar (un proyecto viejo la puede necesitar) pero que **nunca** es la predeterminada ni la que elige `latest` mientras exista otra. Al instalarla, `Installed::end_of_life` avisa a quien llama. Hoy solo PHP 7.4.33.
 - Los campos desconocidos se avisan, no fallan: un catálogo más nuevo sigue leyéndose.
 
 ## Qué se rechaza
@@ -44,7 +50,7 @@ size       = 1802240      # opcional, bytes
 - `8.3` coincide con `8.3.0`, `8.3.12`…, no con `8.30.1` ni con `8.4.0`. Es un prefijo por partes numéricas.
 - `8` coincide con cualquier `8.x.y`.
 - Las versiones preliminares (`8.5.0-rc1`) **solo** se eligen pidiéndolas exactamente.
-- `latest` es la más alta no preliminar.
+- `latest` es la más alta no preliminar, prefiriendo una que aún reciba parches (`end_of_life` no se elige mientras haya otra).
 - El orden es numérico: `8.4.10` es mayor que `8.4.2`.
 
 ## Confianza (ADR-0005)

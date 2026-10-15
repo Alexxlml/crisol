@@ -19,6 +19,10 @@
 //! root = "nginx-1.28.2"   # optional: folder inside the archive to hoist to the top
 //! executable = "nginx.exe"
 //! size = 1802240          # optional, bytes: for progress and disk checks
+//! end_of_life = true      # optional: no longer receives security fixes (ADR-0012)
+//!
+//! [recommended]           # optional: the line Crisol uses by default, per tool (ADR-0012)
+//! php = "8.4"
 //! ```
 //!
 //! Trust (ADR-0005):
@@ -34,7 +38,7 @@
 //! URLs must be `https`, hashes must be 64 hex digits, and paths must stay inside the install
 //! folder. Unknown fields are only warnings, like in `crisol.toml`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use serde::Deserialize;
@@ -145,6 +149,8 @@ struct RawCatalog {
     #[serde(default)]
     generated: Option<String>,
     #[serde(default)]
+    recommended: BTreeMap<String, String>,
+    #[serde(default)]
     package: Vec<RawPackage>,
 }
 
@@ -162,6 +168,8 @@ struct RawPackage {
     executable: String,
     #[serde(default)]
     size: Option<u64>,
+    #[serde(default)]
+    end_of_life: bool,
 }
 
 /// One downloadable build, validated.
@@ -185,6 +193,9 @@ pub struct Package {
     pub executable: String,
     /// Size of the download in bytes, if known.
     pub size: Option<u64>,
+    /// The version no longer receives security fixes: it can be installed (an old project may
+    /// need it) but is never a default.
+    pub end_of_life: bool,
 }
 
 impl Package {
@@ -257,6 +268,7 @@ pub enum CatalogError {
 pub struct Catalog {
     serial: u64,
     generated: Option<String>,
+    recommended: BTreeMap<String, String>,
     packages: Vec<Package>,
     warnings: Vec<ConfigWarning>,
 }
@@ -312,6 +324,25 @@ impl Catalog {
             packages.push(validate(index, entry)?);
         }
         reject_duplicates(&packages)?;
+        for (service, line) in &raw.recommended {
+            let invalid = |field: &'static str, reason: &str| CatalogError::Invalid {
+                entry: format!("[recommended] {service}"),
+                field,
+                reason: reason.to_owned(),
+            };
+            if !is_service_name(service) {
+                return Err(invalid(
+                    "service",
+                    "must be lowercase letters, digits, `-` or `_`",
+                ));
+            }
+            if VersionReq::parse(line).is_err() {
+                return Err(invalid(
+                    "recommended",
+                    "is not a version line such as `8.4`",
+                ));
+            }
+        }
         packages.sort_by(|a, b| {
             (a.service.as_str(), a.target, &a.version).cmp(&(
                 b.service.as_str(),
@@ -322,6 +353,7 @@ impl Catalog {
         Ok(Self {
             serial: raw.serial,
             generated: raw.generated,
+            recommended: raw.recommended,
             packages,
             warnings,
         })
@@ -369,6 +401,21 @@ impl Catalog {
         &self.warnings
     }
 
+    /// The line of `service` that Crisol uses by default (`8.4`), if the catalog names one.
+    /// It lives here, not in the binary, so a signed catalog can move it (ADR-0012).
+    #[must_use]
+    pub fn recommended(&self, service: &str) -> Option<&str> {
+        self.recommended.get(service).map(String::as_str)
+    }
+
+    /// Whether the catalog marks this version of `service` as no longer supported.
+    #[must_use]
+    pub fn is_end_of_life(&self, service: &str, version: &Version) -> bool {
+        self.packages
+            .iter()
+            .any(|p| p.end_of_life && p.service == service && &p.version == version)
+    }
+
     /// Every package, ordered by service, platform and version.
     #[must_use]
     pub fn packages(&self) -> &[Package] {
@@ -407,11 +454,17 @@ impl Catalog {
             .ok_or_else(|| not_found(service, request, target))
     }
 
-    /// The highest stable version of `service` for `target`.
+    /// The highest stable version of `service` for `target`, preferring one that still
+    /// receives security fixes.
     pub fn latest(&self, service: &str, target: Target) -> Result<&Package, CatalogError> {
-        self.available(service, target)
-            .into_iter()
-            .rfind(|p| !p.version.is_prerelease())
+        let stable = || {
+            self.available(service, target)
+                .into_iter()
+                .filter(|p| !p.version.is_prerelease())
+        };
+        stable()
+            .rfind(|p| !p.end_of_life)
+            .or_else(|| stable().next_back())
             .ok_or_else(|| not_found(service, "latest", target))
     }
 }
@@ -449,12 +502,7 @@ fn validate(index: usize, raw: RawPackage) -> Result<Package, CatalogError> {
         reason: reason.to_owned(),
     };
 
-    let service_ok = !raw.service.is_empty()
-        && raw
-            .service
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-    if !service_ok {
+    if !is_service_name(&raw.service) {
         return Err(invalid(
             "service",
             "must be lowercase letters, digits, `-` or `_`",
@@ -496,7 +544,15 @@ fn validate(index: usize, raw: RawPackage) -> Result<Package, CatalogError> {
         root,
         executable,
         size: raw.size,
+        end_of_life: raw.end_of_life,
     })
+}
+
+fn is_service_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 fn reject_duplicates(packages: &[Package]) -> Result<(), CatalogError> {

@@ -61,6 +61,7 @@ fn package(
         root: root.map(str::to_owned),
         executable: executable.to_owned(),
         size: Some(u64::try_from(bytes.len()).unwrap()),
+        end_of_life: false,
     }
 }
 

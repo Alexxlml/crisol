@@ -611,9 +611,12 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
             .to_string(),
         "2.10.3"
     );
+    // The only unsupported PHP is the one kept for old projects (ADR-0012).
+    assert_eq!(resolve("php", "7.4"), "7.4.33");
     assert!(
-        catalog.find("php", "7.4", WINDOWS).is_err(),
-        "unsupported PHP stays out"
+        catalog.find("php", "8.2", WINDOWS).is_err()
+            && catalog.find("php", "7.3", WINDOWS).is_err(),
+        "other unsupported lines stay out"
     );
 }
 
@@ -701,4 +704,116 @@ fn built_in_packages_carry_a_realistic_size_and_distinct_hashes() {
             package.label()
         );
     }
+}
+
+// ---- the recommended line and end-of-life versions (ADR-0012) -------------------------
+
+#[test]
+fn the_built_in_catalog_recommends_php_8_4_and_marks_7_4_as_unsupported() {
+    let catalog = Catalog::embedded().unwrap();
+    assert_eq!(catalog.recommended("php"), Some("8.4"));
+    assert_eq!(catalog.recommended("node"), None);
+    // The recommended line must be one the catalog can actually install.
+    let target = Target {
+        os: Os::Windows,
+        arch: Arch::X86_64,
+    };
+    assert!(catalog.find("php", "8.4", target).is_ok());
+
+    let old = catalog.find("php", "7.4", target).unwrap();
+    assert_eq!(old.version.to_string(), "7.4.33");
+    assert!(old.end_of_life);
+    assert!(catalog.is_end_of_life("php", &old.version));
+    for package in catalog
+        .packages()
+        .iter()
+        .filter(|p| p.service != "php" || !p.version.to_string().starts_with("7."))
+    {
+        assert!(
+            !package.end_of_life,
+            "{} is not end of life",
+            package.label()
+        );
+    }
+    // It is never what "latest" means.
+    assert_eq!(
+        catalog
+            .latest("php", target)
+            .unwrap()
+            .version
+            .to_string()
+            .split('.')
+            .next(),
+        Some("8")
+    );
+}
+
+#[test]
+fn a_catalog_without_a_recommended_section_is_valid() {
+    let catalog = sample();
+    assert_eq!(catalog.recommended("php"), None);
+    assert!(!catalog.is_end_of_life("php", &Version::parse("8.4.2").unwrap()));
+}
+
+#[test]
+fn the_recommended_line_and_end_of_life_are_read_and_validated() {
+    let eol = entry("php", "7.4.33").replace(
+        "format =",
+        "end_of_life = true
+format =",
+    );
+    let text = format!(
+        "schema = 1
+serial = 3
+
+[recommended]
+php = \"8.4\"
+
+{}{eol}{}",
+        entry("php", "8.4.2"),
+        entry("php", "8.5.1")
+    );
+    let catalog = Catalog::parse(&text).unwrap();
+    assert_eq!(catalog.recommended("php"), Some("8.4"));
+    assert!(catalog.is_end_of_life("php", &Version::parse("7.4.33").unwrap()));
+    assert!(!catalog.is_end_of_life("php", &Version::parse("8.4.2").unwrap()));
+
+    let target = Target {
+        os: Os::Windows,
+        arch: Arch::X86_64,
+    };
+    assert_eq!(
+        catalog.latest("php", target).unwrap().version.to_string(),
+        "8.5.1"
+    );
+
+    for bad in ["php = \"eight\"", "PHP = \"8.4\"", "php = 8.4"] {
+        let text = format!(
+            "schema = 1
+serial = 3
+
+[recommended]
+{bad}
+"
+        );
+        assert!(Catalog::parse(&text).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn latest_falls_back_to_an_unsupported_version_only_if_nothing_else_exists() {
+    let eol = entry("php", "7.4.33").replace(
+        "format =",
+        "end_of_life = true
+format =",
+    );
+    let catalog = Catalog::parse(&catalog(&[eol])).unwrap();
+    let target = Target {
+        os: Os::Windows,
+        arch: Arch::X86_64,
+    };
+    assert_eq!(
+        catalog.latest("php", target).unwrap().version.to_string(),
+        "7.4.33"
+    );
 }

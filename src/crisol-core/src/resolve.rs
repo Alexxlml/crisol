@@ -8,10 +8,14 @@
 //! 2. the nearest trusted `.crisol.toml` that pins the tool;
 //! 3. PHP: `.php-version`. Node: `.nvmrc`, `.node-version`, or `engines.node` of a
 //!    `package.json`;
-//! 4. PHP: `require.php` of a `composer.json`, as a constraint: the highest installed
-//!    version that satisfies it;
+//! 4. PHP: `require.php` of a `composer.json`, as a constraint: the **default** version if it
+//!    satisfies it, else the highest installed version that does (ADR-0012);
 //! 5. the default of `crisol.toml` (`[defaults]`);
-//! 6. the highest installed stable version.
+//! 6. the catalog's recommended line if installed (ADR-0012), else the highest installed
+//!    stable version that still receives security fixes.
+//!
+//! The *default* is the `[defaults]` entry of `crisol.toml` or, without one, the line the
+//! catalog recommends (`[recommended]`).
 //!
 //! Everything found by walking up from the current directory follows the rules of
 //! ADR-0010: files of an untrusted owner are skipped with a warning, and the walk stops at
@@ -26,6 +30,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::catalog::Catalog;
 use crate::config::{Config, ConfigError};
 use crate::constraint::{Constraint, Flavor};
 use crate::manage::{list_installed, resolve_installed, InstalledVersion, ManageError};
@@ -116,6 +121,8 @@ pub enum Source {
     PackageJson(PathBuf),
     /// `[defaults]` in `crisol.toml`.
     GlobalDefault,
+    /// Nothing asked for a version: the line the catalog recommends.
+    CatalogRecommendation,
     /// Nothing asked for a version: the highest one installed.
     HighestInstalled,
 }
@@ -128,6 +135,7 @@ impl fmt::Display for Source {
             Self::ComposerJson(p) => write!(f, "require.php in {}", p.display()),
             Self::PackageJson(p) => write!(f, "engines.node in {}", p.display()),
             Self::GlobalDefault => f.write_str("the defaults in crisol.toml"),
+            Self::CatalogRecommendation => f.write_str("the line the catalog recommends"),
             Self::HighestInstalled => f.write_str("the highest installed version"),
         }
     }
@@ -212,6 +220,8 @@ pub struct ResolveContext<'a> {
     pub owners: &'a dyn FileOwners,
     /// Reads an environment variable.
     pub env: &'a dyn Fn(&str) -> Option<String>,
+    /// The catalog: the recommended line and which versions no longer get security fixes.
+    pub catalog: &'a Catalog,
 }
 
 impl fmt::Debug for ResolveContext<'_> {
@@ -278,6 +288,8 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
         }
     }
 
+    let defaults = Defaults::load(tool, ctx, &mut warnings)?;
+
     // 3 and 4. a constraint in composer.json / package.json
     let (manifest, flavor) = match tool {
         Tool::Php => ("composer.json", Flavor::Composer),
@@ -293,7 +305,15 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
                         Tool::Php => Source::ComposerJson(file),
                         Tool::Node => Source::PackageJson(file),
                     };
-                    return pick_constraint(tool, &text, &constraint, source, &installed, warnings);
+                    return pick_constraint(
+                        tool,
+                        &text,
+                        &constraint,
+                        source,
+                        &installed,
+                        defaults.installed.as_ref(),
+                        warnings,
+                    );
                 }
                 Err(error) => warnings.push(format!("ignoring {}: {error}", file.display())),
             },
@@ -303,20 +323,82 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
     }
 
     // 5. the global default
-    let config = Config::load_from(ctx.paths)?;
-    warnings.extend(config.warnings.iter().map(ToString::to_string));
-    let default = match tool {
-        Tool::Php => config.config.defaults.php,
-        Tool::Node => config.config.defaults.node,
-    };
-    if let Some(request) = default {
+    if let Some(request) = defaults.user {
         return by_request(&request, Source::GlobalDefault, warnings);
     }
 
-    // 6. whatever is highest
+    // 6. nothing asked for a version
+    fallback(
+        tool,
+        &installed,
+        defaults.recommended.zip(defaults.installed),
+        ctx.catalog,
+        warnings,
+    )
+}
+
+/// The default version of a tool (ADR-0012): the user's `[defaults]` entry or, without one,
+/// the line the catalog recommends.
+struct Defaults {
+    /// `[defaults]` in `crisol.toml`, as written.
+    user: Option<String>,
+    /// The catalog's recommended line.
+    recommended: Option<String>,
+    /// The installed version the default stands for, if it is installed.
+    installed: Option<InstalledVersion>,
+}
+
+impl Defaults {
+    fn load(
+        tool: Tool,
+        ctx: &ResolveContext<'_>,
+        warnings: &mut Vec<String>,
+    ) -> Result<Self, ResolveError> {
+        let config = Config::load_from(ctx.paths)?;
+        warnings.extend(config.warnings.iter().map(ToString::to_string));
+        let user = match tool {
+            Tool::Php => config.config.defaults.php,
+            Tool::Node => config.config.defaults.node,
+        };
+        let recommended = ctx.catalog.recommended(tool.service()).map(str::to_owned);
+        let installed = user.as_deref().or(recommended.as_deref()).and_then(|line| {
+            resolve_installed(ctx.paths, tool.service(), line)
+                .ok()
+                .flatten()
+        });
+        Ok(Self {
+            user,
+            recommended,
+            installed,
+        })
+    }
+}
+
+/// Step 6: the recommended line if it is installed, else the highest installed stable version.
+/// A version without security fixes is only a last resort.
+fn fallback(
+    tool: Tool,
+    installed: &[InstalledVersion],
+    recommended: Option<(String, InstalledVersion)>,
+    catalog: &Catalog,
+    warnings: Vec<String>,
+) -> Result<Resolution, ResolveError> {
+    if let Some((line, best)) = recommended {
+        return Ok(Resolution {
+            resolved: Resolved {
+                tool,
+                request: line,
+                version: best,
+                source: Source::CatalogRecommendation,
+            },
+            warnings: dedup(warnings),
+        });
+    }
+    let supported = |i: &&InstalledVersion| !catalog.is_end_of_life(tool.service(), &i.version);
     let best = installed
         .iter()
-        .rfind(|i| !i.version.is_prerelease())
+        .rfind(|i| !i.version.is_prerelease() && supported(i))
+        .or_else(|| installed.iter().rfind(|i| !i.version.is_prerelease()))
         .or_else(|| installed.last())
         .cloned()
         .ok_or(ResolveError::NothingInstalled(tool.service()))?;
@@ -399,9 +481,14 @@ fn pick_constraint(
     constraint: &Constraint,
     source: Source,
     installed: &[InstalledVersion],
+    default: Option<&InstalledVersion>,
     warnings: Vec<String>,
 ) -> Result<Resolution, ResolveError> {
-    match installed.iter().rfind(|i| constraint.matches(&i.version)) {
+    // A project that accepts the default gets the default, not whatever is newest.
+    let chosen = default
+        .filter(|d| constraint.matches(&d.version))
+        .or_else(|| installed.iter().rfind(|i| constraint.matches(&i.version)));
+    match chosen {
         Some(version) => Ok(Resolution {
             resolved: Resolved {
                 tool,
