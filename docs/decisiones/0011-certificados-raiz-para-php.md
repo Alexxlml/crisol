@@ -1,6 +1,6 @@
 # ADR-0011 — Certificados raíz para PHP: Mozilla más el almacén de Windows
 
-- **Estado:** aceptada (decidida por el usuario el 2026-10-14); implementada el 2026-10-14; **corregida el 2026-10-14** tras la revisión de la Fase 4 (hallazgos 1 y 2; ver «Corrección»). La corrección está pendiente de implementar.
+- **Estado:** aceptada (decidida por el usuario el 2026-10-14); implementada el 2026-10-14; **corregida el 2026-10-14** tras la revisión de la Fase 4 (hallazgos 1 y 2; ver «Corrección») y **la corrección está implementada**.
 - **Fecha:** 2026-10-14
 
 ## Contexto
@@ -64,10 +64,11 @@ Se decide:
 
 Consecuencias:
 
-- El número de raíces que aporta Windows bajará (las 54 de la primera medición incluían raíces solo de firma de código y heredadas). Conviene volver a medirlo y anotarlo aquí.
-- Hacen falta pruebas nuevas:
+- El número de raíces que aporta Windows bajó. Medido en el equipo de pruebas tras la corrección: 93 raíces de confianza en los almacenes, 69 aptas para TLS y 24 omitidas por uso o desconfianza parcial (las 54 de la primera medición incluían raíces solo de firma de código y heredadas).
+- Pruebas nuevas (hechas):
   - una raíz con uso solo de firma de código no entra;
   - una con `serverAuth` sí entra;
   - una con desconfianza parcial no entra;
   - el `php.ini` generado no contiene `openssl.cafile =` activo.
+- Implementación: `RootCertificates::trusted_roots` devuelve `SystemRoot { der, usages, partially_distrusted }`; `SystemRoot::is_fit_for_tls` es el filtro (núcleo, con doble). `WindowsRootCertificates` lee la propiedad de uso extendido (`CERT_ENHKEY_USAGE_PROP_ID`) y marca desconfianza parcial si existe `CERT_DISALLOWED_FILETIME_PROP_ID` o `CERT_DISALLOWED_ENHKEY_USAGE_PROP_ID` (cualquier contenido de esta última cuenta: solo puede volver el filtro más estricto). Un uso que no se puede leer se trata como el más estricto; un certificado presente en varios almacenes conserva la lectura más restrictiva.
 - Queda abierto, sin decidir aquí: aplicar también `Disallowed` a los bloques de Mozilla (hallazgo 6 de la revisión de la Fase 4).

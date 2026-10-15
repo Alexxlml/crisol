@@ -148,8 +148,9 @@ pub struct PhpIniInput<'a> {
     pub available: &'a BTreeSet<String>,
     /// Where PHP writes its errors; `None` keeps PHP's default (stderr).
     pub error_log: Option<&'a Path>,
-    /// The CA bundle for cURL and OpenSSL (`etc/php/cacert.pem`, ADR-0011); `None` leaves
-    /// `curl.cainfo` and `openssl.cafile` as PHP ships them. A value the user sets in an
+    /// The CA bundle for cURL (`etc/php/cacert.pem`, ADR-0011); `None` leaves `curl.cainfo`
+    /// as PHP ships it. `openssl.cafile` is never set: PHP's streams keep using the live
+    /// Windows store. A value the user sets in an
     /// override still wins: overrides come last and PHP keeps the last assignment.
     pub ca_file: Option<&'a Path>,
     /// The user's `*.ini` fragments as `(file name, text)`, already in the order to append.
@@ -390,9 +391,8 @@ fn directives(input: &PhpIniInput<'_>) -> Result<Vec<Directive>, PhpIniError> {
     }
     if let Some(bundle) = input.ca_file {
         let quoted = format!("\"{}\"", quote_path(bundle)?);
-        // `;curl.cainfo =` is under [curl] and `;openssl.cafile=` under [openssl].
-        list.push(Directive::commented("curl.cainfo", &quoted, None));
-        list.push(Directive::commented("openssl.cafile", quoted, None));
+        // `;curl.cainfo =` is under [curl].
+        list.push(Directive::commented("curl.cainfo", quoted, None));
     }
     Ok(list)
 }

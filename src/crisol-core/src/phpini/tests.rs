@@ -199,7 +199,7 @@ fn limits_and_the_log_are_set() {
 }
 
 #[test]
-fn the_ca_bundle_is_set_for_curl_and_openssl_only_when_there_is_one() {
+fn the_ca_bundle_is_set_for_curl_only_and_only_when_there_is_one() {
     let none = render(EXCERPT).text;
     assert!(none.contains("\r\n;curl.cainfo =\r\n"));
     assert!(none.contains("\r\n;openssl.cafile=\r\n"));
@@ -218,12 +218,12 @@ fn the_ca_bundle_is_set_for_curl_and_openssl_only_when_there_is_one() {
     })
     .unwrap()
     .text;
-    for line in [
-        "curl.cainfo = \"C:/Crisol/etc/php/cacert.pem\"",
-        "openssl.cafile = \"C:/Crisol/etc/php/cacert.pem\"",
-    ] {
-        assert!(text.contains(&format!("\r\n{line}\r\n")), "{line}");
-    }
+    let line = "curl.cainfo = \"C:/Crisol/etc/php/cacert.pem\"";
+    assert!(text.contains(&format!("\r\n{line}\r\n")), "{line}");
+    assert!(
+        text.contains("\r\n;openssl.cafile=\r\n"),
+        "openssl.cafile stays as PHP ships it (the streams use the live Windows store)"
+    );
     assert!(
         !text.contains(";curl.cainfo"),
         "the shipped lines are replaced, not duplicated"
@@ -563,8 +563,8 @@ fn the_file_points_at_the_ca_bundle_when_it_exists_and_warns_when_it_does_not() 
         "{text}"
     );
     assert!(
-        text.contains(&format!("openssl.cafile = \"{bundle}\"")),
-        "{text}"
+        text.lines().all(|l| !l.starts_with("openssl.cafile")),
+        "no active openssl.cafile: {text}"
     );
 }
 

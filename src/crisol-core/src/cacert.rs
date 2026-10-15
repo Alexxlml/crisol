@@ -12,7 +12,9 @@
 //!
 //! The operating-system part is behind [`RootCertificates`]; the Windows implementation is in
 //! `crisol-platform`. It returns only certificates the system *trusts* (never the
-//! `Disallowed` store), so nothing the user or the company has distrusted is added here.
+//! `Disallowed` store) together with their usage restrictions, and only the ones fit to
+//! authenticate TLS servers are added (see [`SystemRoot::is_fit_for_tls`]): the bundle must
+//! not trust more than Windows or Mozilla do.
 //!
 //! The file is derived like everything under `etc/`: it is rewritten whenever it is generated
 //! and left alone when nothing changed.
@@ -38,12 +40,57 @@ pub const BUNDLE_FILE: &str = "cacert.pem";
 const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
 const END: &str = "-----END CERTIFICATE-----";
 
+/// The OID of "TLS web server authentication" (`serverAuth`).
+pub const SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+
+/// The OID of "any extended key usage": a certificate that lists it is good for every purpose.
+pub const ANY_USAGE: &str = "2.5.29.37.0";
+
+/// A root certificate of the operating system with what the system says about its use.
+///
+/// The Windows `ROOT` store is not a flat list of "roots to trust for TLS": an entry can be
+/// limited to code signing or mail, or be partially distrusted (how Microsoft retires a CA
+/// without deleting it). Copying only the DER would lose that, so it travels along.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemRoot {
+    /// The DER encoding of the certificate.
+    pub der: Vec<u8>,
+    /// The purposes the system allows it for, as dotted OIDs. `None`: no restriction.
+    pub usages: Option<Vec<String>>,
+    /// The system distrusts it for some purpose or after some date (partial distrust).
+    pub partially_distrusted: bool,
+}
+
+impl SystemRoot {
+    /// A root with no restriction and no distrust.
+    #[must_use]
+    pub fn unrestricted(der: Vec<u8>) -> Self {
+        Self {
+            der,
+            usages: None,
+            partially_distrusted: false,
+        }
+    }
+
+    /// Whether the root may be trusted to authenticate TLS servers: it is not partially
+    /// distrusted, and it has no usage restriction or its restriction includes `serverAuth`.
+    #[must_use]
+    pub fn is_fit_for_tls(&self) -> bool {
+        !self.partially_distrusted
+            && self
+                .usages
+                .as_ref()
+                .is_none_or(|u| u.iter().any(|oid| oid == SERVER_AUTH || oid == ANY_USAGE))
+    }
+}
+
 /// Where the operating system's trusted root certificates come from.
 pub trait RootCertificates: Send + Sync {
-    /// The DER encoding of every root certificate the system trusts, for the user and for the
-    /// machine (company policy included). Certificates the system explicitly distrusts must
-    /// not be in the list. Duplicates are fine.
-    fn trusted_roots(&self) -> io::Result<Vec<Vec<u8>>>;
+    /// Every root certificate the system trusts, for the user and for the machine (company
+    /// policy included), with its usage restrictions. Certificates the system explicitly
+    /// distrusts as a whole must not be in the list; partial distrust is reported in
+    /// [`SystemRoot::partially_distrusted`]. Duplicates are fine.
+    fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>>;
 }
 
 /// No operating-system roots: the bundle is Mozilla's alone.
@@ -51,7 +98,7 @@ pub trait RootCertificates: Send + Sync {
 pub struct NoRoots;
 
 impl RootCertificates for NoRoots {
-    fn trusted_roots(&self) -> io::Result<Vec<Vec<u8>>> {
+    fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>> {
         Ok(Vec::new())
     }
 }
@@ -156,6 +203,9 @@ pub struct WrittenCacert {
     pub bundle_version: String,
     /// System certificates added on top of Mozilla's.
     pub added: usize,
+    /// System roots left out because their use is restricted to something other than TLS
+    /// servers, or because the system partially distrusts them.
+    pub omitted: usize,
     /// Things worth telling the user (the system store could not be read, certificates
     /// skipped).
     pub warnings: Vec<String>,
@@ -199,11 +249,24 @@ pub fn write_php_cacert(
             Vec::new()
         }
     };
-    let merged = merge_bundle(&text, &roots);
+    let total = roots.len();
+    let fit: Vec<Vec<u8>> = roots
+        .into_iter()
+        .filter(SystemRoot::is_fit_for_tls)
+        .map(|r| r.der)
+        .collect();
+    let omitted = total - fit.len();
+    let merged = merge_bundle(&text, &fit);
     if merged.skipped > 0 {
         warnings.push(format!(
             "{} system certificate(s) were not valid and were left out",
             merged.skipped
+        ));
+    }
+
+    if omitted > 0 {
+        warnings.push(format!(
+            "{omitted} system root(s) were left out because of their use or a partial distrust"
         ));
     }
 
@@ -214,6 +277,7 @@ pub fn write_php_cacert(
         changed,
         bundle_version: bundle.version.to_string(),
         added: merged.added,
+        omitted,
         warnings,
     }))
 }

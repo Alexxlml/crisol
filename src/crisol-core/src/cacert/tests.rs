@@ -105,10 +105,17 @@ fn a_bundle_without_a_final_newline_gets_one_before_the_additions() {
 
 // ---- writing the file -----------------------------------------------------------------
 
-struct Roots(io::Result<Vec<Vec<u8>>>);
+struct Roots(io::Result<Vec<SystemRoot>>);
+
+impl Roots {
+    /// Roots with no restriction.
+    fn plain(ders: Vec<Vec<u8>>) -> Self {
+        Self(Ok(ders.into_iter().map(SystemRoot::unrestricted).collect()))
+    }
+}
 
 impl RootCertificates for Roots {
-    fn trusted_roots(&self) -> io::Result<Vec<Vec<u8>>> {
+    fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>> {
         match &self.0 {
             Ok(roots) => Ok(roots.clone()),
             Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
@@ -137,7 +144,7 @@ fn without_an_installed_bundle_there_is_nothing_to_build() {
 #[test]
 fn the_file_is_built_in_the_layout_from_the_bundle_and_the_system() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let system = Roots(Ok(vec![fake(4), mozilla_ders()[1].clone()]));
+    let system = Roots::plain(vec![fake(4), mozilla_ders()[1].clone()]);
 
     let written = write_php_cacert(&paths, &system).unwrap().unwrap();
     assert_eq!(written.path, paths.php_cacert());
@@ -169,7 +176,7 @@ fn the_newest_installed_bundle_is_used() {
 #[test]
 fn generating_twice_does_not_touch_the_file() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let system = Roots(Ok(vec![fake(4)]));
+    let system = Roots::plain(vec![fake(4)]);
     let first = write_php_cacert(&paths, &system).unwrap().unwrap();
     let stamp = fs::metadata(&first.path).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -182,7 +189,7 @@ fn generating_twice_does_not_touch_the_file() {
     );
 
     // A root added to the system later shows up the next time it is generated.
-    let more = Roots(Ok(vec![fake(4), fake(6)]));
+    let more = Roots::plain(vec![fake(4), fake(6)]);
     assert!(write_php_cacert(&paths, &more).unwrap().unwrap().changed);
 }
 
@@ -202,7 +209,7 @@ fn a_system_store_that_cannot_be_read_still_gives_mozilla_s_bundle() {
 #[test]
 fn invalid_system_certificates_are_reported_not_fatal() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let system = Roots(Ok(vec![vec![0, 1], fake(8)]));
+    let system = Roots::plain(vec![vec![0, 1], fake(8)]);
     let written = write_php_cacert(&paths, &system).unwrap().unwrap();
     assert_eq!(written.added, 1);
     assert!(
@@ -221,4 +228,70 @@ fn a_hand_edited_derived_file_is_put_back() {
     assert!(fs::read_to_string(&written.path)
         .unwrap()
         .starts_with(EXCERPT));
+}
+
+// ---- which system roots are fit for TLS -------------------------------------------------
+
+fn root(n: u8, usages: Option<&[&str]>, partially_distrusted: bool) -> SystemRoot {
+    SystemRoot {
+        der: fake(n),
+        usages: usages.map(|u| u.iter().map(|s| (*s).to_owned()).collect()),
+        partially_distrusted,
+    }
+}
+
+const CODE_SIGNING: &str = "1.3.6.1.5.5.7.3.3";
+const EMAIL: &str = "1.3.6.1.5.5.7.3.4";
+
+#[test]
+fn a_root_limited_to_code_signing_or_mail_is_not_added() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let system = Roots(Ok(vec![
+        root(1, Some(&[CODE_SIGNING]), false),
+        root(2, Some(&[CODE_SIGNING, EMAIL]), false),
+        root(3, Some(&[]), false),
+    ]));
+    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    assert_eq!((written.added, written.omitted), (0, 3));
+    assert!(
+        written.warnings[0].contains("3 system root"),
+        "{:?}",
+        written.warnings
+    );
+    let text = fs::read_to_string(&written.path).unwrap();
+    assert_eq!(
+        pem_certificates(&text).len(),
+        2,
+        "nothing but Mozilla's bundle"
+    );
+}
+
+#[test]
+fn a_root_for_server_authentication_or_with_no_restriction_is_added() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let system = Roots(Ok(vec![
+        root(1, None, false),
+        root(2, Some(&[SERVER_AUTH]), false),
+        root(3, Some(&[CODE_SIGNING, SERVER_AUTH]), false),
+        root(4, Some(&[ANY_USAGE]), false),
+    ]));
+    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    assert_eq!((written.added, written.omitted), (4, 0));
+    assert_eq!(written.warnings, Vec::<String>::new());
+}
+
+#[test]
+fn a_partially_distrusted_root_is_not_added_even_if_it_allows_tls() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let system = Roots(Ok(vec![
+        root(1, None, true),
+        root(2, Some(&[SERVER_AUTH]), true),
+        root(3, None, false),
+    ]));
+    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    assert_eq!((written.added, written.omitted), (1, 2));
+    assert_eq!(
+        pem_certificates(&fs::read_to_string(&written.path).unwrap())[2..],
+        [fake(3)]
+    );
 }
