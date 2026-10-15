@@ -240,3 +240,15 @@ fn nothing_else_installed_means_nothing_to_report() {
         []
     );
 }
+
+#[test]
+fn a_folder_with_a_separator_or_a_variable_sign_is_refused_and_nothing_is_written() {
+    // Review finding 7: `D:\a;b\shims` would become two entries and could not be removed.
+    for bad in [r"D:\a;b\shims", r"D:\100%\shims"] {
+        let fake = FakeUserPath::with_user(r"C:\Tools");
+        let error = add_shims(&fake, Path::new(bad)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad}");
+        assert_eq!((fake.writes(), fake.notifications()), (0, 0), "{bad}");
+        assert_eq!(text(&fake), r"C:\Tools");
+    }
+}

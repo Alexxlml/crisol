@@ -87,6 +87,14 @@ fn is_entry(store: &dyn UserPath, entry: &str, dir: &str) -> bool {
 /// Puts `shims` at the front of the user `PATH` unless it is already in it.
 pub fn add_shims(store: &dyn UserPath, shims: &Path) -> io::Result<PathChange> {
     let dir = shims.to_string_lossy().into_owned();
+    if let Some(ch) = dir.chars().find(|c| matches!(c, ';' | '%')) {
+        // `;` would split the entry in two and `%` would be expanded: it could not be found
+        // again to remove it.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{dir}` contains `{ch}`, which cannot be part of a PATH entry"),
+        ));
+    }
     let current = store.read()?;
     let (text, expandable) = current.map_or((String::new(), true), |v| (v.text, v.expandable));
     if text.split(';').any(|entry| is_entry(store, entry, &dir)) {

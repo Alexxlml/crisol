@@ -37,6 +37,17 @@ pub enum PathsError {
     /// No `CRISOL_HOME` was set and the platform could not provide a default.
     #[error("CRISOL_HOME is not set and no default home directory is available")]
     NoHome,
+    /// The home holds a character that breaks the `PATH` entry for its `shims` folder.
+    #[error(
+        "the Crisol home `{}` contains `{ch}`, which cannot be part of a PATH entry: choose another folder",
+        .path.display()
+    )]
+    UnusableCharacter {
+        /// The home that was given.
+        path: PathBuf,
+        /// The offending character (`;` separates PATH entries; `%` starts a variable).
+        ch: char,
+    },
     /// A service name, version or other path component is not allowed.
     #[error("invalid path component `{0}`: use letters, digits, `.`, `_`, `-` or `+`")]
     InvalidComponent(String),
@@ -91,6 +102,15 @@ impl CrisolPaths {
         let home = home.into();
         if !home.is_absolute() {
             return Err(PathsError::NotAbsolute(home));
+        }
+        // The shims folder goes into PATH, where `;` splits an entry in two and `%` is
+        // expanded as a variable (review finding 7).
+        if let Some(ch) = home
+            .to_string_lossy()
+            .chars()
+            .find(|c| matches!(c, ';' | '%'))
+        {
+            return Err(PathsError::UnusableCharacter { path: home, ch });
         }
         Ok(Self { home })
     }
@@ -372,6 +392,17 @@ mod tests {
         assert!(matches!(err, PathsError::NotAbsolute(_)));
         let err = CrisolPaths::resolve(Some("relative".into()), || None).unwrap_err();
         assert!(matches!(err, PathsError::NotAbsolute(_)));
+    }
+
+    #[test]
+    fn a_home_that_would_break_the_path_entry_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        for bad in ["a;b", "100%", "%USERPROFILE%x"] {
+            let err = CrisolPaths::new(tmp.path().join(bad)).unwrap_err();
+            assert!(matches!(err, PathsError::UnusableCharacter { .. }), "{bad}");
+            assert!(err.to_string().contains("PATH"), "{err}");
+        }
+        assert!(CrisolPaths::new(tmp.path().join("my home (1)")).is_ok());
     }
 
     #[test]
