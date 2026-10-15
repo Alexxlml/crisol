@@ -81,6 +81,7 @@ impl Rig {
             .env_remove("CRISOL_PHP")
             .env_remove("CRISOL_NODE")
             .env_remove("PHPRC")
+            .env_remove("CRISOL_PHPRC")
             .env_remove("ECHO_EXIT")
             .env_remove("ECHO_STDIN");
         command
@@ -259,6 +260,87 @@ fn the_generated_php_ini_is_handed_to_php_unless_the_user_chose_one() {
 
     let own = rig.command(&php).env("PHPRC", "D:/mine").output().unwrap();
     assert_eq!(phprc(&own), "D:/mine", "the user's own PHPRC is respected");
+}
+
+/// What a child prints for the variable `name` (`PHPRC`, `CRISOL_PHPRC`).
+fn echoed_var(output: &Output, name: &str) -> String {
+    stdout(output)
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{name}:")))
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_nested_shim_replaces_the_php_ini_its_outer_shim_set() {
+    // Review finding 3: `php` run from a script of another project must read ITS version's
+    // php.ini, not the one of the PHP that is running the script.
+    let rig = Rig::new();
+    let mut ini_dirs = Vec::new();
+    for version in ["8.3.35", "8.4.26"] {
+        rig.install("php", version, &exe_name("php"));
+        let dir = rig.home.join("etc").join("php").join(version);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("php.ini"),
+            "; generated
+",
+        )
+        .unwrap();
+        ini_dirs.push(dir);
+    }
+    let (project_a, project_b) = (rig.work.join("a"), rig.work.join("b"));
+    for (dir, version) in [(&project_a, "8.4"), (&project_b, "8.3")] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join(".php-version"),
+            format!(
+                "{version}
+"
+            ),
+        )
+        .unwrap();
+    }
+    let php = rig.shim("php");
+
+    // The outer shim, in project A: sets PHPRC and records that it was its own doing.
+    let outer = rig.command(&php).current_dir(&project_a).output().unwrap();
+    let outer_rc = echoed_var(&outer, "PHPRC");
+    assert_eq!(PathBuf::from(&outer_rc), ini_dirs[1]);
+    assert_eq!(echoed_var(&outer, "CRISOL_PHPRC"), outer_rc);
+
+    // A shim started by that PHP inherits both variables and runs in project B (8.3).
+    let nested = rig
+        .command(&php)
+        .current_dir(&project_b)
+        .env("PHPRC", &outer_rc)
+        .env("CRISOL_PHPRC", &outer_rc)
+        .output()
+        .unwrap();
+    assert!(stdout(&nested).contains("8.3.35"));
+    assert_eq!(PathBuf::from(echoed_var(&nested, "PHPRC")), ini_dirs[0]);
+
+    // The user's own PHPRC still wins, even when an outer shim also set one.
+    let own = rig
+        .command(&php)
+        .current_dir(&project_b)
+        .env("PHPRC", "D:/mine")
+        .env("CRISOL_PHPRC", &outer_rc)
+        .output()
+        .unwrap();
+    assert_eq!(echoed_var(&own, "PHPRC"), "D:/mine");
+
+    // A version with no generated php.ini must not inherit the outer version's.
+    fs::remove_file(ini_dirs[0].join("php.ini")).unwrap();
+    let bare = rig
+        .command(&php)
+        .current_dir(&project_b)
+        .env("PHPRC", &outer_rc)
+        .env("CRISOL_PHPRC", &outer_rc)
+        .output()
+        .unwrap();
+    assert_eq!(echoed_var(&bare, "PHPRC"), "-");
+    assert_eq!(echoed_var(&bare, "CRISOL_PHPRC"), "-");
 }
 
 #[test]

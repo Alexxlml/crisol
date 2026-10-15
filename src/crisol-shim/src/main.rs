@@ -92,12 +92,18 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
     let (program, leading) = program_for(command, install, &paths)?;
     let mut process = Process::new(&program);
     process.args(leading).args(args);
-    if let Some(ini) = php_ini_for(
+    match php_ini_for(
         command,
         &paths,
         &resolution.resolved.version.version.to_string(),
     ) {
-        process.env("PHPRC", ini);
+        IniChoice::Set(ini) => {
+            process.env("PHPRC", &ini).env(OWN_PHPRC, &ini);
+        }
+        IniChoice::Clear => {
+            process.env_remove("PHPRC").env_remove(OWN_PHPRC);
+        }
+        IniChoice::Leave => {}
     }
 
     // Ctrl+C reaches the child and the shim alike; only the child should die.
@@ -159,14 +165,45 @@ fn program_for(
     Ok((program, vec![phar]))
 }
 
+/// The variable that records the `PHPRC` this shim set. A shim that finds a `PHPRC` equal to
+/// it knows the value came from an outer shim, not from the user, so it may replace it: the
+/// `php` of another project run from inside a PHP script must not read the outer version's
+/// `php.ini` and `extension_dir`.
+const OWN_PHPRC: &str = "CRISOL_PHPRC";
+
+/// What to do with `PHPRC` in the child.
+enum IniChoice {
+    /// Point it at the generated `php.ini` of this version.
+    Set(PathBuf),
+    /// It was inherited from an outer shim and this version has no generated file: remove it.
+    Clear,
+    /// Not ours to touch (the user's own, or nothing to set).
+    Leave,
+}
+
 /// The generated `php.ini` of this version, if it exists and the user has not chosen their
 /// own with `PHPRC`. PHP then reads it instead of looking for one next to `php.exe`.
-fn php_ini_for(command: Command, paths: &CrisolPaths, version: &str) -> Option<PathBuf> {
-    if !matches!(command, Command::Php | Command::Composer) || std::env::var_os("PHPRC").is_some() {
-        return None;
+fn php_ini_for(command: Command, paths: &CrisolPaths, version: &str) -> IniChoice {
+    if !matches!(command, Command::Php | Command::Composer) {
+        return IniChoice::Leave;
     }
-    let ini = paths.php_ini(version).ok()?;
-    ini.is_file().then(|| ini.parent().map(Path::to_path_buf))?
+    let inherited = match std::env::var_os("PHPRC") {
+        Some(current) if std::env::var_os(OWN_PHPRC).as_ref() != Some(&current) => {
+            return IniChoice::Leave;
+        }
+        Some(_) => true,
+        None => false,
+    };
+    let generated = paths
+        .php_ini(version)
+        .ok()
+        .filter(|ini| ini.is_file())
+        .and_then(|ini| ini.parent().map(Path::to_path_buf));
+    match (generated, inherited) {
+        (Some(dir), _) => IniChoice::Set(dir),
+        (None, true) => IniChoice::Clear,
+        (None, false) => IniChoice::Leave,
+    }
 }
 
 #[cfg(windows)]

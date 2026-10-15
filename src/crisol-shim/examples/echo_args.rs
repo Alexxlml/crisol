@@ -2,7 +2,7 @@
 //! the tests can check that the shim passed everything on faithfully. Not part of the product.
 //!
 //! Output, one item per line: `EXE:` (its own path, which says which installation ran),
-//! `CWD:`, `PHPRC:` (or `-`), one `ARG:<n>:` line per argument, and `STDIN:` with what it
+//! `CWD:`, `PHPRC:` and `CRISOL_PHPRC:` (or `-`), one `ARG:<n>:` line per argument, and `STDIN:` with what it
 //! read. The exit code is taken from `ECHO_EXIT` (0 if unset).
 
 use std::io::Read;
@@ -21,6 +21,10 @@ fn main() {
     println!(
         "PHPRC:{}",
         std::env::var("PHPRC").unwrap_or_else(|_| "-".to_owned())
+    );
+    println!(
+        "CRISOL_PHPRC:{}",
+        std::env::var("CRISOL_PHPRC").unwrap_or_else(|_| "-".to_owned())
     );
     for (index, arg) in std::env::args_os().skip(1).enumerate() {
         println!("ARG:{index}:{}", arg.to_string_lossy());
