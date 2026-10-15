@@ -38,4 +38,4 @@ Se consideraron cuatro opciones:
 - Si leer el almacén de Windows falla, el archivo se genera solo con Mozilla y se avisa; un almacén roto no deja a PHP sin certificados.
 - Los overrides siguen mandando: se añaden al final del `php.ini` y PHP conserva la última asignación (hay prueba).
 - Comprobado con PHP 8.4.26 real: sin el bundle, cURL falla con "unable to get local issuer certificate"; con el bundle generado, `curl_exec` a un sitio público devuelve 200, y los *streams* siguen funcionando. En el equipo de pruebas Windows aportó 54 raíces que Mozilla no tiene.
-- Sigue pendiente (F4.3): comprobar si Composer lo necesita; el ADR supone que no, porque trae su propio bundle.
+- Comprobado en F4.3 con el `composer.phar` real sobre PHP 8.4.26: Composer habla HTTPS con Packagist tanto **sin** el bundle (el `php.ini` sin `curl.cainfo`) como con él, así que no lo necesita, como suponía el ADR (trae su propio `cacert.pem`).
