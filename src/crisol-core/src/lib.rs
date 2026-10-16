@@ -5,6 +5,7 @@ pub mod cacert;
 pub mod catalog;
 pub mod config;
 pub mod constraint;
+pub mod dns;
 pub mod edit;
 pub mod fetch;
 pub mod install;

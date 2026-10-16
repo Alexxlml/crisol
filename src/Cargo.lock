@@ -281,6 +281,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisol-elevate"
+version = "0.1.0"
+dependencies = [
+ "crisol-core",
+ "crisol-platform",
+]
+
+[[package]]
 name = "crisol-platform"
 version = "0.1.0"
 dependencies = [

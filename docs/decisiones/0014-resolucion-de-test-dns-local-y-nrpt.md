@@ -1,6 +1,6 @@
 # ADR-0014 — Resolución de `.test`: DNS local con NRPT, `hosts` de respaldo
 
-- **Estado:** propuesta (pendiente de la verificación manual del propietario con administrador)
+- **Estado:** aceptada el 2026-10-16 (la verificación manual con administrador sigue pendiente)
 - **Fecha:** 2026-10-16
 
 ## Contexto
@@ -29,3 +29,10 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 - F7.2 implementa 1 y 3 (respondedor en `crisol-core`/`crisol-dns`, regla y elevación en `crisol-platform`); F7.3 implementa 2.
 - `crisol doctor` (F11.1) comprueba con `getaddrinfo`, no con `nslookup`, y avisa de reglas/nombres ajenos.
 - Queda por verificar a mano (con administrador): que la NRPT con IP de loopback funciona en Chrome, Edge, Firefox y `curl`; el tiempo de espera con el respondedor parado; la limpieza exacta de la regla.
+
+## Notas de implementación (F7.2)
+
+- `crisol-core::dns`: `Zone` + `answer` (respuestas puras: A=`127.0.0.1`, AAAA=`::1`, resto de tipos vacío, fuera de la zona `REFUSED`, nunca reenvía), `DnsServer` (UDP, rechaza direcciones que no sean loopback), `NrptPolicy` + `enable`/`disable`/`status` y `ElevatedOp` (las dos únicas operaciones del helper, con validación). La regla propia se marca con el comentario `Crisol`: una regla de otra herramienta para el mismo sufijo se informa (`DnsError::Foreign`) y no se toca ni se quita.
+- `crisol-platform::nrpt`: `PowerShellNrpt` (cmdlets `DnsClient`; la lectura no necesita administrador, medido) y `ElevatedNrpt` (lee directo y cada cambio lanza el helper con UAC por `ShellExecuteExW` y `runas`).
+- `crisol-elevate`: ejecutable mínimo, `nrpt-add <sufijo> <ip>` / `nrpt-remove <sufijo>`; códigos de salida 0 hecho, 2 rechazado, 1 falló.
+- Sin dependencias nuevas (solo la feature `Win32_UI_Shell` de `windows`). Prueba manual: `crisol-platform/examples/dns_manual.rs`.

@@ -1,0 +1,18 @@
+[package]
+name = "crisol-elevate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crisol-elevate"
+path = "src/main.rs"
+
+[dependencies]
+crisol-core.workspace = true
+crisol-platform.workspace = true
+
+[lints]
+workspace = true

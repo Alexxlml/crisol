@@ -7,6 +7,8 @@ mod file_owner;
 #[cfg(windows)]
 mod job_object;
 #[cfg(windows)]
+mod nrpt;
+#[cfg(windows)]
 mod port_probe;
 #[cfg(windows)]
 mod private_dir;
@@ -23,6 +25,8 @@ pub use console::survive_ctrl_c;
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
+#[cfg(windows)]
+pub use nrpt::{run_elevated, ElevatedNrpt, PowerShellNrpt};
 #[cfg(windows)]
 pub use port_probe::WindowsPortProbe;
 #[cfg(windows)]
