@@ -20,3 +20,12 @@ La arquitectura fija `C:\Crisol` como home por defecto. La raíz `C:\` concede *
 - Una home creada por un proceso elevado sigue siendo accesible para el mismo usuario sin elevar, porque la ACL nombra su SID.
 - No se añaden crates: se usan más *features* de `windows` (`Win32_Security_Authorization`, `Win32_Storage_FileSystem`).
 - La comprobación de exposición lee el dueño y la DACL como texto SDDL. Una carpeta está **expuesta** si su dueño no es el usuario, `SYSTEM` o los administradores, o si cualquier entrada de *permitir* con algún derecho de escritura (crear archivos o carpetas, borrar hijos, cambiar permisos…) nombra a otra cuenta que no sea esas. Es una lista de quién es de confianza, no de grupos a temer; lo que no se entiende cuenta como expuesto, y las denegaciones se ignoran a propósito. (Corregido tras la segunda ronda de la revisión: la primera versión solo miraba tres grupos amplios.)
+
+## Cambio de calendario (2026-10-16, revisión de la Fase 6)
+
+La Fase 6 introdujo una clave que vale la pena proteger: la de la CA local (`certs/ca.key`, ADR-0013), en la que confían el navegador, PHP y Node. Por decisión del propietario, la protección **no espera a la Fase 8**:
+
+- `certs/` se crea con `PrivateDirs::create_private_dir` desde ya. Si Crisol crea la home, también la crea privada.
+- Antes de usar la CA para cualquier confianza, se comprueba con `is_writable_by_others` que ni `certs/` ni sus archivos están abiertos a otras cuentas. Si lo están, Crisol se niega y explica cómo arreglarlo.
+
+El resto de este ADR no cambia. Que el daemon y la CLI llamen a `ensure_private_layout` sigue siendo de la Fase 8.

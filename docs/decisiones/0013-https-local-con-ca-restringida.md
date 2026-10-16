@@ -79,3 +79,15 @@ Se decide:
 - `crisol-core::nginx`: `NginxTls`; un sitio asegurado escucha en `127.0.0.1:<https_port> ssl` con `http2 on`, TLS 1.2 y 1.3 y `fastcgi_param HTTPS on`; su bloque HTTP solo redirige con `301` (con el puerto si no es el 443); un `default_server` TLS con `ssl_reject_handshake on` rechaza los demás nombres. Sin certificado, el sitio se sirve por HTTP con una advertencia.
 - `WebStack::apply` crea la CA si falta (`Applied::ca_created`: el usuario debe confiar en ella) y la hoja, y las usa en la configuración.
 - Verificado: el verificador de `rustls-webpki` con la CA como única raíz acepta los hosts asegurados y los locales y rechaza otros nombres, fechas fuera de rango y un certificado que la propia CA firmara para `bank.example.com` (`NameConstraintViolation`). Prueba real a pedido con Nginx 1.28.3 y PHP 7.4.33: `curl` (Schannel) con `--cacert certs/ca.pem` recibe la página con `HTTPS=on`; sin la CA falla; `/v.PHP`, `/v.Php`, `/v.php.` y `/v.php%20` ejecutan el script por TLS y nunca devuelven el código; HTTP redirige a `https://…:<puerto>/…`; un sitio no asegurado recibe el handshake rechazado por TLS y sigue sirviéndose por HTTP.
+
+## Corrección (2026-10-16, revisión de la Fase 6)
+
+Decidida por el propietario a partir de los hallazgos 1 y 2 de `claude/revisiones/2026-10-16-opus-fase6.md`. Pendiente de implementar.
+
+- **Solo TLD de uso especial.** Las restricciones de la CA solo pueden incluir `test`, `localhost`, `example`, `invalid`, `local`, `internal` y `home.arpa`, y sus subdominios. Con otro TLD (`dev`, `app`, `com`…) no se crea la CA y los sitios se sirven por HTTP con una advertencia. Si la clave se filtrara, una CA restringida a un TLD público podría suplantar dominios reales.
+- **La CA se valida antes de cualquier confianza.** Antes de instalarla en el almacén, agregarla a `cacert.pem` o dársela a Node, se comprueba que:
+  - es autofirmada, con `pathlen = 0`;
+  - sus restricciones de nombres son críticas y no van más allá de lo anterior;
+  - ni `certs/` ni sus archivos están abiertos a otras cuentas (ADR-0008, «Cambio de calendario»).
+
+  Node recibe una copia generada y validada, no `certs/ca.pem` directamente.
