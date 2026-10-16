@@ -835,3 +835,99 @@ fn a_certs_folder_open_to_other_accounts_keeps_the_secured_sites_on_http_and_say
     );
     assert!(applied.certificate.is_none() && !applied.ca_created);
 }
+
+// ---- only local TLDs (review of phase 6, finding 2) ------------------------------------
+
+#[test]
+fn with_tld_dev_the_secured_sites_are_served_over_http_with_a_warning_and_no_ca_is_made() {
+    let mut rig = Rig::with_config(&[], |config| config.sites.tld = "dev".to_owned());
+    rig.site("shop", None);
+    rig.secure("shop");
+    let applied = rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    assert!(!applied.ca_created && applied.certificate.is_none());
+    assert!(
+        applied
+            .warnings
+            .iter()
+            .any(|w| w.contains("served over HTTP") && w.contains("not a name reserved")),
+        "{:?}",
+        applied.warnings
+    );
+    assert!(
+        !rig.paths.certs_dir().exists(),
+        "no CA, no certificate, not even the folder"
+    );
+    assert_eq!(rig.dirs.created(), Vec::<PathBuf>::new());
+
+    rig.stack.start(rig.at(0));
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(100);
+    let shop = fs::read_to_string(rig.final_conf("sites/shop.conf")).unwrap();
+    assert!(shop.contains("server_name shop.dev;"), "{shop}");
+    assert!(
+        shop.contains("listen 127.0.0.1:19080;") && !shop.contains("ssl"),
+        "{shop}"
+    );
+}
+
+#[test]
+fn with_tld_dev_test_https_works() {
+    let mut rig = Rig::with_config(&[], |config| config.sites.tld = "dev.test".to_owned());
+    rig.site("shop", None);
+    rig.secure("shop");
+    let applied = rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    assert!(applied.ca_created);
+    assert_eq!(applied.warnings, Vec::<String>::new());
+    assert_eq!(applied.certificate, Some(crate::tls::Renewal::Missing));
+
+    rig.stack.start(rig.at(0));
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(100);
+    let shop = fs::read_to_string(rig.final_conf("sites/shop.conf")).unwrap();
+    assert!(
+        shop.contains("server_name shop.dev.test;") && shop.contains("ssl_certificate"),
+        "{shop}"
+    );
+}
+
+#[test]
+fn an_existing_ca_does_not_get_a_certificate_for_a_tld_it_cannot_issue_for() {
+    // The CA was made for `test`; the configuration later says `.example.com`-like things
+    // are not allowed, and `.internal` is special-use but not covered by this CA.
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    let cert_before = fs::read(rig.paths.site_cert()).unwrap();
+
+    let mut other = Rig::with_config(&[], |config| config.sites.tld = "internal".to_owned());
+    // Same home: reuse the CA that exists there.
+    other.paths = rig.paths.clone();
+    other.stack = WebStack::new(
+        rig.paths.clone(),
+        &other.config,
+        rig.paths.bin_for("nginx", "1.28.3").unwrap(),
+        other.supervisor.clone(),
+        other.probe.clone(),
+        rig.dirs.clone(),
+    );
+    other.site("shop", None);
+    let applied = other
+        .stack
+        .apply(&other.plan_with_secure(), other.at(0))
+        .unwrap();
+    assert!(
+        applied
+            .warnings
+            .iter()
+            .any(|w| w.contains("served over HTTP")),
+        "{:?}",
+        applied.warnings
+    );
+    assert!(applied.certificate.is_none() && !applied.ca_created);
+    assert_eq!(
+        fs::read(rig.paths.site_cert()).unwrap(),
+        cert_before,
+        "nothing new was issued"
+    );
+}

@@ -682,3 +682,37 @@ fn node_gets_a_copy_of_the_validated_ca_in_a_private_folder() {
     write_node_ca(&paths, &dirs, &ca).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), ca.cert_pem());
 }
+
+// ---- only local TLDs (review of phase 6, finding 2) ------------------------------------
+
+#[test]
+fn no_ca_is_made_for_a_tld_that_could_be_a_real_domain() {
+    for tld in ["dev", "app", "com", "io", "lan", "test.com", "arpa"] {
+        let (_tmp, paths) = home();
+        let dirs = FakePrivateDirs::new();
+        let error = ensure_ca(&paths, &dirs, tld, now()).err().unwrap();
+        assert!(
+            matches!(error, CaError::TldNotSpecialUse(ref t) if t == tld),
+            "{tld}: {error}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("served over HTTP") && text.contains(".test"),
+            "{text}"
+        );
+        assert!(!paths.certs_dir().exists(), "{tld}: nothing was created");
+        assert_eq!(dirs.created(), Vec::<PathBuf>::new());
+        assert!(
+            create_ca(&paths, &dirs, tld, now(), true).is_err(),
+            "not even to replace"
+        );
+    }
+}
+
+#[test]
+fn a_tld_under_a_special_use_name_is_fine() {
+    let (_tmp, paths) = home();
+    let made = ensure_ca(&paths, &FakePrivateDirs::new(), "dev.test", now()).unwrap();
+    assert!(made.ca.covers("dev.test") && made.ca.covers("shop.dev.test"));
+    assert!(!made.ca.covers("dev"));
+}

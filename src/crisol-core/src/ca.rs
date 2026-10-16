@@ -118,6 +118,11 @@ pub enum CaError {
     /// A CA exists and the request was to create one without replacing it.
     #[error("a local CA already exists in `certs/`")]
     AlreadyExists,
+    /// The TLD is not one reserved for local use, so no CA is made for it.
+    #[error(
+        "`.{0}` is not a name reserved for local use (test, localhost, example, invalid, local,          internal, home.arpa): a local CA is not made for it, because it could vouch for real          public domains. Its sites are served over HTTP; use a TLD such as `.test` for HTTPS"
+    )]
+    TldNotSpecialUse(String),
     /// `certs/` or one of the CA files can be modified by other accounts of this computer.
     #[error(
         "`{}` can be modified by other accounts on this computer, so the local CA cannot be \
@@ -334,6 +339,9 @@ pub fn create_ca(
     now: SystemTime,
     replace: bool,
 ) -> Result<LocalCa, CaError> {
+    if !is_special_use(tld) {
+        return Err(CaError::TldNotSpecialUse(tld.trim_matches('.').to_owned()));
+    }
     ensure_private_certs(paths, dirs)?;
     if !replace && (paths.ca_cert().exists() || paths.ca_key().exists()) {
         return Err(CaError::AlreadyExists);

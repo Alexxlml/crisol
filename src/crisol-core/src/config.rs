@@ -248,6 +248,8 @@ pub enum ConfigWarning {
         /// Services that want it.
         services: Vec<String>,
     },
+    /// `sites.tld` is not a name reserved for local use: it can be a real public domain.
+    PublicTld(String),
     /// MySQL and MariaDB are alternatives and cannot be enabled together (ADR-0007).
     ExclusiveServices {
         /// First service.
@@ -268,6 +270,10 @@ impl fmt::Display for ConfigWarning {
                     services.join(", ")
                 )
             }
+            Self::PublicTld(tld) => write!(
+                f,
+                "`sites.tld = \"{tld}\"` is not reserved for local use (test, localhost, example,                  invalid, local, internal, home.arpa): it can collide with real domains, and no                  HTTPS is offered for it"
+            ),
             Self::ExclusiveServices { first, second } => {
                 write!(
                     f,
@@ -477,6 +483,9 @@ impl Config {
 
     fn conflicts(&self) -> Vec<ConfigWarning> {
         let mut warnings = Vec::new();
+        if !crate::ca::is_special_use(&self.sites.tld) {
+            warnings.push(ConfigWarning::PublicTld(self.sites.tld.clone()));
+        }
         if self.services.mysql.enabled && self.services.mariadb.enabled {
             warnings.push(ConfigWarning::ExclusiveServices {
                 first: "mysql".to_owned(),
@@ -851,5 +860,44 @@ mod tests {
             config.parked_dirs(&paths),
             vec![paths.home().join("www"), elsewhere]
         );
+    }
+
+    #[test]
+    fn a_tld_that_is_not_reserved_for_local_use_is_a_warning_not_an_error() {
+        for tld in [
+            "test",
+            "localhost",
+            "example",
+            "invalid",
+            "local",
+            "internal",
+            "home.arpa",
+            "dev.test",
+        ] {
+            let loaded = load(&format!(
+                "[sites]
+tld = \"{tld}\"
+"
+            ));
+            assert_eq!(loaded.warnings, vec![], "{tld}");
+        }
+        for tld in ["dev", "app", "com", "lan", "test.com"] {
+            let loaded = load(&format!(
+                "[sites]
+tld = \"{tld}\"
+"
+            ));
+            assert_eq!(loaded.config.sites.tld, tld, "it still loads");
+            assert_eq!(
+                loaded.warnings,
+                vec![ConfigWarning::PublicTld(tld.to_owned())],
+                "{tld}"
+            );
+            let text = loaded.warnings[0].to_string();
+            assert!(
+                text.contains("collide with real domains") && text.contains("HTTPS"),
+                "{text}"
+            );
+        }
     }
 }

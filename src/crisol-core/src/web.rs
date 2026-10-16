@@ -512,6 +512,11 @@ impl WebStack {
         hosts: &[String],
         now: SystemTime,
     ) -> Result<((PathBuf, PathBuf, u16), bool, Option<Renewal>), crate::ca::CaError> {
+        if !crate::ca::is_special_use(&self.tld) {
+            // No CA and no certificate for a TLD that could be a real domain, not even a look
+            // at `certs/`.
+            return Err(crate::ca::CaError::TldNotSpecialUse(self.tld.clone()));
+        }
         let ensured = ensure_ca(&self.paths, self.dirs.as_ref(), &self.tld, now)?;
         let cert = ensure_site_cert(&self.paths, &ensured.ca, hosts, now)?;
         Ok((
