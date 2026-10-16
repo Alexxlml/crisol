@@ -77,6 +77,12 @@ pub fn resolve_paths() -> Result<CrisolPaths, PathsError> {
     CrisolPaths::from_env(default_home)
 }
 
+/// The SID of the user this process runs as, as text (`S-1-5-21-…`).
+#[cfg(windows)]
+pub fn current_user_sid() -> std::io::Result<String> {
+    private_dir::current_user_sid()
+}
+
 /// Crate version, exposed for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

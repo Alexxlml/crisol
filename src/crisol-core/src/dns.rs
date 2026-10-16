@@ -58,6 +58,24 @@ impl Zone {
         &self.suffix
     }
 
+    /// The synthetic SOA record of the zone, ready to go in the authority section. Its last
+    /// field, the negative-caching time, is [`TTL`].
+    fn soa_record(&self) -> Vec<u8> {
+        let apex = encode_name(&self.suffix);
+        let mut rdata = encode_name(&format!("crisol.{}", self.suffix)); // primary server
+        rdata.extend_from_slice(&encode_name(&format!("hostmaster.{}", self.suffix)));
+        for field in [1_u32, 3600, 600, 86_400, TTL] {
+            rdata.extend_from_slice(&field.to_be_bytes());
+        }
+        let mut record = apex;
+        record.extend_from_slice(&TYPE_SOA.to_be_bytes());
+        record.extend_from_slice(&CLASS_IN.to_be_bytes());
+        record.extend_from_slice(&TTL.to_be_bytes());
+        record.extend_from_slice(&u16::try_from(rdata.len()).unwrap_or(0).to_be_bytes());
+        record.extend_from_slice(&rdata);
+        record
+    }
+
     /// Whether `name` is the suffix or under it.
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {
@@ -86,6 +104,9 @@ fn clean_suffix(suffix: &str) -> Result<String, DnsError> {
 
 const TYPE_A: u16 = 1;
 const TYPE_AAAA: u16 = 28;
+const TYPE_SOA: u16 = 6;
+/// Longest domain name, in text, without the final dot (RFC 1035: 255 bytes on the wire).
+const MAX_NAME: usize = 253;
 const CLASS_IN: u16 = 1;
 const RCODE_FORMERR: u8 = 1;
 const RCODE_REFUSED: u8 = 5;
@@ -108,7 +129,7 @@ pub fn answer(query: &[u8], zone: &Zone) -> Option<Vec<u8>> {
     let opcode = (query[2] >> 3) & 0x0F;
     let questions = u16::from_be_bytes([query[4], query[5]]);
 
-    let reply = |rcode: u8, question: &[u8], data: Option<(u16, Vec<u8>)>| {
+    let reply = |rcode: u8, question: &[u8], data: Option<(u16, Vec<u8>)>, soa: bool| {
         let mut out = Vec::with_capacity(64);
         out.extend_from_slice(&id);
         // QR, authoritative, opcode 0, RD copied; no recursion available.
@@ -116,7 +137,8 @@ pub fn answer(query: &[u8], zone: &Zone) -> Option<Vec<u8>> {
         out.push(rcode);
         out.extend_from_slice(&u16::from(!question.is_empty()).to_be_bytes());
         out.extend_from_slice(&u16::from(data.is_some()).to_be_bytes());
-        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&u16::from(soa).to_be_bytes()); // authority records
+        out.extend_from_slice(&[0, 0]);
         out.extend_from_slice(question);
         if let Some((qtype, rdata)) = data {
             out.extend_from_slice(&[0xC0, 0x0C]); // the name, pointing at the question
@@ -126,27 +148,44 @@ pub fn answer(query: &[u8], zone: &Zone) -> Option<Vec<u8>> {
             out.extend_from_slice(&u16::try_from(rdata.len()).unwrap_or(0).to_be_bytes());
             out.extend_from_slice(&rdata);
         }
+        if soa {
+            out.extend_from_slice(&zone.soa_record());
+        }
         out
     };
 
     if opcode != 0 {
-        return Some(reply(RCODE_REFUSED, &[], None));
+        return Some(reply(RCODE_REFUSED, &[], None, false));
     }
     let Some((name, qtype, qclass, question)) = read_question(&query[12..]) else {
-        return Some(reply(RCODE_FORMERR, &[], None));
+        return Some(reply(RCODE_FORMERR, &[], None, false));
     };
     if questions != 1 {
-        return Some(reply(RCODE_FORMERR, &[], None));
+        return Some(reply(RCODE_FORMERR, &[], None, false));
     }
     if qclass != CLASS_IN || !zone.contains(&name) {
-        return Some(reply(RCODE_REFUSED, question, None));
+        return Some(reply(RCODE_REFUSED, question, None, false));
     }
     let data = match qtype {
         TYPE_A => Some((TYPE_A, Ipv4Addr::LOCALHOST.octets().to_vec())),
         TYPE_AAAA => Some((TYPE_AAAA, Ipv6Addr::LOCALHOST.octets().to_vec())),
         _ => None,
     };
-    Some(reply(0, question, data))
+    // A name with no data of the asked type (HTTPS/SVCB, MX, ...) says so with the zone's SOA,
+    // so the client keeps "there is none" for a while instead of asking again.
+    let soa = data.is_none();
+    Some(reply(0, question, data, soa))
+}
+
+/// A name as DNS labels, without compression: `crisol.test` becomes `6crisol4test0`.
+fn encode_name(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name.split('.') {
+        out.push(u8::try_from(label.len()).unwrap_or(0));
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
 }
 
 /// Reads the first question: its name, type, class and its raw bytes. No compression is
@@ -168,6 +207,9 @@ fn read_question(bytes: &[u8]) -> Option<(String, u16, u16, &[u8])> {
             name.push('.');
         }
         name.push_str(std::str::from_utf8(label).ok()?);
+        if name.len() > MAX_NAME {
+            return None; // not a domain name: the question is malformed
+        }
         i += 1 + len;
     }
     let tail = bytes.get(i..i + 4)?;
@@ -285,6 +327,12 @@ pub enum DnsError {
     /// The suffix is not a plain domain name.
     #[error("`{0}` is not a valid domain suffix")]
     InvalidSuffix(String),
+    /// The server of a rule is not an IP address.
+    #[error("`{0}` is not an IP address")]
+    InvalidAddress(String),
+    /// The helper was given something other than one of its operations.
+    #[error("the helper does not do `{0}`; it only accepts nrpt-add <suffix> <ip>, nrpt-remove <suffix>, hosts-set <name>... and hosts-clear")]
+    InvalidArguments(String),
     /// Only the reserved names may be pointed at the local responder.
     #[error(
         "`{0}` could be a real public domain; Crisol only resolves local, special-use suffixes \
@@ -423,7 +471,7 @@ impl ElevatedOp {
             ["nrpt-add", suffix, server] => {
                 let server: IpAddr = server
                     .parse()
-                    .map_err(|_| DnsError::InvalidSuffix((*server).to_owned()))?;
+                    .map_err(|_| DnsError::InvalidAddress((*server).to_owned()))?;
                 let rule = rule_for(suffix, server)?;
                 Ok(Self::NrptAdd {
                     suffix: rule.namespace.trim_start_matches('.').to_owned(),
@@ -434,10 +482,10 @@ impl ElevatedOp {
                 suffix: clean_suffix(suffix)?,
             }),
             ["hosts-set", names @ ..] if !names.is_empty() => Ok(Self::HostsSet {
-                names: clean_names(names).map_err(|e| DnsError::InvalidSuffix(e.to_string()))?,
+                names: clean_names(names).map_err(DnsError::Hosts)?,
             }),
             ["hosts-clear"] => Ok(Self::HostsClear),
-            _ => Err(DnsError::InvalidSuffix(args.join(" "))),
+            _ => Err(DnsError::InvalidArguments(args.join(" "))),
         }
     }
 

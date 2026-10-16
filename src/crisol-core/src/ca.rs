@@ -132,10 +132,9 @@ pub enum CaError {
     /// `certs/` or one of the CA files can be modified by other accounts of this computer.
     #[error(
         "`{}` can be modified by other accounts on this computer, so the local CA cannot be \
-         trusted. Remove write access for the other accounts on that folder (on Windows: \
-         `icacls \"{}\" /inheritance:r /grant:r \"%USERNAME%:(OI)(CI)F\" \"SYSTEM:(OI)(CI)F\" \
-         \"*S-1-5-32-544:(OI)(CI)F\"`), or move CRISOL_HOME to a private folder and make the CA again",
-        path.display(),
+         trusted. Remove write access for the other accounts on it (on Windows, \
+         `crisol doctor` shows the exact `icacls` command), or move CRISOL_HOME to a private \
+         folder and make the CA again",
         path.display()
     )]
     Exposed {

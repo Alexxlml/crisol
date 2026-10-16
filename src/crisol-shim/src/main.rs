@@ -190,14 +190,32 @@ fn node_ca_for(command: Command, paths: &CrisolPaths) -> Option<PathBuf> {
     if let Some(open) = [folder, ca.clone()].into_iter().find(|p| open_to_others(p)) {
         report(&format!(
             "warning: `{}` can be modified by other accounts, so Node was not told to trust the \
-             local CA. Remove their write access (on Windows: `icacls \"{}\" /inheritance:r \
-             /grant:r \"%USERNAME%:(OI)(CI)F\"`) and run `crisol trust` again",
+             local CA. Remove their write access (this works in cmd and in PowerShell: {}) and \
+             run `crisol trust` again",
             open.display(),
-            open.display()
+            fix_command(&open)
         ));
         return None;
     }
     Some(ca)
+}
+
+/// The `icacls` command that makes `path` private again, for the message. A folder and a file
+/// get different ones (the inheritance flags only mean something on a folder).
+#[cfg(windows)]
+fn fix_command(path: &Path) -> String {
+    match crisol_platform::current_user_sid() {
+        Ok(sid) => crisol_core::paths::private_acl_fix_command(path, path.is_dir(), &sid),
+        Err(_) => format!(
+            "remove write access for other accounts on `{}`",
+            path.display()
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn fix_command(path: &Path) -> String {
+    format!("chmod go-w \"{}\"", path.display())
 }
 
 /// Whether other accounts of this computer can write to `path`. If that cannot be found out it

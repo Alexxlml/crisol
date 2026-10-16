@@ -86,6 +86,26 @@ pub trait PrivateDirs: Send + Sync {
     fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool>;
 }
 
+/// The `icacls` command that leaves `path` writable only by the user with SID `user_sid`, the
+/// system and the administrators, with no inheritance from the parent. Folders get the
+/// inheritable flags (`(OI)(CI)`) so that what is created inside is private too; a file does
+/// not (the flags mean nothing for it). It is written to work as typed in `cmd` and in
+/// PowerShell: the user is named by SID (`%USERNAME%` is `cmd` only), every grant is one quoted
+/// word, and nothing in it is expanded by either shell (a path with a `$` or a backtick would
+/// be, in PowerShell).
+#[must_use]
+pub fn private_acl_fix_command(path: &Path, is_dir: bool, user_sid: &str) -> String {
+    let flags = if is_dir { "(OI)(CI)" } else { "" };
+    let grant = |who: &str| format!("\"*{who}:{flags}F\"");
+    format!(
+        "icacls \"{}\" /inheritance:r /grant:r {} {} {}",
+        path.display(),
+        grant(user_sid),
+        grant("S-1-5-18"),
+        grant("S-1-5-32-544"),
+    )
+}
+
 /// How the home directory stood after [`CrisolPaths::ensure_private_layout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeSecurity {
@@ -527,6 +547,31 @@ mod tests {
 
         fn is_writable_by_non_administrators(&self, _path: &Path) -> io::Result<bool> {
             Ok(true)
+        }
+    }
+
+    #[test]
+    fn the_icacls_command_differs_for_a_folder_and_a_file_and_names_the_user_by_sid() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let folder = private_acl_fix_command(Path::new(r"C:\Crisol\etc\node"), true, sid);
+        assert_eq!(
+            folder,
+            "icacls \"C:\\Crisol\\etc\\node\" /inheritance:r /grant:r \"*S-1-5-21-1-2-3-1001:(OI)(CI)F\" \
+             \"*S-1-5-18:(OI)(CI)F\" \"*S-1-5-32-544:(OI)(CI)F\""
+        );
+        let file = private_acl_fix_command(Path::new(r"C:\Crisol\etc\node\ca.pem"), false, sid);
+        assert_eq!(
+            file,
+            "icacls \"C:\\Crisol\\etc\\node\\ca.pem\" /inheritance:r /grant:r \
+             \"*S-1-5-21-1-2-3-1001:F\" \"*S-1-5-18:F\" \"*S-1-5-32-544:F\""
+        );
+        // Nothing that only `cmd` expands, nothing that PowerShell would treat as a variable.
+        for command in [&folder, &file] {
+            assert!(
+                !command.contains('%') && !command.contains('$'),
+                "{command}"
+            );
+            assert!(!command.contains("  "), "{command}");
         }
     }
 

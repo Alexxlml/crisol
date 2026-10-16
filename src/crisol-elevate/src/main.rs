@@ -55,6 +55,8 @@ fn main() -> ExitCode {
             | DnsError::NotSpecialUse(_)
             | DnsError::NotLoopback(_)
             | DnsError::InvalidSuffix(_)
+            | DnsError::InvalidAddress(_)
+            | DnsError::InvalidArguments(_)
             | DnsError::Hosts(_)),
         ) => {
             eprintln!("crisol-elevate: {error}");

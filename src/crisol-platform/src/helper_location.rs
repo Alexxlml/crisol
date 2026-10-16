@@ -24,6 +24,10 @@ use crate::nrpt::run_elevated_op;
 use crate::private_dir::WindowsPrivateDirs;
 use crate::system_paths::{helper_exe_in, program_files_directory};
 
+/// The most characters of arguments handed to the helper (Windows allows 32 767 for the whole
+/// command line, and `ShellExecute` has to fit the program path in it too).
+pub(crate) const MAX_COMMAND_LINE: usize = 30_000;
+
 /// The helper's place and the means to judge it.
 #[derive(Clone)]
 pub struct HelperLocation {
@@ -92,8 +96,20 @@ impl HelperLocation {
         Ok(())
     }
 
-    /// Checks the helper, and only then shows the UAC prompt and runs `op`.
+    /// Checks the helper, and only then shows the UAC prompt and runs `op`. An operation whose
+    /// arguments would not fit on one command line is refused first, before anything is shown.
     pub fn run(&self, op: &ElevatedOp) -> io::Result<()> {
+        let length: usize = op.to_args().iter().map(|a| a.len() + 1).sum();
+        if length > MAX_COMMAND_LINE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "this change names too many sites to hand to the helper in one go ({length} \
+                     characters; the limit is {MAX_COMMAND_LINE}). Park fewer sites, or add the \
+                     names to the hosts file by hand"
+                ),
+            ));
+        }
         self.verify()?;
         run_elevated_op(&self.path, op)
     }
@@ -198,5 +214,34 @@ mod tests {
         assert!(!WindowsPrivateDirs::new()
             .is_writable_by_non_administrators(&files)
             .unwrap());
+    }
+
+    // ---- review of phase 7, finding 5: too many names for one prompt -----------------------
+
+    #[test]
+    fn an_operation_that_does_not_fit_on_a_command_line_is_refused_before_anything_else() {
+        // The helper is not even there: the length is judged first, so no prompt and no
+        // permission check for something that could not be handed over anyway.
+        let dir = tempfile::tempdir().unwrap();
+        let location = HelperLocation::at(
+            dir.path().join("missing.exe"),
+            Arc::new(FakePrivateDirs::new()),
+        );
+        let names: Vec<String> = (0..2000)
+            .map(|i| format!("site-number-{i:05}.test"))
+            .collect();
+        let error = location.run(&ElevatedOp::HostsSet { names }).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let text = error.to_string();
+        assert!(
+            text.contains("too many sites") && text.contains("30000"),
+            "{text}"
+        );
+        assert!(!text.contains("  "), "{text}");
+
+        // A hundred sites go through to the next check (here: the missing helper).
+        let names: Vec<String> = (0..100).map(|i| format!("site-{i}.test")).collect();
+        let error = location.run(&ElevatedOp::HostsSet { names }).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

@@ -440,3 +440,129 @@ fn the_helper_also_edits_the_hosts_block_and_only_that() {
 "
     );
 }
+
+// ---- review of phase 7, findings 5 to 7 --------------------------------------------------------
+
+fn authority_count(reply: &[u8]) -> u16 {
+    u16::from_be_bytes([reply[8], reply[9]])
+}
+
+#[test]
+fn a_name_longer_than_253_characters_is_not_a_question() {
+    let label = "a".repeat(60);
+    let long = format!("{label}.{label}.{label}.{label}.{label}.test"); // 5 * 61 + 4 = 309
+    assert_eq!(
+        rcode(&answer(&query(&long, 1, 1), &zone()).unwrap()),
+        RCODE_FORMERR
+    );
+    // The longest one that is still a name is answered.
+    let fits = format!(
+        "{}.{}.{}.{}.test",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(56)
+    );
+    assert_eq!(fits.len(), 253);
+    assert_eq!(answers(&answer(&query(&fits, 1, 1), &zone()).unwrap()), 1);
+    let one_more = format!(
+        "{}.{}.{}.{}.test",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(57)
+    );
+    assert_eq!(
+        rcode(&answer(&query(&one_more, 1, 1), &zone()).unwrap()),
+        RCODE_FORMERR
+    );
+}
+
+/// The authority section of a reply with one question: name, type, class, ttl and the fields
+/// of the SOA, found by walking the bytes.
+fn soa_of(reply: &[u8]) -> (String, u32) {
+    // Skip the header and the question (name, type, class).
+    let mut i = 12;
+    while reply[i] != 0 {
+        i += 1 + usize::from(reply[i]);
+    }
+    i += 1 + 4;
+    let mut name = Vec::new();
+    while reply[i] != 0 {
+        let len = usize::from(reply[i]);
+        name.push(String::from_utf8(reply[i + 1..=i + len].to_vec()).unwrap());
+        i += 1 + len;
+    }
+    i += 1;
+    assert_eq!(u16::from_be_bytes([reply[i], reply[i + 1]]), 6, "type SOA");
+    assert_eq!(
+        u16::from_be_bytes([reply[i + 2], reply[i + 3]]),
+        1,
+        "class IN"
+    );
+    let ttl = u32::from_be_bytes([reply[i + 4], reply[i + 5], reply[i + 6], reply[i + 7]]);
+    let rdlength = usize::from(u16::from_be_bytes([reply[i + 8], reply[i + 9]]));
+    let rdata = &reply[i + 10..];
+    assert_eq!(rdata.len(), rdlength, "the record ends the message");
+    // Two names, then five 32-bit numbers; the last one is the negative-caching time.
+    let minimum = u32::from_be_bytes(rdata[rdata.len() - 4..].try_into().unwrap());
+    assert_eq!(
+        ttl, minimum,
+        "the record is not kept longer than the negative time"
+    );
+    (name.join("."), minimum)
+}
+
+#[test]
+fn an_answer_with_no_data_carries_the_zones_soa_and_the_others_do_not() {
+    // HTTPS (65), as Chrome and Edge ask for every name; and MX.
+    for qtype in [65, 15, 16] {
+        let reply = answer(&query("api.shop.test", qtype, 1), &zone()).unwrap();
+        assert_eq!(rcode(&reply), 0);
+        assert_eq!(answers(&reply), 0);
+        assert_eq!(authority_count(&reply), 1, "type {qtype}");
+        let (apex, minimum) = soa_of(&reply);
+        assert_eq!(apex, "test");
+        assert!(minimum <= 60, "short, so removing a site is noticed");
+    }
+    // A and AAAA are real answers; refusals and malformed queries have no SOA either.
+    for (reply, why) in [
+        (answer(&query("shop.test", 1, 1), &zone()).unwrap(), "A"),
+        (answer(&query("shop.test", 28, 1), &zone()).unwrap(), "AAAA"),
+        (
+            answer(&query("example.com", 15, 1), &zone()).unwrap(),
+            "outside",
+        ),
+    ] {
+        assert_eq!(authority_count(&reply), 0, "{why}");
+    }
+    // The zone never says a name does not exist (it answers for all of them), so no
+    // NXDOMAIN is produced anywhere.
+    for name in ["a.test", "deep.er.sub.test", "test"] {
+        for qtype in [1, 28, 65, 255] {
+            let reply = answer(&query(name, qtype, 1), &zone()).unwrap();
+            assert_ne!(rcode(&reply), 3, "{name} {qtype}");
+        }
+    }
+}
+
+#[test]
+fn the_helpers_arguments_fail_with_the_message_that_matches_the_problem() {
+    let message = |args: &[&str]| ElevatedOp::parse(args).unwrap_err().to_string();
+    assert!(message(&["nrpt-add", "test", "not-an-ip"]).contains("not an IP address"));
+    assert!(message(&["nrpt-add", "test", "8.8.8.8"]).contains("not a loopback"));
+    assert!(message(&["nrpt-add", "com", "127.77.0.53"]).contains("special-use"));
+    assert!(message(&["hosts-set", "example.com"]).contains("cannot go in the hosts file"));
+    let unknown = message(&["run", "cmd.exe"]);
+    assert!(
+        unknown.contains("only accepts") && unknown.contains("run cmd.exe"),
+        "{unknown}"
+    );
+    for text in [&unknown, &message(&[]), &message(&["hosts-clear", "x"])] {
+        assert!(
+            !text.contains("suffix") || text.contains("nrpt-add <suffix>"),
+            "{text}"
+        );
+        assert!(!text.contains("  "), "{text}");
+    }
+}

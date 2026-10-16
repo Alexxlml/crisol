@@ -934,8 +934,36 @@ fn node_is_not_told_about_a_copy_other_accounts_can_modify() {
         "{warning}"
     );
     assert!(warning.contains("node"), "it names the path: {warning}");
+    // For a folder the command carries the inheritance flags, names the user by SID (it must
+    // work in PowerShell too, where %USERNAME% is not a thing), and has no cmd-only syntax.
+    assert!(warning.contains("(OI)(CI)F"), "{warning}");
+    assert!(warning.contains("/inheritance:r /grant:r"), "{warning}");
+    assert!(
+        warning.contains("*S-1-5-18:") && warning.contains("*S-1-5-32-544:"),
+        "{warning}"
+    );
+    assert!(!warning.contains('%'), "{warning}");
 
     // Closed again, it is passed on again.
     icacls(&["/remove", "*S-1-5-11"]);
     assert_eq!(PathBuf::from(seen(&rig.run(&node, &[]))), ca);
+
+    // Only the file open (the folder is private): the command is the file's, with no
+    // inheritance flags.
+    let output = Command::new("icacls")
+        .arg(&ca)
+        .args(["/grant", "*S-1-5-11:M"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "icacls on the file failed");
+    let open = rig.run(&node, &[]);
+    assert_eq!(seen(&open), "-");
+    let warning = stderr(&open);
+    assert_eq!(warning.lines().count(), 1, "one line only: {warning}");
+    assert!(warning.contains("ca.pem"), "names the file: {warning}");
+    assert!(warning.contains(":F\""), "{warning}");
+    assert!(
+        !warning.contains("(OI)"),
+        "no inheritance flags on a file: {warning}"
+    );
 }
