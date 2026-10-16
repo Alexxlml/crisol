@@ -82,3 +82,10 @@ Decidida por el propietario (hallazgo 6 de la revisión de la Fase 4).
 - El archivo deja de ser una copia literal del bundle. Un comentario al inicio lo dice y nombra la versión del bundle de origen.
 - El trait `RootCertificates` devuelve también la lista de desconfiados.
 - Pruebas con un doble: una CA de Mozilla que está en `Disallowed` no aparece en el resultado, y el resto del bundle queda igual, en el mismo orden.
+
+### Cómo quedó (2026-10-16)
+
+- `RootCertificates::disallowed_roots` devuelve el DER de los almacenes `Disallowed` de usuario, equipo, directiva y empresa (`WindowsRootCertificates` lo lee con el mismo código que ya los usaba para filtrar `ROOT`).
+- `exclude_certificates` (núcleo, puro) quita del texto de Mozilla cada entrada cuyo DER está en esa lista: el bloque, las líneas de nombre justo encima y la línea en blanco que lo sigue. Lo demás queda igual y en el mismo orden. La CA local de Crisol se añade después y no se filtra por esta lista.
+- El archivo empieza con un comentario que dice que ya no es una copia literal, nombra la versión del bundle de origen y lista los CN excluidos (`Left out: none.` si no hubo). `WrittenCacert::excluded` los lleva y una advertencia dice cuántos y cuáles.
+- Si la lista de `Disallowed` no se puede leer, el bundle de Mozilla se deja entero y una advertencia lo dice.

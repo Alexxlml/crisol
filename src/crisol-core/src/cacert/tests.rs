@@ -2,8 +2,11 @@
 //! certificates of the real `cacert-2026-09-25.pem` from curl.se, byte for byte.
 
 use std::fs;
+use std::time::SystemTime;
 
 use tempfile::TempDir;
+
+use crate::paths::fake::FakePrivateDirs;
 
 use super::*;
 
@@ -121,6 +124,36 @@ impl RootCertificates for Roots {
             Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
         }
     }
+
+    fn disallowed_roots(&self) -> io::Result<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Roots plus a `Disallowed` list.
+struct Distrusting(Roots, io::Result<Vec<Vec<u8>>>);
+
+impl RootCertificates for Distrusting {
+    fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>> {
+        self.0.trusted_roots()
+    }
+
+    fn disallowed_roots(&self) -> io::Result<Vec<Vec<u8>>> {
+        match &self.1 {
+            Ok(list) => Ok(list.clone()),
+            Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+        }
+    }
+}
+
+/// The file Crisol wrote, without the comment it puts at the top.
+fn without_header(text: &str) -> &str {
+    text.split_once(
+        "##
+
+",
+    )
+    .map_or(text, |(_, rest)| rest)
 }
 
 fn home_with_bundle(versions: &[&str]) -> (TempDir, CrisolPaths) {
@@ -159,7 +192,7 @@ fn the_file_is_built_in_the_layout_from_the_bundle_and_the_system() {
     assert_eq!(written.warnings, Vec::<String>::new());
 
     let text = fs::read_to_string(&written.path).unwrap();
-    assert!(text.starts_with(EXCERPT));
+    assert!(without_header(&text).starts_with(EXCERPT));
     assert_eq!(pem_certificates(&text).len(), 3);
 }
 
@@ -201,9 +234,7 @@ fn a_system_store_that_cannot_be_read_still_gives_mozilla_s_bundle() {
     assert_eq!(written.added, 0);
     assert_eq!(written.warnings.len(), 1);
     assert!(written.warnings[0].contains("the store is locked"));
-    assert!(fs::read_to_string(written.path)
-        .unwrap()
-        .starts_with(EXCERPT));
+    assert!(without_header(&fs::read_to_string(written.path).unwrap()).starts_with(EXCERPT));
 }
 
 #[test]
@@ -225,9 +256,7 @@ fn a_hand_edited_derived_file_is_put_back() {
     let written = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
     fs::write(&written.path, "tampered").unwrap();
     assert!(write_php_cacert(&paths, &NoRoots).unwrap().unwrap().changed);
-    assert!(fs::read_to_string(&written.path)
-        .unwrap()
-        .starts_with(EXCERPT));
+    assert!(without_header(&fs::read_to_string(&written.path).unwrap()).starts_with(EXCERPT));
 }
 
 // ---- which system roots are fit for TLS -------------------------------------------------
@@ -320,7 +349,7 @@ fn the_local_ca_is_in_the_bundle_even_if_the_system_does_not_have_it() {
         .unwrap();
     assert_eq!(written.added, 1);
     let text = fs::read_to_string(&written.path).unwrap();
-    assert!(text.starts_with(EXCERPT));
+    assert!(without_header(&text).starts_with(EXCERPT));
     assert_eq!(pem_certificates(&text).last(), Some(&local));
     // Without it, the file is exactly Mozilla's: the plain function is unchanged.
     let plain = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
@@ -355,4 +384,168 @@ fn the_local_ca_is_added_once_even_if_the_system_lists_it_and_is_not_filtered_li
         written.omitted, 1,
         "only the restricted system copy is reported"
     );
+}
+
+// ---- review of phase 4, finding 6: what the system distrusts leaves Mozilla's bundle too ------
+
+/// A bundle of three entries in Mozilla's format: header lines, a block, a blank line.
+fn bundle_of_three() -> (String, [Vec<u8>; 3]) {
+    let ders = [fake(1), fake(2), fake(3)];
+    let mut text = String::from(
+        "##
+## Bundle of CA Root Certificates
+##
+
+",
+    );
+    for (der, name) in ders.iter().zip(["First CA", "Second CA", "Third CA"]) {
+        let underline = "=".repeat(name.len());
+        let _ = writeln!(
+            text,
+            "{name}
+{underline}
+{}",
+            to_pem(der)
+        );
+    }
+    (text, ders)
+}
+
+#[test]
+fn a_disallowed_certificate_leaves_the_bundle_and_the_rest_stays_in_order() {
+    let (text, [one, two, three]) = bundle_of_three();
+    let disallowed: BTreeSet<Vec<u8>> = [two.clone()].into();
+    let (kept, excluded) = exclude_certificates(&text, &disallowed);
+    assert_eq!(excluded, vec![two]);
+    assert_eq!(pem_certificates(&kept), vec![one, three]);
+    assert!(
+        kept.contains(
+            "First CA
+======="
+        ) && kept.contains("Third CA")
+    );
+    assert!(
+        !kept.contains("Second CA"),
+        "its name header goes with it: {kept}"
+    );
+    // Everything else is byte for byte what it was: removing the entry from the original
+    // text by hand gives exactly this.
+    let by_hand = text.replacen(
+        &format!(
+            "Second CA
+=========
+{}
+",
+            to_pem(&fake(2))
+        ),
+        "",
+        1,
+    );
+    assert_eq!(kept, by_hand);
+
+    // Nothing disallowed, nothing changes; other certificates in the list are ignored.
+    let (same, none) = exclude_certificates(&text, &BTreeSet::new());
+    assert_eq!((same.as_str(), none.len()), (text.as_str(), 0));
+    let (same, none) = exclude_certificates(&text, &[fake(9)].into());
+    assert_eq!((same.as_str(), none.len()), (text.as_str(), 0));
+}
+
+#[test]
+fn the_written_file_leaves_out_a_distrusted_mozilla_root_names_it_and_says_it_is_not_verbatim() {
+    let tmp = TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let dir = paths.bin_for(BUNDLE_SERVICE, "2026.9.25").unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    // The real excerpt: two real certificates with real names.
+    fs::write(dir.join(BUNDLE_FILE), EXCERPT).unwrap();
+    let ders = mozilla_ders();
+    let first = certificate_name(&ders[0]);
+    assert_ne!(first, "unnamed certificate");
+
+    let system = Distrusting(Roots::plain(vec![fake(5)]), Ok(vec![ders[0].clone()]));
+    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let text = fs::read_to_string(&written.path).unwrap();
+    assert_eq!(written.excluded, vec![first.clone()]);
+    assert_eq!(pem_certificates(&text), vec![ders[1].clone(), fake(5)]);
+    assert_eq!(written.added, 1);
+    // One warning that counts them and names them.
+    assert!(
+        written
+            .warnings
+            .iter()
+            .any(|w| w.contains("1 certificate(s) of Mozilla's bundle") && w.contains(&first)),
+        "{:?}",
+        written.warnings
+    );
+    // The comment at the top: not verbatim, which version, and who was left out.
+    assert!(text.starts_with(
+        "##
+## Built by Crisol from Mozilla's CA bundle, version 2026.9.25"
+    ));
+    assert!(text.contains("NOT a verbatim copy"), "{text}");
+    assert!(text.contains(&format!("##   - {first}")), "{text}");
+}
+
+#[test]
+fn nothing_distrusted_still_says_where_the_file_comes_from_and_leaves_the_bundle_whole() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let written = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    let text = fs::read_to_string(&written.path).unwrap();
+    assert_eq!(written.excluded, Vec::<String>::new());
+    assert!(
+        text.contains("version 2026.9.25") && text.contains("Left out: none."),
+        "{text}"
+    );
+    assert!(without_header(&text).starts_with(EXCERPT));
+    assert_eq!(pem_certificates(&text).len(), 2);
+}
+
+#[test]
+fn the_local_ca_still_goes_in_even_if_it_is_in_the_distrusted_list() {
+    // The local CA is Crisol's own and is validated on its own terms (ADR-0013): a stray entry
+    // in a Disallowed store does not take it out of the file PHP uses for the local sites.
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let ca_home = TempDir::new().unwrap();
+    let ca_paths = CrisolPaths::new(ca_home.path().join("ca-home")).unwrap();
+    let private = FakePrivateDirs::new();
+    let ca = crate::ca::ensure_ca(&ca_paths, &private, "test", SystemTime::now())
+        .unwrap()
+        .ca;
+    let local = ca.cert_der().to_vec();
+    let system = Distrusting(
+        Roots::plain(vec![]),
+        Ok(vec![local.clone(), mozilla_ders()[1].clone()]),
+    );
+    let written = write_php_cacert_with(&paths, &system, Some(&ca))
+        .unwrap()
+        .unwrap();
+    let ders = pem_certificates(&fs::read_to_string(&written.path).unwrap());
+    assert_eq!(ders.last(), Some(&local), "the local CA is there");
+    assert!(
+        !ders.contains(&mozilla_ders()[1]),
+        "the Mozilla root that was distrusted is not"
+    );
+    assert_eq!(written.excluded.len(), 1);
+}
+
+#[test]
+fn a_distrusted_list_that_cannot_be_read_keeps_the_bundle_whole_and_says_so() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let system = Distrusting(Roots::plain(vec![]), Err(io::Error::other("store busy")));
+    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    assert_eq!(written.excluded, Vec::<String>::new());
+    assert!(written
+        .warnings
+        .iter()
+        .any(|w| w.contains("store busy") && w.contains("kept whole")));
+    assert_eq!(
+        pem_certificates(&fs::read_to_string(&written.path).unwrap()).len(),
+        2
+    );
+}
+
+#[test]
+fn a_certificate_without_a_readable_name_is_called_so() {
+    assert_eq!(certificate_name(&fake(1)), "unnamed certificate");
+    assert_ne!(certificate_name(&mozilla_ders()[0]), "unnamed certificate");
 }

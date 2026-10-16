@@ -5,7 +5,11 @@
 //! certificate". Crisol builds that file in `etc/php/cacert.pem` from two sources:
 //!
 //! 1. **Mozilla's bundle**, installed from the catalog as the `cacert` package (so it is
-//!    downloaded and verified like everything else, ADR-0005), copied **verbatim**;
+//!    downloaded and verified like everything else, ADR-0005), copied as it is **except** for
+//!    the certificates the system distrusts: whatever is in a `Disallowed` store of Windows
+//!    (user, machine, policy, enterprise) is left out, matched by its exact DER, so a CA the
+//!    company or Microsoft has revoked cannot come back through Mozilla's list. The file says
+//!    so in a comment at the top, with the bundle's version and the names left out;
 //! 2. the **trusted root certificates of the operating system** that Mozilla's bundle does not
 //!    already have, appended after it: that is what makes a company's own CA, or the one of a
 //!    proxy that inspects TLS, work without configuration.
@@ -92,6 +96,10 @@ pub trait RootCertificates: Send + Sync {
     /// distrusts as a whole must not be in the list; partial distrust is reported in
     /// [`SystemRoot::partially_distrusted`]. Duplicates are fine.
     fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>>;
+
+    /// The certificates (DER) in the system's `Disallowed` stores, of every place. They are
+    /// removed from Mozilla's bundle too.
+    fn disallowed_roots(&self) -> io::Result<Vec<Vec<u8>>>;
 }
 
 /// No operating-system roots: the bundle is Mozilla's alone.
@@ -100,6 +108,10 @@ pub struct NoRoots;
 
 impl RootCertificates for NoRoots {
     fn trusted_roots(&self) -> io::Result<Vec<SystemRoot>> {
+        Ok(Vec::new())
+    }
+
+    fn disallowed_roots(&self) -> io::Result<Vec<Vec<u8>>> {
         Ok(Vec::new())
     }
 }
@@ -152,6 +164,90 @@ pub fn merge_bundle(bundle: &str, roots: &[Vec<u8>]) -> MergedBundle {
     }
 }
 
+/// Mozilla's bundle without the certificates in `disallowed`: every other byte, and the
+/// order of what remains, stays as it was. An entry is its name header (the lines right above
+/// the block, up to a blank line), the block, and the blank line after it. Also returns the
+/// DER of what was left out, in the order it appeared.
+#[must_use]
+pub fn exclude_certificates(
+    bundle: &str,
+    disallowed: &BTreeSet<Vec<u8>>,
+) -> (String, Vec<Vec<u8>>) {
+    if disallowed.is_empty() {
+        return (bundle.to_owned(), Vec::new());
+    }
+    let lines: Vec<&str> = bundle.split_inclusive('\n').collect();
+    let mut keep = vec![true; lines.len()];
+    let mut excluded = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() != BEGIN {
+            i += 1;
+            continue;
+        }
+        let Some(end) = (i..lines.len()).find(|&j| lines[j].trim() == END) else {
+            break; // an unfinished block: leave the rest alone
+        };
+        let body: String = lines[i + 1..end].iter().map(|l| l.trim()).collect();
+        let der = STANDARD.decode(body.as_bytes()).unwrap_or_default();
+        if disallowed.contains(&der) {
+            let mut start = i;
+            while start > 0 && !lines[start - 1].trim().is_empty() && lines[start - 1].trim() != END
+            {
+                start -= 1;
+            }
+            let mut stop = end + 1;
+            if lines.get(stop).is_some_and(|l| l.trim().is_empty()) {
+                stop += 1;
+            }
+            keep[start..stop].fill(false);
+            excluded.push(der);
+        }
+        i = end + 1;
+    }
+    let text = lines
+        .iter()
+        .zip(&keep)
+        .filter_map(|(line, keep)| keep.then_some(*line))
+        .collect();
+    (text, excluded)
+}
+
+/// The common name of a DER certificate, or its organisation, or `unnamed certificate`.
+#[must_use]
+pub fn certificate_name(der: &[u8]) -> String {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    X509Certificate::from_der(der)
+        .ok()
+        .and_then(|(_, cert)| {
+            let subject = cert.subject();
+            subject
+                .iter_common_name()
+                .chain(subject.iter_organization())
+                .find_map(|attribute| attribute.as_str().ok().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "unnamed certificate".to_owned())
+}
+
+/// The comment at the top of the file Crisol builds: it is no longer Mozilla's file as it was.
+fn provenance(version: &str, excluded: &[String]) -> String {
+    let mut text = format!(
+        "##\n## Built by Crisol from Mozilla's CA bundle, version {version} (the `cacert` package).\n\
+         ## It is NOT a verbatim copy: the certificates that the system distrusts (the Windows\n\
+         ## `Disallowed` stores) are left out, and the system's own trusted roots follow it.\n"
+    );
+    if excluded.is_empty() {
+        text.push_str("## Left out: none.\n");
+    } else {
+        let _ = writeln!(text, "## Left out ({}):", excluded.len());
+        for name in excluded {
+            let _ = writeln!(text, "##   - {name}");
+        }
+    }
+    text.push_str("##\n\n");
+    text
+}
+
 /// A DER certificate is a SEQUENCE. This only keeps out obvious garbage; it is not a parser.
 fn looks_like_a_certificate(der: &[u8]) -> bool {
     der.len() >= 16 && der[0] == 0x30
@@ -202,6 +298,9 @@ pub struct WrittenCacert {
     pub changed: bool,
     /// The version of Mozilla's bundle it was built from.
     pub bundle_version: String,
+    /// The names of the certificates of Mozilla's bundle that were left out because the system
+    /// distrusts them (its `Disallowed` stores).
+    pub excluded: Vec<String>,
     /// System certificates added on top of Mozilla's.
     pub added: usize,
     /// System roots left out because their use is restricted to something other than TLS
@@ -265,6 +364,26 @@ pub fn write_php_cacert_with(
             Vec::new()
         }
     };
+    // What the system distrusts leaves Mozilla's bundle too. If the list cannot be read the
+    // bundle stays whole, and the warning says so.
+    let disallowed: BTreeSet<Vec<u8>> = match system.disallowed_roots() {
+        Ok(list) => list.into_iter().collect(),
+        Err(error) => {
+            warnings.push(format!(
+                "could not read the system's distrusted certificates ({error}); Mozilla's bundle was kept whole"
+            ));
+            BTreeSet::new()
+        }
+    };
+    let (text, excluded_ders) = exclude_certificates(&text, &disallowed);
+    let excluded: Vec<String> = excluded_ders.iter().map(|d| certificate_name(d)).collect();
+    if !excluded.is_empty() {
+        warnings.push(format!(
+            "{} certificate(s) of Mozilla's bundle were left out because the system distrusts them: {}",
+            excluded.len(),
+            excluded.join(", ")
+        ));
+    }
     let total = roots.len();
     let mut fit: Vec<Vec<u8>> = roots
         .into_iter()
@@ -273,7 +392,12 @@ pub fn write_php_cacert_with(
         .collect();
     let omitted = total - fit.len();
     fit.extend(local_ca.map(|ca| ca.cert_der().to_vec()));
-    let merged = merge_bundle(&text, &fit);
+    let mut merged = merge_bundle(&text, &fit);
+    merged.text = format!(
+        "{}{}",
+        provenance(&bundle.version.to_string(), &excluded),
+        merged.text
+    );
     if merged.skipped > 0 {
         warnings.push(format!(
             "{} system certificate(s) were not valid and were left out",
@@ -293,6 +417,7 @@ pub fn write_php_cacert_with(
         path,
         changed,
         bundle_version: bundle.version.to_string(),
+        excluded,
         added: merged.added,
         omitted,
         warnings,

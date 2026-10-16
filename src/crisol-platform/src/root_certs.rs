@@ -63,6 +63,10 @@ impl RootCertificates for WindowsRootCertificates {
             .filter(|root| !stores.disallowed.contains(&root.der))
             .collect())
     }
+
+    fn disallowed_roots(&self) -> io::Result<Vec<Vec<u8>>> {
+        Ok(read_roots()?.disallowed.into_iter().collect())
+    }
 }
 
 /// What the stores of all locations hold, each without duplicates.
