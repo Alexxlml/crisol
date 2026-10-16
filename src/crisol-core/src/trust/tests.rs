@@ -6,12 +6,15 @@ use tempfile::TempDir;
 use super::fake::FakeTrustStore;
 use super::*;
 use crate::ca::{create_ca, ensure_ca};
+use crate::paths::fake::FakePrivateDirs;
 use crate::paths::CrisolPaths;
 
 fn ca() -> (TempDir, CrisolPaths, LocalCa) {
     let tmp = TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
-    let ca = ensure_ca(&paths, "test", SystemTime::now()).unwrap().ca;
+    let ca = ensure_ca(&paths, &FakePrivateDirs::new(), "test", SystemTime::now())
+        .unwrap()
+        .ca;
     (tmp, paths, ca)
 }
 
@@ -104,7 +107,14 @@ fn a_replaced_ca_stays_trusted_until_it_is_removed_and_is_found_by_name() {
     trust_ca(&store, &old).unwrap();
     let old_name = old.info().common_name.clone();
 
-    let new = create_ca(&paths, "test", SystemTime::now(), true).unwrap();
+    let new = create_ca(
+        &paths,
+        &FakePrivateDirs::new(),
+        "test",
+        SystemTime::now(),
+        true,
+    )
+    .unwrap();
     trust_ca(&store, &new).unwrap();
 
     let state = status(&store, &new).unwrap();

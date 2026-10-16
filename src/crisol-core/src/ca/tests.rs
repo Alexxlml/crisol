@@ -7,6 +7,7 @@ use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use super::*;
+use crate::paths::fake::FakePrivateDirs;
 
 fn home() -> (TempDir, CrisolPaths) {
     let tmp = TempDir::new().unwrap();
@@ -24,7 +25,9 @@ fn parse(der: &[u8]) -> X509Certificate<'_> {
 
 fn made(tld: &str) -> (TempDir, CrisolPaths, LocalCa) {
     let (tmp, paths) = home();
-    let ca = ensure_ca(&paths, tld, now()).unwrap().ca;
+    let ca = ensure_ca(&paths, &FakePrivateDirs::new(), tld, now())
+        .unwrap()
+        .ca;
     (tmp, paths, ca)
 }
 
@@ -176,7 +179,7 @@ fn it_is_valid_from_yesterday_for_ten_years() {
 #[test]
 fn it_is_made_once_and_the_second_call_changes_nothing() {
     let (_tmp, paths) = home();
-    let first = ensure_ca(&paths, "test", now()).unwrap();
+    let first = ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
     assert!(first.created);
     assert!(
         paths.ca_cert().ends_with("certs/ca.pem") || paths.ca_cert().ends_with(r"certs\ca.pem")
@@ -191,7 +194,7 @@ fn it_is_made_once_and_the_second_call_changes_nothing() {
         "the certificate file has no key"
     );
 
-    let second = ensure_ca(&paths, "test", now()).unwrap();
+    let second = ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
     assert!(!second.created);
     assert_eq!(second.ca.info(), first.ca.info());
     assert_eq!(fs::read(paths.ca_cert()).unwrap(), pem);
@@ -208,8 +211,12 @@ fn it_is_made_once_and_the_second_call_changes_nothing() {
 #[test]
 fn the_reloaded_ca_is_the_one_that_was_made() {
     let (_tmp, paths) = home();
-    let made = ensure_ca(&paths, "internal", now()).unwrap().ca;
-    let loaded = load_ca(&paths, now()).unwrap().unwrap();
+    let made = ensure_ca(&paths, &FakePrivateDirs::new(), "internal", now())
+        .unwrap()
+        .ca;
+    let loaded = load_ca(&paths, &FakePrivateDirs::new(), now())
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.info(), made.info());
     assert_eq!(loaded.cert_der(), made.cert_der());
     assert_eq!(loaded.key().serialize_der(), made.key().serialize_der());
@@ -218,7 +225,9 @@ fn the_reloaded_ca_is_the_one_that_was_made() {
 #[test]
 fn without_files_there_is_no_ca() {
     let (_tmp, paths) = home();
-    assert!(load_ca(&paths, now()).unwrap().is_none());
+    assert!(load_ca(&paths, &FakePrivateDirs::new(), now())
+        .unwrap()
+        .is_none());
     assert!(!paths.certs_dir().exists(), "reading creates nothing");
 }
 
@@ -229,12 +238,12 @@ fn half_a_ca_is_an_error_and_nothing_is_overwritten() {
         ("ca.key", "ca.pem", "ca.key", "ca.pem"),
     ] {
         let (_tmp, paths) = home();
-        ensure_ca(&paths, "test", now()).unwrap();
+        ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
         let kept = paths.certs_dir().join(keep);
         let before = fs::read(&kept).unwrap();
         fs::remove_file(paths.certs_dir().join(other)).unwrap();
 
-        let error = ensure_ca(&paths, "test", now()).unwrap_err();
+        let error = ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap_err();
         assert!(
             matches!(error, CaError::Incomplete { present: p, missing: m } if p == present && m == missing),
             "{error}"
@@ -247,11 +256,11 @@ fn half_a_ca_is_an_error_and_nothing_is_overwritten() {
 #[test]
 fn a_key_that_is_not_the_certificates_is_refused() {
     let (_tmp, paths) = home();
-    ensure_ca(&paths, "test", now()).unwrap();
+    ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
     let stranger = KeyPair::generate().unwrap();
     fs::write(paths.ca_key(), stranger.serialize_pem()).unwrap();
     assert!(matches!(
-        ensure_ca(&paths, "test", now()).unwrap_err(),
+        ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap_err(),
         CaError::KeyMismatch
     ));
 }
@@ -259,19 +268,19 @@ fn a_key_that_is_not_the_certificates_is_refused() {
 #[test]
 fn garbage_is_an_error_not_a_reason_to_start_over() {
     let (_tmp, paths) = home();
-    ensure_ca(&paths, "test", now()).unwrap();
+    ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
     let good_key = fs::read(paths.ca_key()).unwrap();
     fs::write(paths.ca_cert(), "not a certificate").unwrap();
     assert!(matches!(
-        ensure_ca(&paths, "test", now()).unwrap_err(),
+        ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap_err(),
         CaError::Invalid(_)
     ));
     assert_eq!(fs::read(paths.ca_key()).unwrap(), good_key);
 
-    ensure_ca(&paths, "test", now()).unwrap_err();
+    ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap_err();
     fs::write(paths.ca_key(), "nor a key").unwrap();
     assert!(matches!(
-        load_ca(&paths, now()).unwrap_err(),
+        load_ca(&paths, &FakePrivateDirs::new(), now()).unwrap_err(),
         CaError::Invalid(_)
     ));
 }
@@ -288,7 +297,7 @@ fn a_certificate_that_is_not_a_ca_is_refused() {
     fs::write(paths.ca_cert(), leaf.pem()).unwrap();
     fs::write(paths.ca_key(), key.serialize_pem()).unwrap();
     assert!(matches!(
-        ensure_ca(&paths, "test", now()).unwrap_err(),
+        ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap_err(),
         CaError::NotACa
     ));
 }
@@ -296,34 +305,45 @@ fn a_certificate_that_is_not_a_ca_is_refused() {
 #[test]
 fn an_expired_ca_is_reported() {
     let (_tmp, paths) = home();
-    ensure_ca(&paths, "test", now()).unwrap();
+    ensure_ca(&paths, &FakePrivateDirs::new(), "test", now()).unwrap();
     let in_eleven_years = now() + StdDuration::from_secs(11 * 365 * 86_400);
     assert!(matches!(
-        load_ca(&paths, in_eleven_years).unwrap_err(),
+        load_ca(&paths, &FakePrivateDirs::new(), in_eleven_years).unwrap_err(),
         CaError::Expired
     ));
     // Still fine a day before it ends.
     let before_the_end = now() + StdDuration::from_secs(3640 * 86_400);
-    assert!(load_ca(&paths, before_the_end).unwrap().is_some());
+    assert!(load_ca(&paths, &FakePrivateDirs::new(), before_the_end)
+        .unwrap()
+        .is_some());
 }
 
 #[test]
 fn replacing_needs_to_be_asked_for() {
     let (_tmp, paths, old) = made("test");
     assert!(matches!(
-        create_ca(&paths, "test", now(), false).unwrap_err(),
+        create_ca(&paths, &FakePrivateDirs::new(), "test", now(), false).unwrap_err(),
         CaError::AlreadyExists
     ));
     assert_eq!(
-        load_ca(&paths, now()).unwrap().unwrap().info(),
+        load_ca(&paths, &FakePrivateDirs::new(), now())
+            .unwrap()
+            .unwrap()
+            .info(),
         old.info(),
         "the refusal changed nothing"
     );
 
-    let new = create_ca(&paths, "internal", now(), true).unwrap();
+    let new = create_ca(&paths, &FakePrivateDirs::new(), "internal", now(), true).unwrap();
     assert_ne!(new.info().fingerprint, old.info().fingerprint);
     assert!(new.covers("internal") && !old.covers("internal"));
-    assert_eq!(load_ca(&paths, now()).unwrap().unwrap().info(), new.info());
+    assert_eq!(
+        load_ca(&paths, &FakePrivateDirs::new(), now())
+            .unwrap()
+            .unwrap()
+            .info(),
+        new.info()
+    );
 }
 
 #[test]
@@ -332,4 +352,333 @@ fn the_debug_text_never_has_the_key() {
     let text = format!("{ca:?}");
     assert!(text.contains("Crisol Local CA"));
     assert!(!text.contains("PRIVATE") && !text.contains("key"), "{text}");
+}
+
+// ---- a CA that was swapped or never was ours (review of phase 6, finding 1) ----------------
+
+use rcgen::{
+    BasicConstraints, CertificateParams, CidrSubnet, CustomExtension, DistinguishedName, DnType,
+    GeneralSubtree, IsCa, KeyUsagePurpose, NameConstraints,
+};
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
+
+/// The parameters of a CA that passes every check; a test breaks one thing.
+fn good_params() -> CertificateParams {
+    let mut params = CertificateParams::default();
+    let mut name = DistinguishedName::new();
+    name.push(DnType::CommonName, "Crisol Local CA 000000");
+    name.push(DnType::OrganizationName, "Crisol");
+    params.distinguished_name = name;
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params.name_constraints = Some(NameConstraints {
+        permitted_subtrees: vec![
+            GeneralSubtree::DnsName("test".to_owned()),
+            GeneralSubtree::DnsName("localhost".to_owned()),
+        ],
+        excluded_subtrees: vec![],
+    });
+    params
+}
+
+/// Writes a CA pair, as another account that can write in `certs/` would, and says what
+/// `load_ca` makes of it.
+fn load_planted(params: &CertificateParams) -> Result<Option<LocalCa>, CaError> {
+    let (_tmp, paths) = home();
+    fs::create_dir_all(paths.certs_dir()).unwrap();
+    let key = KeyPair::generate().unwrap();
+    let cert = params.self_signed(&key).unwrap();
+    fs::write(paths.ca_cert(), cert.pem()).unwrap();
+    fs::write(paths.ca_key(), key.serialize_pem()).unwrap();
+    load_ca(&paths, &FakePrivateDirs::new(), now())
+}
+
+fn refused(result: Result<Option<LocalCa>, CaError>, containing: &str) {
+    match result {
+        Err(CaError::Invalid(why)) => assert!(why.contains(containing), "{why}"),
+        Err(other) => assert!(other.to_string().contains(containing), "{other}"),
+        Ok(_) => panic!("a CA that should have been refused was accepted ({containing})"),
+    }
+}
+
+/// `NameConstraints { permitted = { dNSName "test" } }` written by hand (DER).
+fn raw_constraints(critical: bool) -> CustomExtension {
+    let content = vec![
+        0x30, 0x0a, 0xa0, 0x08, 0x30, 0x06, 0x82, 0x04, 0x74, 0x65, 0x73, 0x74,
+    ];
+    let mut extension = CustomExtension::from_oid_content(&[2, 5, 29, 30], content);
+    extension.set_criticality(critical);
+    extension
+}
+
+#[test]
+fn the_parameters_the_tests_start_from_are_accepted() {
+    // So that the refusals below are about the one thing each test breaks.
+    let ca = load_planted(&good_params()).unwrap().unwrap();
+    assert_eq!(ca.info().permitted_dns, ["test", "localhost"]);
+}
+
+#[test]
+fn a_ca_without_name_constraints_is_refused() {
+    let mut params = good_params();
+    params.name_constraints = None;
+    refused(load_planted(&params), "no name constraints");
+}
+
+#[test]
+fn a_ca_with_a_subtree_too_many_is_refused() {
+    for extra in ["com", "example.com", "dev", "bank.test.com"] {
+        let mut params = good_params();
+        let constraints = params.name_constraints.as_mut().unwrap();
+        constraints
+            .permitted_subtrees
+            .push(GeneralSubtree::DnsName(extra.to_owned()));
+        refused(load_planted(&params), "not a name reserved for local use");
+    }
+    // Other kinds of name, and addresses beyond loopback.
+    let mut email = good_params();
+    email
+        .name_constraints
+        .as_mut()
+        .unwrap()
+        .permitted_subtrees
+        .push(GeneralSubtree::Rfc822Name("test".to_owned()));
+    refused(load_planted(&email), "kind of name");
+    for (address, prefix) in [([10, 0, 0, 0], 8), ([127, 0, 0, 0], 0)] {
+        let mut wide = good_params();
+        wide.name_constraints
+            .as_mut()
+            .unwrap()
+            .permitted_subtrees
+            .push(GeneralSubtree::IpAddress(CidrSubnet::from_addr_prefix(
+                IpAddr::V4(Ipv4Addr::from(address)),
+                prefix,
+            )));
+        refused(load_planted(&wide), "not local");
+    }
+}
+
+#[test]
+fn a_ca_whose_name_constraints_are_not_critical_is_refused() {
+    let mut params = good_params();
+    params.name_constraints = None;
+    params.custom_extensions.push(raw_constraints(false));
+    refused(load_planted(&params), "not critical");
+
+    // The same extension marked critical is accepted: the refusal above was about that.
+    let mut critical = good_params();
+    critical.name_constraints = None;
+    critical.custom_extensions.push(raw_constraints(true));
+    assert!(load_planted(&critical).unwrap().is_some());
+}
+
+#[test]
+fn a_ca_that_can_sign_other_authorities_or_not_sign_at_all_is_refused() {
+    let mut deep = good_params();
+    deep.is_ca = IsCa::Ca(BasicConstraints::Constrained(1));
+    refused(load_planted(&deep), "path length");
+    let mut unlimited = good_params();
+    unlimited.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    refused(load_planted(&unlimited), "path length");
+    let mut mute = good_params();
+    mute.key_usages = vec![KeyUsagePurpose::CrlSign];
+    refused(load_planted(&mute), "keyCertSign");
+}
+
+#[test]
+fn a_ca_issued_by_somebody_else_is_refused() {
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    let real = ensure_ca(&paths, &dirs, "test", now()).unwrap().ca;
+    // A CA with perfect parameters, but signed by the real one rather than by itself.
+    let key = KeyPair::generate().unwrap();
+    let issuer = rcgen::Issuer::from_ca_cert_pem(real.cert_pem(), real.key()).unwrap();
+    let cert = good_params().signed_by(&key, &issuer).unwrap();
+    fs::write(paths.ca_cert(), cert.pem()).unwrap();
+    fs::write(paths.ca_key(), key.serialize_pem()).unwrap();
+    refused(load_ca(&paths, &dirs, now()), "self-signed");
+}
+
+#[test]
+fn a_ca_made_by_crisol_passes_its_own_checks_for_every_special_use_tld() {
+    for tld in [
+        "test",
+        "localhost",
+        "example",
+        "invalid",
+        "local",
+        "internal",
+        "home.arpa",
+        "dev.test",
+        "a.b.local",
+    ] {
+        let (_tmp, paths) = home();
+        let dirs = FakePrivateDirs::new();
+        let made = ensure_ca(&paths, &dirs, tld, now()).unwrap();
+        assert!(made.created, "{tld}");
+        let again = ensure_ca(&paths, &dirs, tld, now()).unwrap();
+        assert!(!again.created && again.ca.covers(tld), "{tld}");
+    }
+}
+
+#[test]
+fn which_names_are_special_use() {
+    for yes in [
+        "test",
+        "TEST",
+        "dev.test",
+        "localhost",
+        "a.localhost",
+        "example",
+        "invalid",
+        "local",
+        "internal",
+        "home.arpa",
+        "x.home.arpa",
+        ".test.",
+    ] {
+        assert!(is_special_use(yes), "{yes}");
+    }
+    for no in [
+        "",
+        "dev",
+        "app",
+        "com",
+        "arpa",
+        "mytest",
+        "test.com",
+        "example.com",
+        "lan",
+        "localdomain",
+    ] {
+        assert!(!is_special_use(no), "{no}");
+    }
+}
+
+// ---- who can write in certs/ ---------------------------------------------------------------
+
+#[test]
+fn certs_is_made_private_even_when_the_home_is_new_or_was_not_made_private() {
+    // A home that does not exist: Crisol makes it, and certs/, private.
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    ensure_ca(&paths, &dirs, "test", now()).unwrap();
+    assert_eq!(
+        dirs.created(),
+        [paths.home().to_path_buf(), paths.certs_dir()]
+    );
+
+    // A home that already exists (made some other way) is left as it is; certs/ is private.
+    let (_tmp, paths) = home();
+    fs::create_dir_all(paths.home()).unwrap();
+    let dirs = FakePrivateDirs::new();
+    ensure_ca(&paths, &dirs, "test", now()).unwrap();
+    assert_eq!(dirs.created(), [paths.certs_dir()]);
+}
+
+#[test]
+fn a_certs_folder_open_to_other_accounts_stops_everything() {
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    ensure_ca(&paths, &dirs, "test", now()).unwrap();
+
+    dirs.expose(&paths.certs_dir());
+    let error = load_ca(&paths, &dirs, now()).err().unwrap();
+    assert!(
+        matches!(error, CaError::Exposed { ref path } if *path == paths.certs_dir()),
+        "{error}"
+    );
+    let text = error.to_string();
+    assert!(
+        text.contains("other accounts") && text.contains("icacls"),
+        "{text}"
+    );
+    assert!(ensure_ca(&paths, &dirs, "test", now()).is_err());
+    assert!(
+        create_ca(&paths, &dirs, "test", now(), true).is_err(),
+        "not even to replace it"
+    );
+
+    // Closing it again is all it takes.
+    dirs.close(&paths.certs_dir());
+    assert!(load_ca(&paths, &dirs, now()).unwrap().is_some());
+}
+
+#[test]
+fn a_single_open_file_is_enough_to_refuse() {
+    for file in ["ca.key", "ca.pem"] {
+        let (_tmp, paths) = home();
+        let dirs = FakePrivateDirs::new();
+        ensure_ca(&paths, &dirs, "test", now()).unwrap();
+        dirs.expose(&paths.certs_dir().join(file));
+        let error = load_ca(&paths, &dirs, now()).err().unwrap();
+        assert!(
+            matches!(error, CaError::Exposed { ref path } if path.ends_with(file)),
+            "{file}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_certs_folder_that_exists_and_is_open_gets_no_ca_written_into_it() {
+    let (_tmp, paths) = home();
+    fs::create_dir_all(paths.certs_dir()).unwrap();
+    let dirs = FakePrivateDirs::new();
+    dirs.expose(&paths.certs_dir());
+    assert!(matches!(
+        ensure_ca(&paths, &dirs, "test", now()).err().unwrap(),
+        CaError::Exposed { .. }
+    ));
+    assert!(!paths.ca_key().exists() && !paths.ca_cert().exists());
+}
+
+#[test]
+fn nothing_can_be_trusted_when_certs_is_open() {
+    use crate::trust::fake::FakeTrustStore;
+    use crate::trust::trust_ca;
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    let store = FakeTrustStore::new();
+    ensure_ca(&paths, &dirs, "test", now()).unwrap();
+    dirs.expose(&paths.certs_dir());
+    // To trust a CA one has to hold a `LocalCa`, and it cannot be loaded now.
+    match load_ca(&paths, &dirs, now()) {
+        Ok(Some(loaded)) => {
+            trust_ca(&store, &loaded).unwrap();
+        }
+        Ok(None) => {}
+        Err(error) => assert!(matches!(error, CaError::Exposed { .. })),
+    }
+    assert_eq!(store.changes(), (0, 0));
+}
+
+// ---- the copy Node reads -------------------------------------------------------------------
+
+#[test]
+fn node_gets_a_copy_of_the_validated_ca_in_a_private_folder() {
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    let ca = ensure_ca(&paths, &dirs, "test", now()).unwrap().ca;
+    let path = write_node_ca(&paths, &dirs, &ca).unwrap();
+    assert_eq!(path, paths.node_ca().unwrap());
+    let shown = path.to_string_lossy().replace('\\', "/");
+    assert!(shown.ends_with("etc/node/ca.pem"), "{shown}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), ca.cert_pem());
+    assert_eq!(
+        dirs.created().last().map(PathBuf::as_path),
+        path.parent(),
+        "the folder was made private"
+    );
+
+    // Again: nothing is written.
+    let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    write_node_ca(&paths, &dirs, &ca).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+
+    // A copy that was tampered with is put back.
+    fs::write(&path, "tampered").unwrap();
+    write_node_ca(&paths, &dirs, &ca).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), ca.cert_pem());
 }

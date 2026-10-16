@@ -171,12 +171,13 @@ fn program_for(
 /// The variable Node reads to trust extra certificate authorities.
 const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
 
-/// Node, npm and npx trust the local CA (`certs/ca.pem`, ADR-0013) so that a request to
-/// `https://shop.test` works from JavaScript too, whether or not the CA is in the system's
-/// store. Only when the CA exists, and never over a value the user already set.
+/// Node, npm and npx trust the local CA so that a request to `https://shop.test` works from
+/// JavaScript too, whether or not the CA is in the system's store (ADR-0013). They are pointed
+/// at `etc/node/ca.pem`, the copy the core writes from a CA it has validated, never at
+/// `certs/ca.pem`. Only when that copy exists, and never over a value the user already set.
 fn node_ca_for(command: Command, paths: &CrisolPaths) -> Option<PathBuf> {
     let for_node = matches!(command, Command::Node | Command::Npm | Command::Npx);
-    let ca = paths.ca_cert();
+    let ca = paths.node_ca().ok()?;
     (for_node && std::env::var_os(NODE_CA_VAR).is_none() && ca.is_file()).then_some(ca)
 }
 

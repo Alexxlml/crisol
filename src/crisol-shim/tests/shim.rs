@@ -275,7 +275,7 @@ fn node_is_told_to_trust_the_local_ca_only_when_there_is_one_and_the_user_has_no
     // No CA yet: nothing is set.
     assert_eq!(seen(&rig.run(&node, &[])), "-");
 
-    let ca = rig.home.join("certs").join("ca.pem");
+    let ca = rig.home.join("etc").join("node").join("ca.pem");
     fs::create_dir_all(ca.parent().unwrap()).unwrap();
     fs::write(
         &ca,

@@ -39,7 +39,7 @@ use crate::nginx::{
     config_differs, render, stage_nginx_config, write_nginx_config, NginxError, NginxInput,
     NginxSite, NginxTls, PhpPools,
 };
-use crate::paths::{CrisolPaths, PathsError};
+use crate::paths::{CrisolPaths, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
 use crate::ports::PortProbe;
 use crate::process::{
@@ -286,6 +286,7 @@ pub struct WebStack {
     nginx_dir: PathBuf,
     supervisor: Arc<dyn ProcessSupervisor>,
     probe: Arc<dyn PortProbe>,
+    dirs: Arc<dyn PrivateDirs>,
     nginx: Option<Service>,
     pools: BTreeMap<String, Pool>,
     /// Pools started by `apply` that have not finished starting; a reload waits for these.
@@ -312,6 +313,8 @@ impl std::fmt::Debug for WebStack {
 
 impl WebStack {
     /// A stack that is stopped. `nginx_dir` is the Nginx installation (`bin/nginx/<version>`).
+    /// `dirs` makes `certs/` private and tells whether it is open to other accounts: the local
+    /// CA is never used otherwise (ADR-0008, ADR-0013).
     #[must_use]
     pub fn new(
         paths: CrisolPaths,
@@ -319,6 +322,7 @@ impl WebStack {
         nginx_dir: PathBuf,
         supervisor: Arc<dyn ProcessSupervisor>,
         probe: Arc<dyn PortProbe>,
+        dirs: Arc<dyn PrivateDirs>,
     ) -> Self {
         Self {
             paths,
@@ -330,6 +334,7 @@ impl WebStack {
             nginx_dir,
             supervisor,
             probe,
+            dirs,
             nginx: None,
             pools: BTreeMap::new(),
             awaiting: BTreeSet::new(),
@@ -507,7 +512,7 @@ impl WebStack {
         hosts: &[String],
         now: SystemTime,
     ) -> Result<((PathBuf, PathBuf, u16), bool, Option<Renewal>), crate::ca::CaError> {
-        let ensured = ensure_ca(&self.paths, &self.tld, now)?;
+        let ensured = ensure_ca(&self.paths, self.dirs.as_ref(), &self.tld, now)?;
         let cert = ensure_site_cert(&self.paths, &ensured.ca, hosts, now)?;
         Ok((
             (cert.cert, cert.key, self.https_port),

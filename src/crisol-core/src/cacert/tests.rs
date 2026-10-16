@@ -298,11 +298,24 @@ fn a_partially_distrusted_root_is_not_added_even_if_it_allows_tls() {
 
 // ---- the local CA (ADR-0013) -----------------------------------------------------------
 
+/// A real, validated local CA in the home of the test.
+fn local_ca(paths: &CrisolPaths) -> crate::ca::LocalCa {
+    crate::ca::ensure_ca(
+        paths,
+        &crate::paths::fake::FakePrivateDirs::new(),
+        "test",
+        std::time::SystemTime::now(),
+    )
+    .unwrap()
+    .ca
+}
+
 #[test]
 fn the_local_ca_is_in_the_bundle_even_if_the_system_does_not_have_it() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let local = fake(42);
-    let written = write_php_cacert_with(&paths, &NoRoots, Some(&local))
+    let ca = local_ca(&paths);
+    let local = ca.cert_der().to_vec();
+    let written = write_php_cacert_with(&paths, &NoRoots, Some(&ca))
         .unwrap()
         .unwrap();
     assert_eq!(written.added, 1);
@@ -317,15 +330,21 @@ fn the_local_ca_is_in_the_bundle_even_if_the_system_does_not_have_it() {
 #[test]
 fn the_local_ca_is_added_once_even_if_the_system_lists_it_and_is_not_filtered_like_them() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let local = fake(42);
+    let ca = local_ca(&paths);
+    let local = ca.cert_der().to_vec();
     // The system lists it twice, once restricted to code signing (which would drop a system
     // root): the local CA still ends up in the file, once.
+    let restricted = SystemRoot {
+        der: local.clone(),
+        usages: Some(vec![CODE_SIGNING.to_owned()]),
+        partially_distrusted: false,
+    };
     let system = Roots(Ok(vec![
         SystemRoot::unrestricted(local.clone()),
-        root(42, Some(&[CODE_SIGNING]), false),
+        restricted,
         SystemRoot::unrestricted(fake(7)),
     ]));
-    let written = write_php_cacert_with(&paths, &system, Some(&local))
+    let written = write_php_cacert_with(&paths, &system, Some(&ca))
         .unwrap()
         .unwrap();
     let text = fs::read_to_string(&written.path).unwrap();

@@ -192,7 +192,14 @@ mod tests {
     fn ca() -> (tempfile::TempDir, crisol_core::ca::LocalCa) {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
-        let ca = ensure_ca(&paths, "test", SystemTime::now()).unwrap().ca;
+        let ca = ensure_ca(
+            &paths,
+            &crate::WindowsPrivateDirs,
+            "test",
+            SystemTime::now(),
+        )
+        .unwrap()
+        .ca;
         (tmp, ca)
     }
 

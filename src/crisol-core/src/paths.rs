@@ -4,6 +4,8 @@
 //! component; nothing is ever assembled by concatenating strings. The default home is
 //! platform specific, so it is supplied by the caller (see `crisol-platform`).
 
+pub mod fake;
+
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -244,6 +246,13 @@ impl CrisolPaths {
     #[must_use]
     pub fn ca_cert(&self) -> PathBuf {
         self.certs_dir().join("ca.pem")
+    }
+
+    /// The local CA certificate as Node gets it: `etc/node/ca.pem`. A copy the core writes
+    /// only from a CA it has validated, so the shim can point `NODE_EXTRA_CA_CERTS` at it
+    /// without reading `certs/` (ADR-0013).
+    pub fn node_ca(&self) -> Result<PathBuf, PathsError> {
+        Ok(self.etc_for("node")?.join("ca.pem"))
     }
 
     /// The certificate for the sites (wildcard, signed by the local CA): `certs/sites.pem`.

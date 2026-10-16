@@ -603,4 +603,64 @@ mod tests {
             .is_writable_by_others(&tmp.path().join("nope"))
             .is_err());
     }
+
+    /// A parent that, like a drive root, gives "modify" to Authenticated Users and passes it
+    /// down to what is created inside.
+    fn open_parent(tmp: &TempDir) -> std::path::PathBuf {
+        let parent = tmp.path().join("drive-root");
+        fs::create_dir(&parent).unwrap();
+        let grant = Command::new("icacls")
+            .arg(&parent)
+            .args(["/grant", "*S-1-5-11:(OI)(CI)M"])
+            .output()
+            .unwrap();
+        assert!(grant.status.success(), "icacls failed");
+        parent
+    }
+
+    #[test]
+    fn the_local_ca_is_made_in_a_private_certs_folder_even_inside_an_open_parent() {
+        // Review of phase 6, finding 1: a home under `C:\` or `D:\` inherits write access for
+        // everybody, and certs/ must not.
+        use crisol_core::ca::{ensure_ca, load_ca};
+        use crisol_core::paths::CrisolPaths;
+        use std::time::SystemTime;
+
+        let tmp = TempDir::new().unwrap();
+        let paths = CrisolPaths::new(open_parent(&tmp).join("home")).unwrap();
+        let made = ensure_ca(&paths, &WindowsPrivateDirs, "test", SystemTime::now()).unwrap();
+        assert!(made.created);
+        for path in [
+            paths.home().to_path_buf(),
+            paths.certs_dir(),
+            paths.ca_key(),
+            paths.ca_cert(),
+        ] {
+            assert!(
+                !WindowsPrivateDirs.is_writable_by_others(&path).unwrap(),
+                "{}",
+                path.display()
+            );
+        }
+        assert!(load_ca(&paths, &WindowsPrivateDirs, SystemTime::now())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_certs_folder_that_inherited_openness_is_refused() {
+        use crisol_core::ca::{ensure_ca, CaError};
+        use crisol_core::paths::CrisolPaths;
+        use std::time::SystemTime;
+
+        let tmp = TempDir::new().unwrap();
+        let paths = CrisolPaths::new(open_parent(&tmp).join("home")).unwrap();
+        // Somebody (or an older Crisol) made the folders the plain way: they are open.
+        fs::create_dir_all(paths.certs_dir()).unwrap();
+        let error = ensure_ca(&paths, &WindowsPrivateDirs, "test", SystemTime::now())
+            .err()
+            .unwrap();
+        assert!(matches!(error, CaError::Exposed { .. }), "{error}");
+        assert!(!paths.ca_key().exists(), "no key was written into it");
+    }
 }

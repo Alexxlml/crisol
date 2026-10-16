@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tempfile::TempDir;
 
 use super::*;
+use crate::paths::fake::FakePrivateDirs;
 use crate::ports::fake::FakePortProbe;
 use crate::ports::PortOwner;
 use crate::process::fake::FakeSupervisor;
@@ -22,6 +23,7 @@ struct Rig {
     supervisor: Arc<FakeSupervisor>,
     probe: Arc<FakePortProbe>,
     stack: WebStack,
+    dirs: Arc<FakePrivateDirs>,
     t0: Instant,
     /// Control commands started before the test began its own changes (the first start's).
     baseline: usize,
@@ -47,12 +49,14 @@ impl Rig {
         fs::create_dir_all(&nginx_dir).unwrap();
         let supervisor = Arc::new(FakeSupervisor::new());
         let probe = Arc::new(FakePortProbe::new());
+        let dirs = Arc::new(FakePrivateDirs::new());
         let stack = WebStack::new(
             paths.clone(),
             &config,
             nginx_dir,
             supervisor.clone(),
             probe.clone(),
+            dirs.clone(),
         );
         Self {
             _tmp: tmp,
@@ -62,6 +66,7 @@ impl Rig {
             supervisor,
             probe,
             stack,
+            dirs,
             t0: Instant::now(),
             baseline: 0,
         }
@@ -803,4 +808,30 @@ fn a_broken_ca_leaves_the_secured_sites_on_http_and_says_why() {
         b"garbage",
         "an unusable CA is never replaced behind the user's back"
     );
+}
+
+#[test]
+fn a_certs_folder_open_to_other_accounts_keeps_the_secured_sites_on_http_and_says_why() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    let first = rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    assert!(first.ca_created, "made in a private certs folder");
+    assert!(rig.dirs.created().contains(&rig.paths.certs_dir()));
+
+    // Somebody opens the folder: from now on the CA is not used for anything.
+    rig.dirs.expose(&rig.paths.certs_dir());
+    let applied = rig
+        .stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    assert!(
+        applied
+            .warnings
+            .iter()
+            .any(|w| w.contains("served over HTTP") && w.contains("other accounts")),
+        "{:?}",
+        applied.warnings
+    );
+    assert!(applied.certificate.is_none() && !applied.ca_created);
 }

@@ -21,7 +21,7 @@ use std::time::SystemTime;
 use crisol_core::ca::{ensure_ca, load_ca};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::trust::{remove_stale, status, trust_ca, untrust_ca, AddOutcome};
-use crisol_platform::WindowsTrustStore;
+use crisol_platform::{WindowsPrivateDirs, WindowsTrustStore};
 
 fn main() {
     if let Err(message) = run() {
@@ -47,7 +47,8 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "status" => {
-            let Some(ca) = load_ca(&paths, now).map_err(|e| e.to_string())? else {
+            let Some(ca) = load_ca(&paths, &WindowsPrivateDirs, now).map_err(|e| e.to_string())?
+            else {
                 println!(
                     "There is no CA in {} yet; `install` makes one.",
                     paths.certs_dir().display()
@@ -62,7 +63,8 @@ fn run() -> Result<(), String> {
             }
         }
         "install" => {
-            let ensured = ensure_ca(&paths, "test", now).map_err(|e| e.to_string())?;
+            let ensured =
+                ensure_ca(&paths, &WindowsPrivateDirs, "test", now).map_err(|e| e.to_string())?;
             let ca = ensured.ca;
             println!(
                 "{} CA {} (valid for {:?}, SHA-256 {})",
@@ -82,7 +84,7 @@ fn run() -> Result<(), String> {
             }
         }
         "remove" => {
-            let ca = load_ca(&paths, now)
+            let ca = load_ca(&paths, &WindowsPrivateDirs, now)
                 .map_err(|e| e.to_string())?
                 .ok_or("there is no CA in that CRISOL_HOME")?;
             if !confirm(&format!(
@@ -102,7 +104,7 @@ fn run() -> Result<(), String> {
             );
         }
         "remove-stale" => {
-            let ca = load_ca(&paths, now)
+            let ca = load_ca(&paths, &WindowsPrivateDirs, now)
                 .map_err(|e| e.to_string())?
                 .ok_or("there is no CA in that CRISOL_HOME")?;
             if !confirm("This removes older Crisol CAs (never the current one).") {

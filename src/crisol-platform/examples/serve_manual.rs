@@ -30,7 +30,9 @@ use crisol_core::service::ServiceState;
 use crisol_core::sites::{set_secure, SitesFile};
 use crisol_core::trust::TrustStore;
 use crisol_core::web::{plan_web, WebStack};
-use crisol_platform::{JobObjectSupervisor, WindowsPortProbe, WindowsTrustStore};
+use crisol_platform::{
+    JobObjectSupervisor, WindowsPortProbe, WindowsPrivateDirs, WindowsTrustStore,
+};
 
 const HTTP: u16 = 19080;
 const HTTPS: u16 = 19443;
@@ -107,6 +109,7 @@ fn run() -> Result<(), String> {
         nginx,
         Arc::new(JobObjectSupervisor::new()),
         Arc::new(WindowsPortProbe::new()),
+        Arc::new(WindowsPrivateDirs),
     );
     let applied = stack
         .apply(&plan, Instant::now())
@@ -128,7 +131,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let ca = load_ca(&paths, SystemTime::now())
+    let ca = load_ca(&paths, &WindowsPrivateDirs, SystemTime::now())
         .map_err(|e| e.to_string())?
         .ok_or("no CA")?;
     let trusted = WindowsTrustStore::current_user_root()

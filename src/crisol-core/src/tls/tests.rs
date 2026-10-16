@@ -9,6 +9,7 @@ use x509_parser::extensions::ParsedExtension;
 
 use super::*;
 use crate::ca::{create_ca, ensure_ca};
+use crate::paths::fake::FakePrivateDirs;
 
 fn now() -> SystemTime {
     SystemTime::now()
@@ -25,7 +26,9 @@ fn hosts() -> Vec<String> {
 fn world() -> (TempDir, CrisolPaths, LocalCa) {
     let tmp = TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
-    let ca = ensure_ca(&paths, "test", now()).unwrap().ca;
+    let ca = ensure_ca(&paths, &FakePrivateDirs::new(), "test", now())
+        .unwrap()
+        .ca;
     (tmp, paths, ca)
 }
 
@@ -306,7 +309,7 @@ fn a_site_the_ca_cannot_issue_for_is_refused_and_nothing_is_written() {
 fn a_new_ca_makes_the_old_certificate_stale() {
     let (_tmp, paths, ca) = world();
     issue_for(&paths, &ca, &hosts(), now());
-    let new_ca = create_ca(&paths, "test", now(), true).unwrap();
+    let new_ca = create_ca(&paths, &FakePrivateDirs::new(), "test", now(), true).unwrap();
     let again = issue_for(&paths, &new_ca, &hosts(), now());
     assert_eq!(again.changed, Some(Renewal::OtherCa));
     verify(&new_ca, &leaf_der(&paths), "app.test", now()).unwrap();

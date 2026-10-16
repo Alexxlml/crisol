@@ -17,6 +17,18 @@
 //! - Its name carries a short id taken from its public key (`Crisol Local CA 7F3A9C`), so it can
 //!   be told apart in a trust store and removed without doubt.
 //!
+//! Nothing trusts a CA that has not passed [`inspect`]'s checks, and nothing builds one without
+//! them: a [`LocalCa`] can only come from [`ensure_ca`], [`load_ca`] or [`create_ca`], which
+//! require, every time:
+//!
+//! - that `certs/` and the CA files are **not writable by other accounts** (the folder is made
+//!   with [`PrivateDirs`] when it does not exist, even if the home was not made private yet,
+//!   ADR-0008); another account that can write there could swap in a CA of its own;
+//! - that the certificate is **self-signed**, a CA with `pathlen = 0` and `keyCertSign`, with
+//!   **critical** name constraints that only permit DNS names reserved for local use
+//!   ([`is_special_use`]), `127.0.0.0/8` and `::1`, and no other kind of name. A CA without
+//!   them could impersonate any site for the browser, PHP and Node.
+//!
 //! A CA that is already there is never replaced silently: a missing half, a key that does not
 //! belong to the certificate, or a certificate that is not a CA is an error, because deleting
 //! the key would leave the old CA trusted by the system with nothing able to use it. A new CA is
@@ -39,7 +51,30 @@ use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
-use crate::paths::CrisolPaths;
+use crate::paths::{CrisolPaths, PrivateDirs};
+
+/// The names (and everything under them) reserved for local use, the only ones the CA may be
+/// restricted to: RFC 6761 (`test`, `localhost`, `example`, `invalid`), RFC 6762 (`local`),
+/// RFC 8375 (`home.arpa`) and `internal` (ICANN reserved it for private use). Any other TLD
+/// could be a real public domain.
+pub const SPECIAL_USE: [&str; 7] = [
+    "test",
+    "localhost",
+    "example",
+    "invalid",
+    "local",
+    "internal",
+    "home.arpa",
+];
+
+/// Whether `name` is one of [`SPECIAL_USE`] or under one of them (`dev.test`).
+#[must_use]
+pub fn is_special_use(name: &str) -> bool {
+    let name = name.trim_matches('.').to_ascii_lowercase();
+    SPECIAL_USE
+        .iter()
+        .any(|d| name == *d || name.ends_with(&format!(".{d}")))
+}
 
 /// How long the CA is valid.
 const CA_VALIDITY_DAYS: i64 = 3650;
@@ -83,6 +118,19 @@ pub enum CaError {
     /// A CA exists and the request was to create one without replacing it.
     #[error("a local CA already exists in `certs/`")]
     AlreadyExists,
+    /// `certs/` or one of the CA files can be modified by other accounts of this computer.
+    #[error(
+        "`{}` can be modified by other accounts on this computer, so the local CA cannot be \
+         trusted. Remove write access for the other accounts on that folder (on Windows: \
+         `icacls \"{}\" /inheritance:r /grant:r \"%USERNAME%:(OI)(CI)F\" \"SYSTEM:(OI)(CI)F\" \
+         \"*S-1-5-32-544:(OI)(CI)F\"`), or move CRISOL_HOME to a private folder and make the CA again",
+        path.display(),
+        path.display()
+    )]
+    Exposed {
+        /// The folder or file that is open.
+        path: std::path::PathBuf,
+    },
     /// The CA cannot issue for this name (it was made for another TLD).
     #[error("the local CA cannot issue a certificate for `{0}`: make a new CA (it must be trusted again)")]
     NotCovered(String),
@@ -168,20 +216,73 @@ pub struct EnsuredCa {
 
 /// The CA in `certs/`, made if there is none. `tld` and `now` matter only when it is made.
 ///
-/// An existing CA is read and checked (pair, CA flag, validity) and returned untouched; see the
-/// module documentation for what is an error.
-pub fn ensure_ca(paths: &CrisolPaths, tld: &str, now: SystemTime) -> Result<EnsuredCa, CaError> {
-    match load_ca(paths, now)? {
+/// An existing CA is read and checked (privacy of `certs/`, pair, self-signed, constraints,
+/// validity) and returned untouched; see the module documentation for what is an error.
+pub fn ensure_ca(
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    tld: &str,
+    now: SystemTime,
+) -> Result<EnsuredCa, CaError> {
+    match load_ca(paths, dirs, now)? {
         Some(ca) => Ok(EnsuredCa { ca, created: false }),
         None => Ok(EnsuredCa {
-            ca: create_ca(paths, tld, now, false)?,
+            ca: create_ca(paths, dirs, tld, now, false)?,
             created: true,
         }),
     }
 }
 
+fn io_error(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> CaError {
+    let path = path.to_path_buf();
+    move |source| CaError::Io {
+        action,
+        path,
+        source,
+    }
+}
+
+/// Creates `certs/` private if it is not there (and the home, if Crisol is the one making it),
+/// whatever the state of the rest of the layout, and then checks that nothing is open.
+fn ensure_private_certs(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(), CaError> {
+    let certs = paths.certs_dir();
+    if !certs.exists() {
+        let home = paths.home();
+        if !home.exists() {
+            if let Some(parent) = home.parent() {
+                fs::create_dir_all(parent).map_err(io_error("cannot create", parent))?;
+            }
+            dirs.create_private_dir(home)
+                .map_err(io_error("cannot create", home))?;
+        }
+        dirs.create_private_dir(&certs)
+            .map_err(io_error("cannot create", &certs))?;
+    }
+    check_not_exposed(paths, dirs)
+}
+
+/// Refuses if `certs/` or a CA file that exists can be written by other accounts. Also catches
+/// a `certs/` that someone else replaced (the owner counts).
+fn check_not_exposed(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(), CaError> {
+    for path in [paths.certs_dir(), paths.ca_cert(), paths.ca_key()] {
+        if path.exists()
+            && dirs
+                .is_writable_by_others(&path)
+                .map_err(io_error("cannot check the permissions of", &path))?
+        {
+            return Err(CaError::Exposed { path });
+        }
+    }
+    Ok(())
+}
+
 /// Reads the CA, if there is one. `Ok(None)` when neither file exists.
-pub fn load_ca(paths: &CrisolPaths, now: SystemTime) -> Result<Option<LocalCa>, CaError> {
+pub fn load_ca(
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    now: SystemTime,
+) -> Result<Option<LocalCa>, CaError> {
+    check_not_exposed(paths, dirs)?;
     let (cert_path, key_path) = (paths.ca_cert(), paths.ca_key());
     let read = |path: &Path| match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -228,10 +329,12 @@ pub fn load_ca(paths: &CrisolPaths, now: SystemTime) -> Result<Option<LocalCa>, 
 /// both. The old CA, if it was trusted, stays in the trust store until it is removed there.
 pub fn create_ca(
     paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
     tld: &str,
     now: SystemTime,
     replace: bool,
 ) -> Result<LocalCa, CaError> {
+    ensure_private_certs(paths, dirs)?;
     if !replace && (paths.ca_cert().exists() || paths.ca_key().exists()) {
         return Err(CaError::AlreadyExists);
     }
@@ -343,31 +446,76 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>, CaError> {
     Ok(parsed.contents)
 }
 
-/// Reads the certificate and checks that it is a CA and that `key` is its key.
+/// Reads the certificate and checks everything the module documentation lists: it is the
+/// certificate of `key`, self-signed, a CA with `pathlen = 0` and `keyCertSign`, with critical
+/// name constraints that permit only local names.
 fn inspect(der: &[u8], key: &KeyPair) -> Result<CaInfo, CaError> {
     let invalid = |what: &str, e: &dyn fmt::Display| CaError::Invalid(format!("{what}: {e}"));
+    let refuse = |why: &str| CaError::Invalid(why.to_owned());
     let (_, cert) = X509Certificate::from_der(der).map_err(|e| invalid("the certificate", &e))?;
     if cert.public_key().subject_public_key.data.as_ref() != key.public_key_raw() {
         return Err(CaError::KeyMismatch);
     }
-    let is_ca = cert
+    if cert.issuer() != cert.subject() || cert.verify_signature(None).is_err() {
+        return Err(refuse("it is not self-signed"));
+    }
+    let basic = cert
         .basic_constraints()
         .map_err(|e| invalid("basic constraints", &e))?
-        .is_some_and(|b| b.value.ca);
-    if !is_ca {
+        .ok_or(CaError::NotACa)?;
+    if !basic.value.ca {
         return Err(CaError::NotACa);
     }
+    if basic.value.path_len_constraint != Some(0) {
+        return Err(refuse(
+            "its path length is not 0: it could sign other authorities",
+        ));
+    }
+    let may_sign = cert
+        .key_usage()
+        .map_err(|e| invalid("key usage", &e))?
+        .is_some_and(|u| u.value.key_cert_sign());
+    if !may_sign {
+        return Err(refuse("it may not sign certificates (no keyCertSign)"));
+    }
 
-    let (mut permitted_dns, mut permitted_ips) = (Vec::new(), Vec::new());
-    if let Some(constraints) = cert
+    let constraints = cert
         .name_constraints()
         .map_err(|e| invalid("name constraints", &e))?
-    {
-        for subtree in constraints.value.permitted_subtrees.iter().flatten() {
-            match &subtree.base {
-                GeneralName::DNSName(name) => permitted_dns.push((*name).to_ascii_lowercase()),
-                GeneralName::IPAddress(bytes) => permitted_ips.push(cidr(bytes)),
-                _ => {}
+        .ok_or_else(|| refuse("it has no name constraints: it could vouch for any site"))?;
+    if !constraints.critical {
+        return Err(refuse(
+            "its name constraints are not critical: a client may ignore them",
+        ));
+    }
+    let permitted = constraints
+        .value
+        .permitted_subtrees
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| refuse("its name constraints permit no names"))?;
+    let (mut permitted_dns, mut permitted_ips) = (Vec::new(), Vec::new());
+    for subtree in permitted {
+        match &subtree.base {
+            GeneralName::DNSName(name) if is_special_use(name) => {
+                permitted_dns.push((*name).to_ascii_lowercase());
+            }
+            GeneralName::DNSName(name) => {
+                return Err(CaError::Invalid(format!(
+                    "it may issue for `{name}`, which is not a name reserved for local use"
+                )));
+            }
+            GeneralName::IPAddress(bytes) if ip_is_local(bytes) => permitted_ips.push(cidr(bytes)),
+            GeneralName::IPAddress(bytes) => {
+                return Err(CaError::Invalid(format!(
+                    "it may issue for the addresses {}, which are not local",
+                    cidr(bytes)
+                )));
+            }
+            other => {
+                return Err(CaError::Invalid(format!(
+                    "it permits a kind of name Crisol never uses ({other:?})"
+                )));
             }
         }
     }
@@ -386,6 +534,21 @@ fn inspect(der: &[u8], key: &KeyPair) -> Result<CaInfo, CaError> {
         permitted_dns,
         permitted_ips,
     })
+}
+
+/// Whether an IP name constraint (address followed by its mask) stays inside `127.0.0.0/8` or
+/// is `::1/128`.
+fn ip_is_local(bytes: &[u8]) -> bool {
+    let ones = |mask: &[u8]| mask.iter().map(|b| b.count_ones()).sum::<u32>();
+    match bytes.len() {
+        8 => bytes[0] == 127 && ones(&bytes[4..]) >= 8 && bytes[4] == 0xFF,
+        32 => {
+            let mut address = [0_u8; 16];
+            address.copy_from_slice(&bytes[..16]);
+            Ipv6Addr::from(address) == Ipv6Addr::LOCALHOST && ones(&bytes[16..]) == 128
+        }
+        _ => false,
+    }
 }
 
 /// `address/prefix` from the bytes of an IP name constraint (address followed by its mask).
@@ -435,6 +598,32 @@ pub(crate) fn write_files(dir: &Path, files: &[(std::path::PathBuf, &str)]) -> R
             .map_err(|e| io("cannot write", path)(e.error))?;
     }
     Ok(())
+}
+
+/// Writes the copy of the CA certificate that Node is pointed at (`etc/node/ca.pem`), from a
+/// CA that has just been validated, and returns its path. The folder is made private when it
+/// does not exist, so the copy cannot be swapped while the rest of the home is still open.
+/// Nothing is written if the file already has exactly this content.
+pub fn write_node_ca(
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    ca: &LocalCa,
+) -> Result<std::path::PathBuf, CaError> {
+    let path = paths
+        .node_ca()
+        .map_err(|e| CaError::Invalid(e.to_string()))?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    if !dir.exists() {
+        if let Some(etc) = dir.parent() {
+            fs::create_dir_all(etc).map_err(io_error("cannot create", etc))?;
+        }
+        dirs.create_private_dir(dir)
+            .map_err(io_error("cannot create", dir))?;
+    }
+    if fs::read_to_string(&path).ok().as_deref() != Some(ca.cert_pem()) {
+        write_files(dir, &[(path.clone(), ca.cert_pem())])?;
+    }
+    Ok(path)
 }
 
 #[cfg(test)]

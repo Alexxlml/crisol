@@ -30,9 +30,20 @@ use crisol_core::phpini::{write_php_ini, PhpIniSettings};
 use crisol_core::project::TrustAllOwners;
 use crisol_core::sites::SitesFile;
 use crisol_core::web::{plan_web, WebEvent, WebStack};
-use crisol_platform::{JobObjectSupervisor, WindowsPortProbe};
+use crisol_platform::{JobObjectSupervisor, WindowsPortProbe, WindowsPrivateDirs};
 
 const HTTP: u16 = 19080;
+const HTTPS: u16 = 19443;
+
+/// The tests of this file use the same ports, so they run one at a time (cargo runs the tests
+/// of a file in parallel).
+static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn ports() -> std::sync::MutexGuard<'static, ()> {
+    PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn install_from_downloads(paths: &CrisolPaths, service: &str, version: &str) -> PathBuf {
     let folder = PathBuf::from(std::env::var_os("CRISOL_TEST_DOWNLOADS").expect("set it"));
@@ -118,6 +129,7 @@ impl Run {
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 7.4.33, PHP 8.4.26 and Nginx 1.28.3 (Windows)"]
 #[allow(clippy::too_many_lines)]
 fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_others() {
+    let _ports = ports();
     let tmp = tempfile::TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
@@ -151,6 +163,7 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
         nginx_dir,
         Arc::new(JobObjectSupervisor::new()),
         Arc::new(WindowsPortProbe::new()),
+        Arc::new(WindowsPrivateDirs),
     );
     let mut run = Run {
         stack,
@@ -323,7 +336,7 @@ fn text(output: &std::process::Output) -> String {
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 7.4.33 and Nginx 1.28.3, and curl (Windows)"]
 #[allow(clippy::too_many_lines)]
 fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca() {
-    const HTTPS: u16 = 19443;
+    let _ports = ports();
     let tmp = tempfile::TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
@@ -368,6 +381,7 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             nginx_dir,
             Arc::new(JobObjectSupervisor::new()),
             Arc::new(WindowsPortProbe::new()),
+            Arc::new(WindowsPrivateDirs),
         ),
         events: Vec::new(),
     };
@@ -445,13 +459,14 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             before.starts_with("FAIL:"),
             "PHP must not trust it yet: {before}"
         );
-        let local = crisol_core::ca::load_ca(&paths, std::time::SystemTime::now())
-            .unwrap()
-            .unwrap();
+        let local =
+            crisol_core::ca::load_ca(&paths, &WindowsPrivateDirs, std::time::SystemTime::now())
+                .unwrap()
+                .unwrap();
         crisol_core::cacert::write_php_cacert_with(
             &paths,
             &crisol_core::cacert::NoRoots,
-            Some(local.cert_der()),
+            Some(&local),
         )
         .unwrap();
         assert_eq!(php(&script), "secure https=on PHP 7.4.33");

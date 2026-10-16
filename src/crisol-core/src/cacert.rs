@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 
+use crate::ca::LocalCa;
 use crate::manage::list_installed;
 use crate::paths::CrisolPaths;
 use crate::phpini::{write_if_changed, PhpIniError};
@@ -224,7 +225,9 @@ pub fn write_php_cacert(
     write_php_cacert_with(paths, system, None)
 }
 
-/// [`write_php_cacert`] plus Crisol's own local CA (`certs/ca.pem`, ADR-0013), given as DER.
+/// [`write_php_cacert`] plus Crisol's own local CA (`certs/ca.pem`, ADR-0013). A [`LocalCa`]
+/// has already been validated (privacy of `certs/`, constraints), which is why nothing else
+/// can be given here.
 ///
 /// The local CA goes in **whatever the system store says**: PHP must trust `https://shop.test`
 /// even if the user never installed the CA in Windows (or declined), and it is not filtered
@@ -232,7 +235,7 @@ pub fn write_php_cacert(
 pub fn write_php_cacert_with(
     paths: &CrisolPaths,
     system: &dyn RootCertificates,
-    local_ca_der: Option<&[u8]>,
+    local_ca: Option<&LocalCa>,
 ) -> Result<Option<WrittenCacert>, PhpIniError> {
     let Some(bundle) = list_installed(paths)
         .map_err(|e| PhpIniError::Io {
@@ -269,7 +272,7 @@ pub fn write_php_cacert_with(
         .map(|r| r.der)
         .collect();
     let omitted = total - fit.len();
-    fit.extend(local_ca_der.map(<[u8]>::to_vec));
+    fit.extend(local_ca.map(|ca| ca.cert_der().to_vec()));
     let merged = merge_bundle(&text, &fit);
     if merged.skipped > 0 {
         warnings.push(format!(
