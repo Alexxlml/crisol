@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::ca::is_special_use;
+use crate::hosts::{clean_names, HostsError, HostsManager, HostsManagerError};
 
 pub mod fake;
 
@@ -311,6 +312,9 @@ pub enum DnsError {
     /// The socket could not be bound.
     #[error("could not listen for DNS queries: {0}")]
     Bind(io::Error),
+    /// The `hosts` file or the names for it are refused.
+    #[error(transparent)]
+    Hosts(HostsError),
     /// The table could not be read or changed.
     #[error("name resolution policy: {0}")]
     Policy(#[from] io::Error),
@@ -386,7 +390,7 @@ pub fn disable(policy: &dyn NrptPolicy, suffix: &str) -> Result<bool, DnsError> 
 
 // ---- the elevated helper ---------------------------------------------------------------
 
-/// The only two things the elevated helper does. It is given them as command-line arguments,
+/// The only four things the elevated helper does. It is given them as command-line arguments,
 /// so what it accepts is what [`ElevatedOp::parse`] accepts, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElevatedOp {
@@ -402,6 +406,13 @@ pub enum ElevatedOp {
         /// The suffix, without dots.
         suffix: String,
     },
+    /// `hosts-set <name>...`: the managed block of `hosts` holds exactly these names.
+    HostsSet {
+        /// Clean, sorted names (see [`crate::hosts::clean_names`]).
+        names: Vec<String>,
+    },
+    /// `hosts-clear`: the managed block of `hosts` is taken out.
+    HostsClear,
 }
 
 impl ElevatedOp {
@@ -422,6 +433,10 @@ impl ElevatedOp {
             ["nrpt-remove", suffix] => Ok(Self::NrptRemove {
                 suffix: clean_suffix(suffix)?,
             }),
+            ["hosts-set", names @ ..] if !names.is_empty() => Ok(Self::HostsSet {
+                names: clean_names(names).map_err(|e| DnsError::InvalidSuffix(e.to_string()))?,
+            }),
+            ["hosts-clear"] => Ok(Self::HostsClear),
             _ => Err(DnsError::InvalidSuffix(args.join(" "))),
         }
     }
@@ -434,15 +449,29 @@ impl ElevatedOp {
                 vec!["nrpt-add".to_owned(), suffix.clone(), server.to_string()]
             }
             Self::NrptRemove { suffix } => vec!["nrpt-remove".to_owned(), suffix.clone()],
+            Self::HostsSet { names } => std::iter::once("hosts-set".to_owned())
+                .chain(names.iter().cloned())
+                .collect(),
+            Self::HostsClear => vec!["hosts-clear".to_owned()],
         }
     }
 
-    /// Does the operation against `policy`, with the same rules as [`enable`]/[`disable`].
-    pub fn apply(&self, policy: &dyn NrptPolicy) -> Result<(), DnsError> {
+    /// Does the operation against `policy` or `hosts`, with the same rules as
+    /// [`enable`]/[`disable`] and [`HostsManager`].
+    pub fn apply(&self, policy: &dyn NrptPolicy, hosts: &dyn HostsManager) -> Result<(), DnsError> {
         match self {
             Self::NrptAdd { suffix, server } => enable(policy, suffix, *server).map(|_| ()),
             Self::NrptRemove { suffix } => disable(policy, suffix).map(|_| ()),
+            Self::HostsSet { names } => hosts.set(names).map(|_| ()).map_err(hosts_error),
+            Self::HostsClear => hosts.clear().map_err(hosts_error),
         }
+    }
+}
+
+fn hosts_error(error: HostsManagerError) -> DnsError {
+    match error {
+        HostsManagerError::Io(e) => DnsError::Policy(e),
+        HostsManagerError::Hosts(e) => DnsError::Hosts(e),
     }
 }
 

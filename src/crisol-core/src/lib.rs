@@ -8,6 +8,7 @@ pub mod constraint;
 pub mod dns;
 pub mod edit;
 pub mod fetch;
+pub mod hosts;
 pub mod install;
 pub mod log;
 pub mod manage;

@@ -9,6 +9,8 @@
 //! cargo run -p crisol-platform --example dns_manual -- enable     (UAC prompt)
 //! Resolve-DnsName shop.test        (in another terminal; also try a browser and curl)
 //! cargo run -p crisol-platform --example dns_manual -- disable    (UAC prompt)
+//! cargo run -p crisol-platform --example dns_manual -- hosts-set   (UAC prompt; the fallback)
+//! cargo run -p crisol-platform --example dns_manual -- hosts-clear (UAC prompt)
 //! ```
 //!
 //! `enable` and `disable` only ever add or remove the rule marked `Crisol` for the suffix; a
@@ -19,7 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crisol_core::dns::{disable, enable, status, DnsServer, Zone, DEFAULT_DNS_ADDR};
-use crisol_platform::ElevatedNrpt;
+use crisol_core::hosts::HostsManager;
+use crisol_platform::{ElevatedHosts, ElevatedNrpt};
 
 const SUFFIX: &str = "test";
 
@@ -38,7 +41,8 @@ fn run() -> Result<(), String> {
         .nth(2)
         .map(|dir| dir.join("crisol-elevate.exe"))
         .ok_or("no target directory")?;
-    let table = ElevatedNrpt::new(helper);
+    let table = ElevatedNrpt::new(helper.clone());
+    let hosts = ElevatedHosts::new(helper);
     let server = IpAddr::V4(DEFAULT_DNS_ADDR);
     match command.as_str() {
         "status" => println!("{:#?}", status(&table, SUFFIX).map_err(|e| e.to_string())?),
@@ -50,6 +54,22 @@ fn run() -> Result<(), String> {
             "removed: {}",
             disable(&table, SUFFIX).map_err(|e| e.to_string())?
         ),
+        "hosts-set" => {
+            let conflicts = hosts
+                .set(&["manual-check.test".to_owned()])
+                .map_err(|e| e.to_string())?;
+            println!(
+                "block names: {:?}, conflicts: {conflicts:?}",
+                hosts.names().map_err(|e| e.to_string())?
+            );
+        }
+        "hosts-clear" => {
+            hosts.clear().map_err(|e| e.to_string())?;
+            println!(
+                "block names: {:?}",
+                hosts.names().map_err(|e| e.to_string())?
+            );
+        }
         "serve" => {
             let zone = Zone::new(SUFFIX).map_err(|e| e.to_string())?;
             let dns =
@@ -62,7 +82,11 @@ fn run() -> Result<(), String> {
             stop.store(true, Ordering::Relaxed);
             println!("answered {} queries", handle.join().unwrap_or(0));
         }
-        _ => return Err("use: status | serve | enable | disable".to_owned()),
+        _ => {
+            return Err(
+                "use: status | serve | enable | disable | hosts-set | hosts-clear".to_owned(),
+            )
+        }
     }
     Ok(())
 }

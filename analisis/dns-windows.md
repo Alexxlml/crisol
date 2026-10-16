@@ -30,7 +30,7 @@ Qué hay que hacer para que `shop.test` llegue a `127.0.0.1` sin que el usuario 
 - **Necesita administrador en cada cambio** del bloque (cada sitio nuevo o quitado), porque `C:\Windows\System32\drivers\etc\hosts` solo lo escribe un administrador. Eso rompe el flujo «`crisol park` y listo» si se pide UAC cada vez. Con la opción (a) el administrador es solo la instalación.
 - No hay comodines: `api.shop.test` y `www.shop.test` son líneas distintas; hay que enumerar cada nombre.
 - Ventajas: funciona en todas partes, sin daemon, sin GPO, sin puerto 53, y todos los clientes lo respetan (incluida `nslookup`, que lo ignora igualmente, y los navegadores).
-- Riesgos: el archivo es compartido con otras herramientas y con antivirus que lo vigilan (algunos lo bloquean o lo restauran); un error al escribir lo puede dejar roto. Reglas: leer, reemplazar **solo** lo que hay entre los delimitadores, conservar el resto byte a byte (finales de línea y codificación), escribir de forma atómica (archivo temporal en la misma carpeta + reemplazo) y dejar copia previa en `state/` antes del primer cambio.
+- Riesgos: el archivo es compartido con otras herramientas y con antivirus que lo vigilan (algunos lo bloquean o lo restauran); un error al escribir lo puede dejar roto. Reglas: leer, reemplazar **solo** lo que hay entre los delimitadores, conservar el resto byte a byte (finales de línea y codificación), escribir en el sitio (un reemplazo por archivo temporal perdería los permisos del original) y dejar una copia previa junto al archivo (`hosts.crisol-bak`) antes del primer cambio, que se borra al quitar el bloque.
 
 ## 4. Comparación
 

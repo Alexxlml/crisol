@@ -10,7 +10,7 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 ## Decisión
 
 1. **Primaria: DNS local + NRPT.** El daemon responde A=`127.0.0.1` y AAAA=`::1` para el sufijo configurado, escuchando en una IP de loopback dedicada (`127.77.0.53:53`, que se enlaza sin elevar; la NRPT solo acepta IP sin puerto). La regla `Add-DnsClientNrptRule -Namespace ".<tld>" -NameServers 127.77.0.53` se crea **una vez** en la instalación.
-2. **Respaldo: bloque gestionado en `hosts`** entre `# BEGIN CRISOL` y `# END CRISOL`, con líneas IPv4 e IPv6 por nombre, escritura atómica, copia previa y sin tocar nada fuera del bloque.
+2. **Respaldo: bloque gestionado en `hosts`** entre `# BEGIN CRISOL` y `# END CRISOL`, con líneas IPv4 e IPv6 por nombre, copia previa y sin tocar nada fuera del bloque.
 3. **La parte con administrador se aísla** en un ejecutable/operación mínima (`crisol-elevate`) que solo sabe: crear/quitar la regla NRPT del sufijo, y añadir/reemplazar/quitar el bloque de `hosts`. Nada de lógica de Crisol dentro; recibe argumentos fijos y valida todo (sufijo en la lista de TLD de uso especial del ADR-0013, IP solo loopback, nombres solo de la lista de sitios). El resto del producto nunca corre elevado.
 4. **La lógica no está en la plataforma:** el formato del bloque de `hosts` y la generación de respuestas DNS son puras y viven en `crisol-core`; leer/escribir `hosts`, la NRPT y la elevación van en `crisol-platform` detrás de un trait con doble para pruebas.
 5. **Sin permisos por defecto:** hasta que el usuario ejecute el paso de instalación con administrador, no se toca nada del sistema.
@@ -36,3 +36,10 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 - `crisol-platform::nrpt`: `PowerShellNrpt` (cmdlets `DnsClient`; la lectura no necesita administrador, medido) y `ElevatedNrpt` (lee directo y cada cambio lanza el helper con UAC por `ShellExecuteExW` y `runas`).
 - `crisol-elevate`: ejecutable mínimo, `nrpt-add <sufijo> <ip>` / `nrpt-remove <sufijo>`; códigos de salida 0 hecho, 2 rechazado, 1 falló.
 - Sin dependencias nuevas (solo la feature `Win32_UI_Shell` de `windows`). Prueba manual: `crisol-platform/examples/dns_manual.rs`.
+
+## Notas de implementación (F7.3)
+
+- `crisol-core::hosts` (texto puro): `apply_block` / `remove_block` / `block_names`. Respeta los finales de línea del archivo, deja intacto todo lo de fuera del bloque, rechaza un bloque dañado (sin `END`, `END` sin `BEGIN`, dos bloques) en lugar de repararlo, valida los nombres (mismos sufijos de uso especial, solo caracteres de host) y devuelve como `Conflict` los nombres que otra herramienta ya define fuera del bloque, sin tocarlos (ADR-0007). `remove_block` deja el archivo byte por byte como estaba, salvo que un archivo sin salto de línea final conserva el que se añadió.
+- `HostsManager` (`names`/`set`/`clear`) con `DirectHosts<F: HostsFile>` para el helper y las pruebas; solo escribe si el contenido cambia.
+- `crisol-platform::hosts_file`: `FileHosts` (cualquier ruta; `system()` es `drivers\etc\hosts`), escritura **en el sitio** para conservar los permisos del original, con copia `hosts.crisol-bak` antes del primer cambio, borrada al quitar el bloque; un archivo que no es UTF-8 se rechaza sin tocarlo. `ElevatedHosts` valida y comprueba el archivo **antes** de pedir el UAC y lanza el helper solo si hay un cambio real. `flush_dns` (`ipconfig /flushdns`) lo llama el helper tras cambiar `hosts`.
+- `crisol-elevate` suma `hosts-set <nombre>...` y `hosts-clear` (cuatro operaciones en total).

@@ -5,6 +5,8 @@ mod console;
 #[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
+mod hosts_file;
+#[cfg(windows)]
 mod job_object;
 #[cfg(windows)]
 mod nrpt;
@@ -23,6 +25,8 @@ mod user_path;
 pub use console::survive_ctrl_c;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
+#[cfg(windows)]
+pub use hosts_file::{flush_dns, ElevatedHosts, FileHosts};
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]

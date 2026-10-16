@@ -152,7 +152,7 @@ impl NrptPolicy for ElevatedNrpt {
     }
 }
 
-fn run_elevated_op(helper: &Path, op: &ElevatedOp) -> io::Result<()> {
+pub(crate) fn run_elevated_op(helper: &Path, op: &ElevatedOp) -> io::Result<()> {
     match run_elevated(helper, &op.to_args())? {
         0 => Ok(()),
         code => Err(io::Error::other(format!(

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use super::fake::FakeNrpt;
 use super::*;
+use crate::hosts::{DirectHosts, MemoryHosts};
 
 const LOOPBACK: IpAddr = IpAddr::V4(DEFAULT_DNS_ADDR);
 
@@ -334,12 +335,17 @@ fn the_helper_accepts_exactly_two_operations() {
 fn applying_an_operation_follows_the_same_rules_as_enable_and_disable() {
     let table = FakeNrpt::with(vec![foreign_rule()]);
     let add = ElevatedOp::parse(&["nrpt-add", "test", "127.77.0.53"]).unwrap();
-    assert!(add.apply(&table).is_err(), "the other tool's rule stands");
+    let file = MemoryHosts::new("");
+    let hosts = DirectHosts::new(&file);
+    assert!(
+        add.apply(&table, &hosts).is_err(),
+        "the other tool's rule stands"
+    );
     let free = FakeNrpt::new();
-    add.apply(&free).unwrap();
+    add.apply(&free, &hosts).unwrap();
     ElevatedOp::parse(&["nrpt-remove", "test"])
         .unwrap()
-        .apply(&free)
+        .apply(&free, &hosts)
         .unwrap();
     assert_eq!(free.current(), Vec::new());
 }
@@ -379,4 +385,58 @@ fn powershell_json_is_read_as_an_object_an_array_or_nothing() {
     );
     assert!(rules.iter().all(|r| !r.is_ours()));
     assert!(parse_nrpt_json("not json").is_err());
+}
+
+#[test]
+fn the_helper_also_edits_the_hosts_block_and_only_that() {
+    let set = ElevatedOp::parse(&["hosts-set", "b.test", "A.test", "a.test"]).unwrap();
+    assert_eq!(
+        set,
+        ElevatedOp::HostsSet {
+            names: vec!["a.test".to_owned(), "b.test".to_owned()]
+        }
+    );
+    assert_eq!(ElevatedOp::parse(&set.to_args()).unwrap(), set);
+    assert_eq!(
+        ElevatedOp::parse(&["hosts-clear"]).unwrap(),
+        ElevatedOp::HostsClear
+    );
+    for bad in [
+        vec!["hosts-set"],
+        vec!["hosts-set", "example.com"],
+        vec!["hosts-set", "a.test", "evil.com"],
+        vec!["hosts-set", "a.test;calc"],
+        vec!["hosts-clear", "a.test"],
+    ] {
+        assert!(ElevatedOp::parse(&bad).is_err(), "{bad:?}");
+    }
+
+    let file = MemoryHosts::new(
+        "127.0.0.1 localhost
+",
+    );
+    let hosts = DirectHosts::new(&file);
+    let table = FakeNrpt::new();
+    set.apply(&table, &hosts).unwrap();
+    assert!(file.content().contains("127.0.0.1 a.test"));
+    assert_eq!(table.writes(), 0);
+    ElevatedOp::HostsClear.apply(&table, &hosts).unwrap();
+    assert_eq!(
+        file.content(),
+        "127.0.0.1 localhost
+"
+    );
+
+    // A damaged file is an error from the helper, and stays as it was.
+    let damaged = MemoryHosts::new(
+        "# BEGIN CRISOL
+",
+    );
+    let error = set.apply(&table, &DirectHosts::new(&damaged)).unwrap_err();
+    assert!(matches!(error, DnsError::Hosts(_)), "{error}");
+    assert_eq!(
+        damaged.content(),
+        "# BEGIN CRISOL
+"
+    );
 }
