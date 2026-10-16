@@ -107,7 +107,11 @@ pub enum CaError {
         missing: &'static str,
     },
     /// The key is not the one of the certificate.
-    #[error("`ca.key` is not the key of `ca.pem`")]
+    #[error(
+        "`ca.key` is not the key of `ca.pem`. If a run of Crisol was interrupted while making the \
+         CA, remove both files and make a new one (it must be trusted again); if not, somebody \
+         changed one of them"
+    )]
     KeyMismatch,
     /// The certificate is not a CA.
     #[error("`ca.pem` is not a certificate authority")]

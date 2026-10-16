@@ -1,6 +1,6 @@
 //! The certificate for the sites (F6.2, ADR-0013).
 //!
-//! One wildcard certificate serves every site, signed by the local CA ([`crate::ca`]):
+//! One certificate serves every secured site, signed by the local CA ([`crate::ca`]):
 //!
 //! ```text
 //! certs/sites.pem   # the certificate Nginx sends (the end certificate only)

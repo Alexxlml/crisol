@@ -23,14 +23,14 @@ server {
         log_not_found off;
     }
 
-    # Windows ignores the case of a name and a trailing dot or space, so `.php` is
-    # matched without regard to case and with those endings: `/wp-config.PHP` and
-    # `/wp-config.php.` run the script, they are never sent as text.
     # Hidden files (.env, .git…) are never served.
     location ~ /\.(?!well-known) {
         deny all;
     }
 
+    # Windows ignores the case of a name and a trailing dot or space, so `.php` is
+    # matched without regard to case and with those endings: `/wp-config.PHP` and
+    # `/wp-config.php.` run the script, they are never sent as text.
     location ~* "\.php[. ]*$" {
         try_files $uri =404;
         include "<home>/bin/nginx/1.28.3/conf/fastcgi_params";

@@ -394,6 +394,11 @@ fn rule_label(rule: DocRoot) -> &'static str {
     }
 }
 
+const PHP_NOTE: &str =
+    "    # Windows ignores the case of a name and a trailing dot or space, so `.php` is\n\
+     \x20   # matched without regard to case and with those endings: `/wp-config.PHP` and\n\
+     \x20   # `/wp-config.php.` run the script, they are never sent as text.\n";
+
 fn render_site(
     input: &NginxInput<'_>,
     entry: &NginxSite<'_>,
@@ -436,6 +441,11 @@ fn render_site(
                  location ~* \"\\.php[. ]*$\" {\n        return 503;\n    }\n"
             .to_owned(),
     };
+
+    // Windows ignores the case of a name and a trailing dot or space, so `.php` is matched
+    // without regard to case and with those endings: `/wp-config.PHP` and `/wp-config.php.` run
+    // the script, they are never sent as text.
+    let php = format!("{PHP_NOTE}{php}");
 
     // A secured site listens with TLS, and its plain HTTP block only redirects to it.
     let (listen, redirect) = match input.tls {
@@ -486,9 +496,6 @@ fn render_site(
          \x20       try_files $uri $uri/ /index.php?$query_string;\n\
          \x20   }}\n\n\
          \x20   location = /favicon.ico {{\n        access_log off;\n        log_not_found off;\n    }}\n\n\
-         \x20   # Windows ignores the case of a name and a trailing dot or space, so `.php` is\n\
-         \x20   # matched without regard to case and with those endings: `/wp-config.PHP` and\n\
-         \x20   # `/wp-config.php.` run the script, they are never sent as text.\n\
          \x20   # Hidden files (.env, .git…) are never served.\n\
          \x20   location ~ /\\.(?!well-known) {{\n        deny all;\n    }}\n\n\
          {php}\n\

@@ -285,6 +285,7 @@ name = "crisol-platform"
 version = "0.1.0"
 dependencies = [
  "crisol-core",
+ "rcgen",
  "tempfile",
  "windows",
 ]
