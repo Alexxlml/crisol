@@ -444,7 +444,10 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
         // PHP's cURL: refuses the site until the local CA is in `cacert.pem`, then accepts it,
         // without the system store being involved (ADR-0013).
         let script = format!(
-            "$c = curl_init('{url}/v.php'); curl_setopt_array($c, [CURLOPT_RESOLVE =>              ['secure.test:{HTTPS}:127.0.0.1'], CURLOPT_RETURNTRANSFER => true,              CURLOPT_TIMEOUT => 15]); $b = curl_exec($c);              echo $b === false ? 'FAIL: ' . curl_error($c) : $b;"
+            "$c = curl_init('{url}/v.php'); curl_setopt_array($c, [CURLOPT_RESOLVE => \
+             ['secure.test:{HTTPS}:127.0.0.1'], CURLOPT_RETURNTRANSFER => true, \
+             CURLOPT_TIMEOUT => 15]); $b = curl_exec($c); \
+             echo $b === false ? 'FAIL: ' . curl_error($c) : $b;"
         );
         let php = |script: &str| {
             let output = std::process::Command::new(php_dir.join("php.exe"))

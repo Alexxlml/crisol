@@ -124,7 +124,9 @@ pub enum CaError {
     AlreadyExists,
     /// The TLD is not one reserved for local use, so no CA is made for it.
     #[error(
-        "`.{0}` is not a name reserved for local use (test, localhost, example, invalid, local,          internal, home.arpa): a local CA is not made for it, because it could vouch for real          public domains. Its sites are served over HTTP; use a TLD such as `.test` for HTTPS"
+        "`.{0}` is not a name reserved for local use (test, localhost, example, invalid, local, \
+         internal, home.arpa): a local CA is not made for it, because it could vouch for real \
+         public domains. Its sites are served over HTTP; use a TLD such as `.test` for HTTPS"
     )]
     TldNotSpecialUse(String),
     /// `certs/` or one of the CA files can be modified by other accounts of this computer.
@@ -273,13 +275,21 @@ fn ensure_private_certs(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(
 /// Refuses if `certs/` or a CA file that exists can be written by other accounts. Also catches
 /// a `certs/` that someone else replaced (the owner counts).
 fn check_not_exposed(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(), CaError> {
-    for path in [paths.certs_dir(), paths.ca_cert(), paths.ca_key()] {
+    check_paths_not_exposed(dirs, &[paths.certs_dir(), paths.ca_cert(), paths.ca_key()])
+}
+
+/// Refuses if any of these paths that exists can be written by other accounts.
+fn check_paths_not_exposed(
+    dirs: &dyn PrivateDirs,
+    list: &[std::path::PathBuf],
+) -> Result<(), CaError> {
+    for path in list {
         if path.exists()
             && dirs
-                .is_writable_by_others(&path)
-                .map_err(io_error("cannot check the permissions of", &path))?
+                .is_writable_by_others(path)
+                .map_err(io_error("cannot check the permissions of", path))?
         {
-            return Err(CaError::Exposed { path });
+            return Err(CaError::Exposed { path: path.clone() });
         }
     }
     Ok(())
@@ -614,7 +624,9 @@ pub(crate) fn write_files(dir: &Path, files: &[(std::path::PathBuf, &str)]) -> R
 
 /// Writes the copy of the CA certificate that Node is pointed at (`etc/node/ca.pem`), from a
 /// CA that has just been validated, and returns its path. The folder is made private when it
-/// does not exist, so the copy cannot be swapped while the rest of the home is still open.
+/// does not exist, so the copy cannot be swapped while the rest of the home is still open; when
+/// the folder or the file already exist they get the same check as `certs/`, and open to other
+/// accounts means [`CaError::Exposed`] and nothing is written (review of phase 6, V1).
 /// Nothing is written if the file already has exactly this content.
 pub fn write_node_ca(
     paths: &CrisolPaths,
@@ -625,7 +637,9 @@ pub fn write_node_ca(
         .node_ca()
         .map_err(|e| CaError::Invalid(e.to_string()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    if !dir.exists() {
+    if dir.exists() {
+        check_paths_not_exposed(dirs, &[dir.to_path_buf(), path.clone()])?;
+    } else {
         if let Some(etc) = dir.parent() {
             fs::create_dir_all(etc).map_err(io_error("cannot create", etc))?;
         }

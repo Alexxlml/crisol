@@ -272,7 +272,9 @@ impl fmt::Display for ConfigWarning {
             }
             Self::PublicTld(tld) => write!(
                 f,
-                "`sites.tld = \"{tld}\"` is not reserved for local use (test, localhost, example,                  invalid, local, internal, home.arpa): it can collide with real domains, and no                  HTTPS is offered for it"
+                "`sites.tld = \"{tld}\"` is not reserved for local use (test, localhost, example, \
+                 invalid, local, internal, home.arpa): it can collide with real domains, and no \
+                 HTTPS is offered for it"
             ),
             Self::ExclusiveServices { first, second } => {
                 write!(
@@ -899,5 +901,12 @@ tld = \"{tld}\"
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn the_public_tld_warning_reads_as_one_sentence() {
+        let text = ConfigWarning::PublicTld("dev".to_owned()).to_string();
+        assert!(!text.contains("  "), "{text}");
+        assert!(text.contains("example, invalid, local, internal"), "{text}");
     }
 }

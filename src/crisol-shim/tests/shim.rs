@@ -895,3 +895,47 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     assert!(with.status.success(), "{}{}", stdout(&with), stderr(&with));
     assert!(stdout(&with).contains("psr/log"), "{}", stdout(&with));
 }
+
+/// Review of phase 6, V1: a copy of the CA that other accounts could have replaced is not given to
+/// Node. The folder is opened to "Authenticated Users" with `icacls`, like a drive root would,
+/// inside this test's own temporary folder.
+#[cfg(windows)]
+#[test]
+fn node_is_not_told_about_a_copy_other_accounts_can_modify() {
+    let rig = Rig::new();
+    rig.install("node", "22.23.3", &exe_name("node"));
+    let node = rig.shim("node");
+    let folder = rig.home.join("etc").join("node");
+    fs::create_dir_all(&folder).unwrap();
+    let ca = folder.join("ca.pem");
+    fs::write(&ca, "-----BEGIN CERTIFICATE-----\n").unwrap();
+    let seen = |output: &Output| echoed_var(output, "NODE_EXTRA_CA_CERTS");
+    assert_eq!(
+        PathBuf::from(seen(&rig.run(&node, &[]))),
+        ca,
+        "private: passed on"
+    );
+
+    let icacls = |args: &[&str]| {
+        let output = Command::new("icacls")
+            .arg(&folder)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "icacls failed");
+    };
+    icacls(&["/grant", "*S-1-5-11:(OI)(CI)M"]);
+    let open = rig.run(&node, &[]);
+    assert_eq!(seen(&open), "-", "open to other accounts: not passed on");
+    let warning = stderr(&open);
+    assert_eq!(warning.lines().count(), 1, "one line only: {warning}");
+    assert!(
+        warning.contains("other accounts") && warning.contains("icacls"),
+        "{warning}"
+    );
+    assert!(warning.contains("node"), "it names the path: {warning}");
+
+    // Closed again, it is passed on again.
+    icacls(&["/remove", "*S-1-5-11"]);
+    assert_eq!(PathBuf::from(seen(&rig.run(&node, &[]))), ca);
+}

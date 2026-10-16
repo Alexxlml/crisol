@@ -716,3 +716,70 @@ fn a_tld_under_a_special_use_name_is_fine() {
     assert!(made.ca.covers("dev.test") && made.ca.covers("shop.dev.test"));
     assert!(!made.ca.covers("dev"));
 }
+
+// ---- review of phase 6, V1: the copy for Node is checked like certs/ -------------------
+
+#[test]
+fn node_gets_no_copy_when_its_folder_or_file_is_open_to_other_accounts() {
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    let ca = ensure_ca(&paths, &dirs, "test", now()).unwrap().ca;
+    let path = write_node_ca(&paths, &dirs, &ca).unwrap();
+    let folder = path.parent().unwrap().to_path_buf();
+
+    // The folder was opened (or somebody else made it): nothing is written, and what is there
+    // is left alone.
+    fs::write(&path, "planted by somebody else").unwrap();
+    dirs.expose(&folder);
+    let error = write_node_ca(&paths, &dirs, &ca).err().unwrap();
+    assert!(
+        matches!(error, CaError::Exposed { ref path } if *path == folder),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "planted by somebody else"
+    );
+
+    // Only the file open: the same.
+    dirs.close(&folder);
+    dirs.expose(&path);
+    let error = write_node_ca(&paths, &dirs, &ca).err().unwrap();
+    assert!(
+        matches!(error, CaError::Exposed { path: ref p } if *p == path),
+        "{error}"
+    );
+
+    // Closed again, the good copy goes back.
+    dirs.close(&path);
+    write_node_ca(&paths, &dirs, &ca).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), ca.cert_pem());
+}
+
+// ---- review of phase 6, V2: no stretches of spaces inside messages ---------------------
+
+#[test]
+fn no_error_message_has_two_spaces_in_a_row() {
+    let errors = [
+        CaError::Invalid("x".to_owned()),
+        CaError::Incomplete {
+            present: "ca.pem",
+            missing: "ca.key",
+        },
+        CaError::KeyMismatch,
+        CaError::NotACa,
+        CaError::Expired,
+        CaError::AlreadyExists,
+        CaError::NotCovered("a.test".to_owned()),
+        CaError::TldNotSpecialUse("dev".to_owned()),
+        CaError::Exposed {
+            path: PathBuf::from("C:/Crisol/certs"),
+        },
+    ];
+    for error in errors {
+        let text = error.to_string();
+        assert!(!text.contains("  "), "{text}");
+    }
+    let text = CaError::TldNotSpecialUse("dev".to_owned()).to_string();
+    assert!(text.contains("local, internal, home.arpa"), "{text}");
+}

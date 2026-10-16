@@ -131,7 +131,9 @@ fn hidden_pin(
         Tool::Node => ("php", above.config.php?),
     };
     Some(format!(
-        "{} pins {other} = \"{pin}\", but the new {PROJECT_FILE} in this folder hides it (levels are not merged):          {other} here no longer follows that pin. Add `{other} = \"{pin}\"` to this folder's file to keep it",
+        "{} pins {other} = \"{pin}\", but the new {PROJECT_FILE} in this folder hides it \
+         (levels are not merged): {other} here no longer follows that pin. Add \
+         `{other} = \"{pin}\"` to this folder's file to keep it",
         above.file.display()
     ))
 }

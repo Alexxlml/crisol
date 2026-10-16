@@ -314,6 +314,9 @@ pub struct WebStack {
     running: bool,
     reload: Option<Reload>,
     reload_again: bool,
+    /// Whether the configuration promoted last listens with TLS: remembered here and in
+    /// `state/nginx/config.json`, instead of being deduced from the text of `nginx.conf`.
+    promoted_tls: Option<bool>,
 }
 
 impl std::fmt::Debug for WebStack {
@@ -360,6 +363,7 @@ impl WebStack {
             running: false,
             reload: None,
             reload_again: false,
+            promoted_tls: None,
         }
     }
 
@@ -565,12 +569,32 @@ impl WebStack {
         desired.tls.is_some() && desired.sites.iter().any(|(site, _)| site.secure)
     }
 
-    /// Whether the configuration on disk (the one Nginx would read now) listens with TLS.
+    /// Where the fact "the promoted configuration listens with TLS" is kept for a cold start.
+    fn state_file(&self) -> PathBuf {
+        self.paths.state_dir().join("nginx").join("config.json")
+    }
+
+    /// Whether the configuration on disk (the one Nginx would read now) listens with TLS: what
+    /// was recorded when it was promoted, in memory or, after a restart, in the state file.
+    /// Nothing is deduced from the text of `nginx.conf`, which an override or a change of
+    /// template could make say anything (review of phase 6, V3).
     fn disk_has_tls(&self) -> bool {
-        self.main_conf()
-            .ok()
-            .and_then(|main| std::fs::read_to_string(main).ok())
-            .is_some_and(|text| text.contains(" ssl default_server;"))
+        self.promoted_tls.unwrap_or_else(|| {
+            std::fs::read_to_string(self.state_file())
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|value| value.get("tls").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Records, with the configuration that was just promoted, whether it listens with TLS.
+    /// The file is written atomically; if it cannot be written the fact is still kept in
+    /// memory and the next cold start assumes no TLS (the safer guess for the port checks).
+    fn record_promoted(&mut self, tls: bool) {
+        self.promoted_tls = Some(tls);
+        let text = format!("{{\"tls\": {tls}}}\n");
+        let _ = crate::phpini::write_if_changed(&self.state_file(), text.as_bytes());
     }
 
     /// Writes the configuration under test into the staging folder. A new certificate is
@@ -990,6 +1014,7 @@ impl WebStack {
             let _ = std::fs::remove_dir_all(stage);
         }
         if written.is_ok() {
+            self.record_promoted(Self::serves_tls(&tested));
             // What was installed is no longer pending, unless a newer plan replaced it.
             let tested_pair = tested.tls.as_ref().and_then(|t| t.pending.clone());
             if let Some(desired) = &mut self.desired {

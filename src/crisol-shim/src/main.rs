@@ -174,11 +174,46 @@ const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
 /// Node, npm and npx trust the local CA so that a request to `https://shop.test` works from
 /// JavaScript too, whether or not the CA is in the system's store (ADR-0013). They are pointed
 /// at `etc/node/ca.pem`, the copy the core writes from a CA it has validated, never at
-/// `certs/ca.pem`. Only when that copy exists, and never over a value the user already set.
+/// `certs/ca.pem`. Only when that copy exists, never over a value the user already set, and only
+/// if neither the copy nor its folder can be modified by other accounts: otherwise one line on
+/// stderr says which and how to fix it, and Node is told nothing.
 fn node_ca_for(command: Command, paths: &CrisolPaths) -> Option<PathBuf> {
     let for_node = matches!(command, Command::Node | Command::Npm | Command::Npx);
+    if !for_node || std::env::var_os(NODE_CA_VAR).is_some() {
+        return None;
+    }
     let ca = paths.node_ca().ok()?;
-    (for_node && std::env::var_os(NODE_CA_VAR).is_none() && ca.is_file()).then_some(ca)
+    if !ca.is_file() {
+        return None;
+    }
+    let folder = ca.parent().map(Path::to_path_buf).unwrap_or_default();
+    if let Some(open) = [folder, ca.clone()].into_iter().find(|p| open_to_others(p)) {
+        report(&format!(
+            "warning: `{}` can be modified by other accounts, so Node was not told to trust the \
+             local CA. Remove their write access (on Windows: `icacls \"{}\" /inheritance:r \
+             /grant:r \"%USERNAME%:(OI)(CI)F\"`) and run `crisol trust` again",
+            open.display(),
+            open.display()
+        ));
+        return None;
+    }
+    Some(ca)
+}
+
+/// Whether other accounts of this computer can write to `path`. If that cannot be found out it
+/// counts as open: the copy is only trusted when it is known to be private.
+#[cfg(windows)]
+fn open_to_others(path: &Path) -> bool {
+    use crisol_core::paths::PrivateDirs;
+    crisol_platform::WindowsPrivateDirs
+        .is_writable_by_others(path)
+        .unwrap_or(true)
+}
+
+/// Unix homes are private by default (`~/.crisol` and the `umask`); no check yet.
+#[cfg(not(windows))]
+fn open_to_others(_path: &Path) -> bool {
+    false
 }
 
 /// The variable that records the `PHPRC` this shim set. A shim that finds a `PHPRC` equal to

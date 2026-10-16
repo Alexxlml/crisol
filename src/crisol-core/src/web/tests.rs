@@ -1124,3 +1124,156 @@ fn without_secured_sites_the_https_port_is_nobodys_business() {
     rig.run();
     assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
 }
+
+// ---- review of phase 6, V3: whether the promoted config uses TLS is recorded, not guessed ----
+
+impl Rig {
+    /// A new stack over the same home, as after a restart: it knows nothing in memory.
+    fn cold_stack(&self) -> WebStack {
+        WebStack::new(
+            self.paths.clone(),
+            &self.config,
+            self.paths.bin_for("nginx", "1.28.3").unwrap(),
+            self.supervisor.clone(),
+            self.probe.clone(),
+            self.dirs.clone(),
+        )
+    }
+
+    fn state_file(&self) -> PathBuf {
+        self.paths.state_dir().join("nginx").join("config.json")
+    }
+
+    /// Another program has this port.
+    fn occupy(&self, port: u16) {
+        self.probe.occupy(
+            port,
+            PortOwner {
+                pid: 4321,
+                name: Some("herd.exe".to_owned()),
+                address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            },
+        );
+    }
+}
+
+#[test]
+fn promoting_a_config_records_whether_it_uses_tls() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.run();
+    assert_eq!(
+        fs::read_to_string(rig.state_file()).unwrap().trim(),
+        r#"{"tls": false}"#
+    );
+
+    rig.secure("shop");
+    rig.listen(&[HTTPS]);
+    rig.stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    rig.tick(1100);
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(1300);
+    assert_eq!(
+        fs::read_to_string(rig.state_file()).unwrap().trim(),
+        r#"{"tls": true}"#
+    );
+}
+
+#[test]
+fn after_a_restart_the_recorded_fact_decides_which_ports_are_checked() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    rig.probe.release(HTTP);
+    rig.probe.release(HTTPS);
+    rig.occupy(HTTPS);
+
+    // A cold start of a config recorded as using TLS: the HTTPS port is checked and taken.
+    let mut again = rig.cold_stack();
+    again.start(rig.at(12_000));
+    assert!(
+        matches!(
+            again.nginx_state(),
+            Some(ServiceState::Failed(crate::service::FailureReason::PortBusy { port, .. })) if *port == HTTPS
+        ),
+        "{:?}",
+        again.nginx_state()
+    );
+}
+
+#[test]
+fn the_text_of_nginx_conf_is_not_what_decides() {
+    let mut rig = Rig::new(&[]);
+    rig.site("blog", None);
+    rig.run(); // a plain config: recorded as no TLS
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    rig.probe.release(HTTP);
+
+    // The file now says "ssl default_server" in a comment, as an edited override or another
+    // template could make it say; the HTTPS port belongs to somebody else.
+    let main = rig.final_conf("nginx.conf");
+    let mut text = fs::read_to_string(&main).unwrap();
+    text.push_str("\n# listen 127.0.0.1:19443 ssl default_server;\n");
+    fs::write(&main, text).unwrap();
+    rig.occupy(HTTPS);
+
+    let mut cold = rig.cold_stack();
+    cold.start(rig.at(12_000));
+    rig.listen(&[HTTP]);
+    cold.tick(rig.at(12_700));
+    assert_eq!(
+        cold.nginx_state(),
+        Some(&ServiceState::Running),
+        "only the HTTP port counts"
+    );
+}
+
+#[test]
+fn a_rejected_new_config_falls_back_to_the_old_one_with_the_old_ports_even_with_a_tricky_override()
+{
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.run(); // plain HTTP config on disk
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    rig.probe.release(HTTP);
+
+    // An override whose comment contains the text, and a secured site that is rejected.
+    let overrides = rig.paths.overrides_for("nginx").unwrap();
+    fs::create_dir_all(&overrides).unwrap();
+    fs::write(
+        overrides.join("note.conf"),
+        "# listen 127.0.0.1:19443 ssl default_server;\n",
+    )
+    .unwrap();
+    rig.secure("shop");
+    rig.occupy(HTTPS);
+    rig.stack
+        .apply(&rig.plan_with_secure(), rig.at(12_000))
+        .unwrap();
+    rig.stack.start(rig.at(12_000));
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    let events = rig.tick(12_200);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, WebEvent::ReloadFailed { .. })),
+        "{events:?}"
+    );
+    // Started again with the config that worked: HTTP only, so the busy HTTPS port is fine.
+    rig.listen(&[HTTP]);
+    rig.tick(12_900);
+    assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
+}

@@ -295,6 +295,7 @@ fn a_new_subfolder_file_warns_when_it_hides_the_other_tools_pin_above() {
     )
     .unwrap();
     assert_eq!(used.warnings.len(), 1, "{:?}", used.warnings);
+    assert!(!used.warnings[0].contains("  "), "{:?}", used.warnings);
     assert!(
         used.warnings[0].contains("node = \"22\"") && used.warnings[0].contains("hides"),
         "{:?}",
