@@ -82,7 +82,7 @@ Se decide:
 
 ## Corrección (2026-10-16, revisión de la Fase 6)
 
-Decidida por el propietario a partir de los hallazgos 1 y 2 de `claude/revisiones/2026-10-16-opus-fase6.md`. Pendiente de implementar.
+Decidida por el propietario a partir de los hallazgos 1 y 2 de `claude/revisiones/2026-10-16-opus-fase6.md`. **Implementada** el 2026-10-16 (ver «Implementación de la corrección de la revisión de la Fase 6»).
 
 - **Solo TLD de uso especial.** Las restricciones de la CA solo pueden incluir `test`, `localhost`, `example`, `invalid`, `local`, `internal` y `home.arpa`, y sus subdominios. Con otro TLD (`dev`, `app`, `com`…) no se crea la CA y los sitios se sirven por HTTP con una advertencia. Si la clave se filtrara, una CA restringida a un TLD público podría suplantar dominios reales.
 - **La CA se valida antes de cualquier confianza.** Antes de instalarla en el almacén, agregarla a `cacert.pem` o dársela a Node, se comprueba que:
@@ -91,3 +91,35 @@ Decidida por el propietario a partir de los hallazgos 1 y 2 de `claude/revisione
   - ni `certs/` ni sus archivos están abiertos a otras cuentas (ADR-0008, «Cambio de calendario»).
 
   Node recibe una copia generada y validada, no `certs/ca.pem` directamente.
+
+## Implementación de la corrección de la revisión de la Fase 6 (2026-10-16)
+
+Hecho, hallazgo por hallazgo de `claude/revisiones/2026-10-16-opus-fase6.md`:
+
+- **La CA se valida siempre (hallazgo 1).** Un `LocalCa` solo puede salir de `ensure_ca`, `load_ca` o `create_ca`, que exigen en cada llamada: que `certs/` y los archivos de la CA no sean escribibles por otras cuentas (`PrivateDirs::is_writable_by_others`; si lo son, `CaError::Exposed` con la solución); que sea autofirmada, con `pathlen = 0` y `keyCertSign`; y restricciones de nombres **presentes y críticas** cuyos subárboles permitidos son solo nombres DNS de uso especial, `127.0.0.0/8` y `::1`, sin otros tipos de nombre. Como `trust_ca`, `write_php_cacert_with` (ahora recibe `Option<&LocalCa>`) y `write_node_ca` reciben un `LocalCa`, ninguno puede usar una CA sin pasar por esa validación. `certs/` se crea siempre con `PrivateDirs::create_private_dir` (y la home, si la crea Crisol), aunque el resto de la estructura no sea privada todavía (ADR-0008, «Cambio de calendario»).
+- **Node recibe una copia (hallazgo 1).** `write_node_ca` escribe `etc/node/ca.pem` (carpeta privada propia) a partir de la CA validada, y el shim apunta `NODE_EXTRA_CA_CERTS` a ese archivo, nunca a `certs/ca.pem`.
+- **Solo TLD de uso especial (hallazgo 2).** `test`, `localhost`, `example`, `invalid`, `local`, `internal` y `home.arpa` (y subdominios). Con otro TLD no se crea la CA ni el certificado, ni siquiera se toca `certs/`: los sitios asegurados se sirven por HTTP con una advertencia (`CaError::TldNotSpecialUse`). `Config` avisa con `ConfigWarning::PublicTld` cuando `sites.tld` no es de uso especial.
+- **Certificado y configuración entran juntos (hallazgo 3).** `apply` solo *planifica* el certificado (`plan_site_cert`: el par nuevo queda en memoria). Al recargar, el par se escribe en `certs/.next/` (privada), la configuración preparada en `etc/nginx/.next/` apunta a él, `nginx -t` prueba el conjunto y solo si pasa se instalan primero el certificado y después la configuración. Si `-t` falla, ni `certs/` ni `etc/nginx/` cambian. Un certificado que cambia con la misma configuración también pasa por este camino.
+- **El puerto HTTPS cuenta (hallazgo 4).** Con sitios asegurados, `https_port` entra en la comprobación previa y en la salud de Nginx: con otro programa en el 443 se informa quién lo usa (`PortBusy`) en lugar de ver salir a Nginx.
+- **Redirección `302` (hallazgo 5)**, no `301`: el navegador no la recuerda para siempre tras desasegurar un sitio.
+
+### Los clientes aplican las restricciones de nombres (hallazgo 6)
+
+La garantía de la CA (una clave robada no sirve para suplantar un sitio público) depende de que cada cliente aplique las restricciones de la raíz en la que confía. Se comprobó con certificados reales: una hoja legítima para `ok.test` y otra para `bank.example.com` **firmada por la propia CA con su clave**, servidas por Nginx 1.28.3 (`crisol-platform/tests/tls_clients.rs`, a pedido):
+
+| Cliente | `ok.test` (legítimo) | `bank.example.com` (firmado por la CA) |
+|---|---|---|
+| `curl` de Windows (Schannel, solo `--cacert`) | acepta | **rechaza**: `schannel: error 0x00004000` (`CERT_TRUST_HAS_NOT_PERMITTED_NAME_CONSTRAINT`) |
+| cURL de PHP 7.4.33 (OpenSSL, `cacert.pem` generado) | acepta | **rechaza**: `SSL certificate problem: permitted subtree violation` |
+| Node 22.23.3 (OpenSSL, `NODE_EXTRA_CA_CERTS` con la copia) | acepta | **rechaza**: `permitted subtree violation` |
+| `rustls-webpki` (pruebas del núcleo) | acepta | **rechaza**: `NameConstraintViolation` |
+
+No se probó Edge/Chrome (su verificador es el de Chromium, que aplica las restricciones de nombres desde hace años): si se quiere comprobar a mano, basta servir la hoja falsa de ese test y abrirla con la CA instalada.
+
+### Los *streams* de PHP (hallazgo 7)
+
+La CA local va en `etc/php/cacert.pem`, que solo usa cURL; `openssl.cafile` no se fija (ADR-0011, corrección), así que los *streams* de PHP (`file_get_contents('https://…')`, `fopen`) usan el almacén de Windows en vivo. Consecuencia: **si el usuario no instaló la CA en Windows o dijo que no, cURL confía en sus sitios locales pero `file_get_contents` no**. Es coherente con lo decidido y no se vuelve a fijar `openssl.cafile`. `doctor` (F11.1) debe decirlo: «PHP con *streams* no confía en tus sitios locales hasta que confíes en la CA (`crisol trust`)».
+
+### Límite que queda
+
+`etc/php/cacert.pem` (y los demás derivados de `etc/`) heredan la ACL de la home. Mientras la home no se cree privada (Fase 8), quien pudiera escribir ahí podría cambiarlo; por eso `etc/node/` se crea privada por sí misma y por eso la creación de la home privada sigue siendo prioritaria en la Fase 8.

@@ -28,4 +28,4 @@ La Fase 6 introdujo una clave que vale la pena proteger: la de la CA local (`cer
 - `certs/` se crea con `PrivateDirs::create_private_dir` desde ya. Si Crisol crea la home, también la crea privada.
 - Antes de usar la CA para cualquier confianza, se comprueba con `is_writable_by_others` que ni `certs/` ni sus archivos están abiertos a otras cuentas. Si lo están, Crisol se niega y explica cómo arreglarlo.
 
-El resto de este ADR no cambia. Que el daemon y la CLI llamen a `ensure_private_layout` sigue siendo de la Fase 8.
+**Hecho el 2026-10-16** para `certs/` (`ca::ensure_ca`/`create_ca` la crean privada y `load_ca` se niega si está abierta). El resto de este ADR no cambia. Que el daemon y la CLI llamen a `ensure_private_layout` sigue siendo de la Fase 8.
