@@ -42,7 +42,7 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 
 - `crisol-core::hosts` (texto puro): `apply_block` / `remove_block` / `block_names`. Respeta los finales de línea del archivo, deja intacto todo lo de fuera del bloque, rechaza un bloque dañado (sin `END`, `END` sin `BEGIN`, dos bloques) en lugar de repararlo, valida los nombres (mismos sufijos de uso especial, solo caracteres de host) y devuelve como `Conflict` los nombres que otra herramienta ya define fuera del bloque, sin tocarlos (ADR-0007). `remove_block` deja el archivo byte por byte como estaba, salvo que un archivo sin salto de línea final conserva el que se añadió.
 - `HostsManager` (`names`/`set`/`clear`) con `DirectHosts<F: HostsFile>` para el helper y las pruebas; solo escribe si el contenido cambia.
-- `crisol-platform::hosts_file`: `FileHosts` (cualquier ruta; `system()` es `drivers\etc\hosts`), escritura (ver la corrección del hallazgo 3 al final: temporal y `ReplaceFileW`, no en el sitio) con copia `hosts.crisol-bak`, borrada al quitar el bloque; un archivo que no es UTF-8 se rechaza sin tocarlo. `ElevatedHosts` valida y comprueba el archivo **antes** de pedir el UAC y lanza el helper solo si hay un cambio real. `flush_dns` (`ipconfig /flushdns`) lo llama el helper tras cambiar `hosts`.
+- `crisol-platform::hosts_file`: `FileHosts` (cualquier ruta; `system()` es `drivers\etc\hosts`), escritura en el sitio con relectura y restauración (ver la verificación manual al final: `ReplaceFileW` se probó y se descartó) con copia `hosts.crisol-bak`, borrada al quitar el bloque; un archivo que no es UTF-8 se rechaza sin tocarlo. `ElevatedHosts` valida y comprueba el archivo **antes** de pedir el UAC y lanza el helper solo si hay un cambio real. `flush_dns` (`ipconfig /flushdns`) lo llama el helper tras cambiar `hosts`.
 - `crisol-elevate` suma `hosts-set <nombre>...` y `hosts-clear` (cuatro operaciones en total).
 
 ## Corrección (2026-10-16, revisión de la Fase 7)
@@ -71,6 +71,8 @@ Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase7
 - Si el equipo no tuviera `::1` (IPv6 desactivado por completo), Nginx no arrancaría; se anota como limitación y `doctor` (F11.1) debe decirlo.
 
 ### Cómo quedó el hallazgo 3 (escribir `hosts` sin truncarlo)
+
+> **Reemplazado** por la escritura en el sitio de la sección «Verificación manual»: lo de `ReplaceFileW` de abajo se probó y se descartó porque cambia el dueño de `hosts`.
 
 - El contenido nuevo se escribe en un temporal junto al archivo (`hosts.crisol-tmp`, con `sync_all`) y `ReplaceFileW` lo intercambia de una vez: conserva los permisos (ACL) y los atributos del original y deja la versión anterior como `hosts.crisol-bak`. La copia se **renueva en cada cambio**: es lo que el archivo era justo antes, no una versión vieja de otra sesión; se borra cuando el bloque desaparece. Un archivo que no existe se crea directamente (no hay permisos que conservar).
 - Si el archivo está ocupado un momento (un antivirus), se reintenta hasta cinco veces con 100 ms de pausa (`ERROR_SHARING_VIOLATION` y `ERROR_LOCK_VIOLATION`, que `windows` entrega como HRESULT).
