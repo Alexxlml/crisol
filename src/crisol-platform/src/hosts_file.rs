@@ -7,19 +7,24 @@
 //! changes the owner of `hosts` (`SYSTEM` becomes `Administrators`) and adds an explicit entry
 //! to its permissions. What protects the content instead:
 //!
-//! 1. before every change the current file is copied to `hosts.crisol-bak` (renewed each time,
-//!    so it is always what the file was just before);
+//! 1. before every change the current file is copied to `hosts.crisol-bak.new` (what the file is
+//!    right now), and the good copy of the change before, `hosts.crisol-bak`, is **not**
+//!    touched yet;
 //! 2. the new content is written with a single `write_all` and `sync_all`;
-//! 3. the file is read back and compared with what was written; if it differs (a scanner, a
-//!    full disk), the copy is written back and the change is reported as failed;
-//! 4. if the process dies in the middle, the copy is there to be put back by hand.
+//! 3. the file is read back and compared with what was written. If it is right, the new copy
+//!    takes the place of `hosts.crisol-bak`. If it differs (a scanner, a full disk), the new
+//!    copy is written back and removed, and the change is reported as failed;
+//! 4. if even that restoration fails, or the process dies in the middle, `hosts.crisol-bak.new`
+//!    stays: it is how the file was before the change. Nothing else is done to `hosts` until a
+//!    person has looked at it and deleted (or put back) that copy, so a damaged file never
+//!    replaces a good copy and nothing is rewritten on top of an unfinished change.
 //!
 //! The copy is deleted when the block goes away.
 
 use std::fs;
 use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -34,6 +39,7 @@ use crate::system_paths::{hosts_file_in, ipconfig_exe_in, system_directory};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BACKUP_EXTENSION: &str = "crisol-bak";
+const PENDING_EXTENSION: &str = "crisol-bak.new";
 /// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`: somebody (often a scanner) has the
 /// file open for a moment.
 const BUSY: [i32; 2] = [32, 33];
@@ -69,6 +75,29 @@ impl FileHosts {
     #[must_use]
     pub fn backup_path(&self) -> PathBuf {
         self.sibling(BACKUP_EXTENSION)
+    }
+
+    /// The copy of how the file was before a change that did not finish, if there is one. While
+    /// it exists the file is not touched: see the module documentation.
+    #[must_use]
+    pub fn pending_path(&self) -> PathBuf {
+        self.sibling(PENDING_EXTENSION)
+    }
+
+    /// An error telling that an earlier change did not finish, if one did not.
+    pub fn check_no_unfinished_change(&self) -> io::Result<()> {
+        let pending = self.pending_path();
+        if pending.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "an earlier change to the hosts file did not finish; how it was before is in `{}`. \
+                     Look at the hosts file, then put that copy back or delete it, and try again",
+                    pending.display()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn sibling(&self, extension: &str) -> PathBuf {
@@ -121,23 +150,19 @@ impl HostsFile for FileHosts {
     fn write(&self, content: &str) -> io::Result<()> {
         let backup = self.backup_path();
         if self.path.exists() {
-            fs::copy(&self.path, &backup)?; // what the file is right now, before this change
-            self.overwrite(content.as_bytes())?;
+            self.check_no_unfinished_change()?;
+            let pending = self.pending_path();
+            fs::copy(&self.path, &pending)?; // what the file is right now, before this change
+            let written = self.overwrite(content.as_bytes());
             #[cfg(test)]
             if let Some(tamper) = self.tamper {
                 tamper(&self.path);
             }
             // Read back what is there now: a scanner or a full disk can make it different.
-            if self.read().ok().as_deref() != Some(content) {
-                let restored = fs::read(&backup).and_then(|previous| self.overwrite(&previous));
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    if restored.is_ok() {
-                        "the hosts file did not hold what was written; the previous version was restored"
-                    } else {
-                        "the hosts file did not hold what was written and the previous version could not be restored; it is next to it as hosts.crisol-bak"
-                    },
-                ));
+            if written.is_ok() && self.read().ok().as_deref() == Some(content) {
+                fs::rename(&pending, &backup)?; // the new copy replaces the old one only now
+            } else {
+                return Err(self.undo(&pending, written.err()));
             }
         } else {
             fs::write(&self.path, content)?; // a new file has no permissions to keep
@@ -149,6 +174,40 @@ impl HostsFile for FileHosts {
             }
         }
         Ok(())
+    }
+}
+
+impl FileHosts {
+    /// A change failed: put the file back as `pending` has it (unless it is still that) and
+    /// say what happened. `pending` is removed only when the file is known to be right; if it
+    /// cannot be, it stays, and the message says so.
+    fn undo(&self, pending: &Path, cause: Option<io::Error>) -> io::Error {
+        let before = fs::read(pending);
+        let untouched = before
+            .as_ref()
+            .is_ok_and(|bytes| fs::read(&self.path).ok().as_ref() == Some(bytes));
+        let restored = untouched
+            || before
+                .as_ref()
+                .map_err(|e| io::Error::new(e.kind(), e.to_string()))
+                .and_then(|bytes| self.overwrite(bytes))
+                .is_ok();
+        if restored {
+            let _ = fs::remove_file(pending);
+            return cause.unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the hosts file did not hold what was written; the previous version was restored",
+                )
+            });
+        }
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the hosts file did not hold what was written and could not be put back; how it was is in `{}`",
+                pending.display()
+            ),
+        )
     }
 }
 
@@ -209,6 +268,7 @@ impl HostsManager for ElevatedHosts {
         // Checked here first: a bad name or a damaged file never reaches the prompt.
         let update = apply_block(&current, &names)?;
         if update.content != current {
+            self.file.check_no_unfinished_change()?;
             if names.is_empty() {
                 self.run(&ElevatedOp::HostsClear)?;
             } else {
@@ -223,6 +283,7 @@ impl HostsManager for ElevatedHosts {
         if block_names(&current)?.is_empty() && !current.contains(BEGIN) {
             return Ok(());
         }
+        self.file.check_no_unfinished_change()?;
         self.run(&ElevatedOp::HostsClear)
     }
 }
@@ -492,5 +553,120 @@ mod tests {
         assert!(fs::read_to_string(&file.path)
             .unwrap()
             .contains("shop.test"));
+    }
+
+    // ---- review of phase 7, W2: a damaged file never replaces a good copy -------------------
+
+    /// Breaks the file and makes it read-only, as a scanner that holds on to it could.
+    fn damage_and_lock(path: &Path) {
+        fs::write(path, "").unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn unlock(path: &Path) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn the_good_copy_is_replaced_only_after_the_change_is_confirmed() {
+        let (dir, file) = copy();
+        let hosts = DirectHosts::new(file.clone());
+        hosts.set(&names(&["a.test"])).unwrap();
+        let first_change = fs::read(&file.path).unwrap();
+        assert_eq!(fs::read(file.backup_path()).unwrap(), ORIGINAL);
+
+        // A change that fails and is undone: the copy is still the one from before, and no
+        // new copy is left over.
+        let mut failing = file.clone();
+        failing.tamper = Some(|path| fs::write(path, "").unwrap());
+        let error = DirectHosts::new(failing)
+            .set(&names(&["b.test"]))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("previous version was restored"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&file.path).unwrap(), first_change, "put back");
+        assert_eq!(
+            fs::read(file.backup_path()).unwrap(),
+            ORIGINAL,
+            "the copy was not renewed"
+        );
+        assert!(!file.pending_path().exists());
+
+        // A change that works renews it.
+        hosts.set(&names(&["b.test"])).unwrap();
+        assert_eq!(fs::read(file.backup_path()).unwrap(), first_change);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn if_the_restoration_fails_the_good_copies_stay_and_nothing_else_is_written() {
+        let (_dir, file) = copy();
+        let hosts = DirectHosts::new(file.clone());
+        hosts.set(&names(&["a.test"])).unwrap();
+        let good = fs::read(&file.path).unwrap();
+        let older_copy = fs::read(file.backup_path()).unwrap();
+
+        let mut failing = file.clone();
+        failing.tamper = Some(damage_and_lock);
+        let error = DirectHosts::new(failing)
+            .set(&names(&["b.test"]))
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("could not be put back") && text.contains("hosts.crisol-bak.new"),
+            "{text}"
+        );
+        // The older copy is untouched, and the copy of how the file was is kept.
+        assert_eq!(fs::read(file.backup_path()).unwrap(), older_copy);
+        assert_eq!(fs::read(file.pending_path()).unwrap(), good);
+
+        // The file is damaged and locked; the next attempt does not copy it over anything and
+        // does not touch it, and says why.
+        unlock(&file.path);
+        let damaged = fs::read(&file.path).unwrap();
+        let again = hosts.set(&names(&["c.test"])).unwrap_err();
+        assert!(again.to_string().contains("did not finish"), "{again}");
+        assert_eq!(fs::read(&file.path).unwrap(), damaged, "not touched");
+        assert_eq!(fs::read(file.backup_path()).unwrap(), older_copy);
+        assert_eq!(fs::read(file.pending_path()).unwrap(), good);
+        hosts.clear().unwrap(); // no block in it, so nothing to change
+        assert_eq!(fs::read(&file.path).unwrap(), damaged);
+
+        // A person puts the copy back and deletes it: everything works again.
+        fs::write(&file.path, &good).unwrap();
+        fs::remove_file(file.pending_path()).unwrap();
+        hosts.set(&names(&["c.test"])).unwrap();
+        assert!(fs::read_to_string(&file.path).unwrap().contains("c.test"));
+    }
+
+    #[test]
+    fn the_elevated_manager_refuses_before_the_prompt_while_a_change_is_unfinished() {
+        let (dir, file) = copy();
+        // A file with a block (so `clear` has something to do) and an unfinished change.
+        DirectHosts::new(file.clone())
+            .set(&names(&["a.test"]))
+            .unwrap();
+        fs::write(file.pending_path(), ORIGINAL).unwrap();
+        let hosts = ElevatedHosts::over(helper_at(dir.path().join("no-helper.exe")), file.clone());
+        // Not NotFound (the helper is missing): it stopped before ever looking for it.
+        for result in [
+            hosts.set(&names(&["z.test"])),
+            hosts.clear().map(|()| Vec::new()),
+        ] {
+            match result {
+                Err(HostsManagerError::Io(e)) => {
+                    assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
+                    assert!(e.to_string().contains("did not finish"), "{e}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }
