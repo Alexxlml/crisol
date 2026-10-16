@@ -29,3 +29,17 @@ La Fase 6 introdujo una clave que vale la pena proteger: la de la CA local (`cer
 - Antes de usar la CA para cualquier confianza, se comprueba con `is_writable_by_others` que ni `certs/` ni sus archivos están abiertos a otras cuentas. Si lo están, Crisol se niega y explica cómo arreglarlo.
 
 **Hecho el 2026-10-16** para `certs/` (`ca::ensure_ca`/`create_ca` la crean privada y `load_ca` se niega si está abierta). El resto de este ADR no cambia. Que el daemon y la CLI llamen a `ensure_private_layout` sigue siendo de la Fase 8.
+
+## Corrección (2026-10-16): una home abierta bloquea, no solo avisa
+
+Decidida por el propietario (pregunta de la verificación V1 de la Fase 6). Sustituye a «quien llama avisa» de la decisión original.
+
+- Si la home, o una carpeta suya que Crisol usa para ejecutar o para confiar, la pueden escribir otras cuentas (`HomeSecurity::WritableByOthers` o `is_writable_by_others`), Crisol **se niega** a:
+  - arrancar servicios (Nginx, pools de PHP, bases de datos);
+  - generar `php.ini` y la configuración de Nginx;
+  - instalar o desinstalar versiones;
+  - confiar en la CA (esto último ya se hacía desde la revisión de la Fase 6).
+- El mensaje nombra la carpeta abierta y da el comando exacto para cerrarla, como el del shim.
+- Siguen funcionando las operaciones de solo lectura y diagnóstico: `status`, `list` y `doctor`.
+- Crisol nunca cambia por su cuenta los permisos de una carpeta que ya existía.
+- Motivo: con la home abierta, otra cuenta puede editar un `php.ini` para cargar una DLL suya, o cambiar binarios en `bin\`, y eso se ejecutaría con el usuario de Crisol. Avisar no basta.

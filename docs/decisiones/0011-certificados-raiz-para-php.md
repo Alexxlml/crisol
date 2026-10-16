@@ -72,3 +72,13 @@ Consecuencias:
   - el `php.ini` generado no contiene `openssl.cafile =` activo.
 - Implementación: `RootCertificates::trusted_roots` devuelve `SystemRoot { der, usages, partially_distrusted }`; `SystemRoot::is_fit_for_tls` es el filtro (núcleo, con doble). `WindowsRootCertificates` lee la propiedad de uso extendido (`CERT_ENHKEY_USAGE_PROP_ID`) y marca desconfianza parcial si existe `CERT_DISALLOWED_FILETIME_PROP_ID` o `CERT_DISALLOWED_ENHKEY_USAGE_PROP_ID` (cualquier contenido de esta última cuenta: solo puede volver el filtro más estricto). Un uso que no se puede leer se trata como el más estricto; un certificado presente en varios almacenes conserva la lectura más restrictiva.
 - Queda abierto, sin decidir aquí: aplicar también `Disallowed` a los bloques de Mozilla (hallazgo 6 de la revisión de la Fase 4).
+
+## Corrección (2026-10-16): `Disallowed` también se aplica a Mozilla
+
+Decidida por el propietario (hallazgo 6 de la revisión de la Fase 4).
+
+- Si un certificado del bundle de Mozilla está en un almacén `Disallowed` de Windows (usuario, equipo, directiva o empresa; comparación exacta del DER), **se excluye** de `etc/php/cacert.pem`.
+- Se informa cuántos se excluyeron y cuáles (por su nombre) en `WrittenCacert::warnings`.
+- El archivo deja de ser una copia literal del bundle. Un comentario al inicio lo dice y nombra la versión del bundle de origen.
+- El trait `RootCertificates` devuelve también la lista de desconfiados.
+- Pruebas con un doble: una CA de Mozilla que está en `Disallowed` no aparece en el resultado, y el resto del bundle queda igual, en el mismo orden.
