@@ -1,29 +1,27 @@
-//! The real `hosts` file (F7.3, ADR-0014): reading it, replacing it safely, and the elevated way
+//! The real `hosts` file (F7.3, ADR-0014): reading it, rewriting it safely, and the elevated way
 //! to change its Crisol block.
 //!
-//! [`FileHosts`] works on any path, which is how the tests use it (copies in a temporary
-//! folder); [`FileHosts::system`] is `%SystemRoot%\System32\drivers\etc\hosts`, writable only by
-//! an administrator, so only the helper (`crisol-elevate`) writes it.
+//! The file is rewritten **in place**, keeping the file itself (its owner, its permissions and
+//! its attributes stay exactly as they were). A replacement through a temporary file and
+//! `ReplaceFileW` was tried first and the hand test of 2026-10-16 showed that, run elevated, it
+//! changes the owner of `hosts` (`SYSTEM` becomes `Administrators`) and adds an explicit entry
+//! to its permissions. What protects the content instead:
 //!
-//! The file is never truncated in place (a failure half way, or an antivirus that blocks it,
-//! would leave it empty, with the blocks of Herd, Laragon and the rest). The new content goes to
-//! a temporary file in the same folder, and `ReplaceFileW` swaps it in one step: it keeps the
-//! permissions (ACL) and attributes of the original and leaves the previous version next to it
-//! as `hosts.crisol-bak`, renewed at **every** change, so it is always what the file was just
-//! before. The result is read back and compared; if it is not what was written, the previous
-//! version is put back and the change is reported as failed. The copy is deleted when the block
-//! goes away.
+//! 1. before every change the current file is copied to `hosts.crisol-bak` (renewed each time,
+//!    so it is always what the file was just before);
+//! 2. the new content is written with a single `write_all` and `sync_all`;
+//! 3. the file is read back and compared with what was written; if it differs (a scanner, a
+//!    full disk), the copy is written back and the change is reported as failed;
+//! 4. if the process dies in the middle, the copy is there to be put back by hand.
+//!
+//! The copy is deleted when the block goes away.
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-
-use windows::core::PCWSTR;
-use windows::Win32::Storage::FileSystem::{ReplaceFileW, REPLACE_FILE_FLAGS};
 
 use crisol_core::dns::ElevatedOp;
 use crisol_core::hosts::{
@@ -36,7 +34,6 @@ use crate::system_paths::{hosts_file_in, ipconfig_exe_in, system_directory};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BACKUP_EXTENSION: &str = "crisol-bak";
-const TEMP_EXTENSION: &str = "crisol-tmp";
 /// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`: somebody (often a scanner) has the
 /// file open for a moment.
 const BUSY: [i32; 2] = [32, 33];
@@ -48,7 +45,7 @@ pub struct FileHosts {
     path: PathBuf,
     /// Test hook: damages the file right after it is replaced, as a scanner could.
     #[cfg(test)]
-    tamper: Option<fn(&Path)>,
+    tamper: Option<fn(&std::path::Path)>,
 }
 
 impl FileHosts {
@@ -81,25 +78,29 @@ impl FileHosts {
         self.path.with_file_name(name)
     }
 
-    /// Replaces the file by `bytes` through a temporary file next to it. With `backup`, the
-    /// version being replaced is kept there (replacing any older copy).
-    fn replace_with(&self, bytes: &[u8], backup: Option<&Path>) -> io::Result<()> {
-        let temp = self.sibling(TEMP_EXTENSION);
-        match fs::remove_file(&temp) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+    /// Overwrites the existing file with `bytes`, in place, trying again a few times if
+    /// another program has it open for a moment.
+    fn overwrite(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut attempt = 1;
+        loop {
+            let opened = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&self.path);
+            match opened {
+                Ok(mut file) => {
+                    return file.write_all(bytes).and_then(|()| file.sync_all());
+                }
+                Err(e) => {
+                    let busy = e.raw_os_error().is_some_and(|code| BUSY.contains(&code));
+                    if !busy || attempt >= ATTEMPTS {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
         }
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
-        drop(file);
-        let result = written.and_then(|()| replace_file(&self.path, &temp, backup));
-        if result.is_err() {
-            let _ = fs::remove_file(&temp); // after a success the temporary file is the hosts
-        }
-        result
     }
 }
 
@@ -120,16 +121,15 @@ impl HostsFile for FileHosts {
     fn write(&self, content: &str) -> io::Result<()> {
         let backup = self.backup_path();
         if self.path.exists() {
-            self.replace_with(content.as_bytes(), Some(&backup))?;
+            fs::copy(&self.path, &backup)?; // what the file is right now, before this change
+            self.overwrite(content.as_bytes())?;
             #[cfg(test)]
             if let Some(tamper) = self.tamper {
                 tamper(&self.path);
             }
             // Read back what is there now: a scanner or a full disk can make it different.
             if self.read().ok().as_deref() != Some(content) {
-                // Put the previous version back (without making a copy of the bad one).
-                let restored =
-                    fs::read(&backup).and_then(|previous| self.replace_with(&previous, None));
+                let restored = fs::read(&backup).and_then(|previous| self.overwrite(&previous));
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     if restored.is_ok() {
@@ -149,46 +149,6 @@ impl HostsFile for FileHosts {
             }
         }
         Ok(())
-    }
-}
-
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
-}
-
-/// `ReplaceFileW`, trying again a few times if the file is busy for a moment.
-fn replace_file(target: &Path, replacement: &Path, backup: Option<&Path>) -> io::Result<()> {
-    let (target, replacement) = (wide(target), wide(replacement));
-    let backup = backup.map(wide);
-    let mut attempt = 1;
-    loop {
-        let backup_name = backup
-            .as_ref()
-            .map_or_else(PCWSTR::null, |name| PCWSTR(name.as_ptr()));
-        // SAFETY: the three names are NUL-terminated UTF-16 strings that outlive the call (the
-        // backup one is null when there is none); no exclude or reserved pointers are passed.
-        let replaced = unsafe {
-            ReplaceFileW(
-                PCWSTR(target.as_ptr()),
-                PCWSTR(replacement.as_ptr()),
-                backup_name,
-                REPLACE_FILE_FLAGS(0),
-                None,
-                None,
-            )
-        };
-        match replaced {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // The error is an HRESULT; the Win32 code is its low half.
-                let busy = BUSY.contains(&(e.code().0 & 0xFFFF));
-                if !busy || attempt >= ATTEMPTS {
-                    return Err(io::Error::from(e));
-                }
-                attempt += 1;
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
     }
 }
 
@@ -272,6 +232,7 @@ mod tests {
     use super::*;
     use crisol_core::hosts::DirectHosts;
     use std::os::windows::fs::MetadataExt;
+    use std::path::Path;
     use tempfile::TempDir;
 
     const HIDDEN: u32 = 0x2;
@@ -432,6 +393,9 @@ mod tests {
             .unwrap();
         assert!(hide.status.success());
         icacls(&file.path, &["/inheritance:r"]);
+        // The test's own account keeps full control (a rewrite in place needs to write).
+        let me = format!("*{}:(F)", crate::current_user_sid().unwrap());
+        icacls(&file.path, &["/grant:r", &me]);
         icacls(&file.path, &["/grant:r", "*S-1-5-32-545:(R)"]); // Users: read
         icacls(&file.path, &["/grant", "*S-1-5-11:(R)"]); // Authenticated Users: read
         let before = acl_of(&file.path);
@@ -476,8 +440,6 @@ mod tests {
         hosts.set(&names(&["a.test"])).unwrap();
         assert_eq!(listing(), ["hosts", "hosts.crisol-bak"]);
 
-        // A leftover from a crash is replaced, not tripped over.
-        fs::write(file.sibling(TEMP_EXTENSION), "junk").unwrap();
         hosts.set(&names(&["b.test"])).unwrap();
         assert_eq!(listing(), ["hosts", "hosts.crisol-bak"]);
 

@@ -385,6 +385,30 @@ fn powershell_json_is_read_as_an_object_an_array_or_nothing() {
     );
     assert!(rules.iter().all(|r| !r.is_ours()));
     assert!(parse_nrpt_json("not json").is_err());
+
+    // What Windows really printed for a rule made by Crisol: the server is an `IPAddress`
+    // object (found in the hand test of 2026-10-16).
+    let real = r#"{
+        "Namespace":  [ ".test" ],
+        "NameServers":  {
+            "Address":  889212287,
+            "AddressFamily":  2,
+            "IsIPv6Multicast":  false,
+            "IPAddressToString":  "127.77.0.53"
+        },
+        "Comment":  "Crisol"
+    }"#;
+    let rules = parse_nrpt_json(real).unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].name_server, LOOPBACK);
+    assert!(rules[0].is_ours());
+    // The same inside a list of objects, and two servers are still "not ours alone".
+    let two = r#"[{"Namespace":[".test"],"NameServers":[
+        {"IPAddressToString":"10.0.0.1"},{"IPAddressToString":"10.0.0.2"}],"Comment":"x"}]"#;
+    assert_eq!(
+        parse_nrpt_json(two).unwrap()[0].name_server,
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    );
 }
 
 #[test]

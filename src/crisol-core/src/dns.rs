@@ -523,6 +523,22 @@ fn hosts_error(error: HostsManagerError) -> DnsError {
     }
 }
 
+// PowerShell prints the servers as text, as a list of text, or (when they are .NET
+// `IPAddress` objects, which is what the cmdlet really returns) as objects whose
+// `IPAddressToString` is the address.
+fn server_text(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::Array(list) => list.iter().flat_map(server_text).collect(),
+        serde_json::Value::String(s) => s.split(',').map(|p| p.trim().to_owned()).collect(),
+        serde_json::Value::Object(map) => map
+            .get("IPAddressToString")
+            .and_then(|a| a.as_str())
+            .map(|a| vec![a.to_owned()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Reads the JSON that `Get-DnsClientNrptRule | ConvertTo-Json` prints (an object, an array
 /// or nothing) into rules with one namespace each. Rules without exactly one IP server, or
 /// with a server that is not an IP, are kept with an unspecified address (`0.0.0.0`) so that
@@ -553,14 +569,7 @@ pub fn parse_nrpt_json(json: &str) -> Result<Vec<NrptRule>, serde_json::Error> {
             Some(serde_json::Value::String(one)) => vec![one.clone()],
             _ => Vec::new(),
         };
-        let servers = item.get("NameServers").map_or_else(Vec::new, |v| match v {
-            serde_json::Value::Array(list) => list
-                .iter()
-                .filter_map(|s| s.as_str().map(str::to_owned))
-                .collect(),
-            serde_json::Value::String(s) => s.split(',').map(|p| p.trim().to_owned()).collect(),
-            _ => Vec::new(),
-        });
+        let servers = item.get("NameServers").map_or_else(Vec::new, server_text);
         let server = match servers.as_slice() {
             [one] => one.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
             _ => IpAddr::V4(Ipv4Addr::UNSPECIFIED),

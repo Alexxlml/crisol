@@ -33,7 +33,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// The script that lists the rules as JSON.
 #[must_use]
 pub fn list_script() -> String {
-    "@(Get-DnsClientNrptRule | Select-Object Namespace, NameServers, Comment) | ConvertTo-Json -Depth 3"
+    // `NameServers` holds .NET `IPAddress` objects; ask for their text so the JSON stays small.
+    "@(Get-DnsClientNrptRule | Select-Object Namespace, \
+      @{n='NameServers';e={@($_.NameServers | ForEach-Object { $_.ToString() })}}, Comment) \
+      | ConvertTo-Json -Depth 3"
         .to_owned()
 }
 

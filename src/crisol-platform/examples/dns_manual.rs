@@ -16,6 +16,7 @@
 //! Then, from an ordinary terminal:
 //!
 //! ```text
+//! cargo run -p crisol-platform --example dns_manual -- check      (no prompt; judges the helper)
 //! cargo run -p crisol-platform --example dns_manual -- status
 //! cargo run -p crisol-platform --example dns_manual -- serve      (leave it running)
 //! cargo run -p crisol-platform --example dns_manual -- enable     (UAC prompt)
@@ -34,7 +35,7 @@ use std::sync::Arc;
 
 use crisol_core::dns::{disable, enable, status, DnsServer, Zone, DEFAULT_DNS_ADDR};
 use crisol_core::hosts::HostsManager;
-use crisol_platform::{ElevatedHosts, ElevatedNrpt};
+use crisol_platform::{ElevatedHosts, ElevatedNrpt, HelperLocation};
 
 const SUFFIX: &str = "test";
 
@@ -51,6 +52,12 @@ fn run() -> Result<(), String> {
     let hosts = ElevatedHosts::new().map_err(|e| e.to_string())?;
     let server = IpAddr::V4(DEFAULT_DNS_ADDR);
     match command.as_str() {
+        "check" => {
+            let location = HelperLocation::installed().map_err(|e| e.to_string())?;
+            println!("{}", location.path().display());
+            location.verify().map_err(|e| e.to_string())?;
+            println!("the helper passes the check: only administrators can write it");
+        }
         "status" => println!("{:#?}", status(&table, SUFFIX).map_err(|e| e.to_string())?),
         "enable" => println!(
             "{:?}",
@@ -90,7 +97,8 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "use: status | serve | enable | disable | hosts-set | hosts-clear".to_owned(),
+                "use: check | status | serve | enable | disable | hosts-set | hosts-clear"
+                    .to_owned(),
             )
         }
     }
