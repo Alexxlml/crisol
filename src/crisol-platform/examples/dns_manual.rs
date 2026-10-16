@@ -2,8 +2,20 @@
 //! for `.test` through the elevated helper, and answer queries from the local responder
 //! (ADR-0014). Needs an interactive session: Windows shows its UAC prompt for each change.
 //!
+//! The privileged helper only runs from its fixed place, `%ProgramFiles%\Crisol\`, and only if
+//! nobody but the administrators can write there. There is no installer yet (phase 8 or later):
+//! for this test, build it and copy it by hand, from an **administrator** terminal:
+//!
 //! ```text
 //! cargo build -p crisol-elevate
+//! mkdir "%ProgramFiles%\Crisol"
+//! copy target\debug\crisol-elevate.exe "%ProgramFiles%\Crisol\"
+//! ```
+//!
+//! (a folder an administrator makes under `Program Files` inherits the right permissions).
+//! Then, from an ordinary terminal:
+//!
+//! ```text
 //! cargo run -p crisol-platform --example dns_manual -- status
 //! cargo run -p crisol-platform --example dns_manual -- serve      (leave it running)
 //! cargo run -p crisol-platform --example dns_manual -- enable     (UAC prompt)
@@ -35,14 +47,8 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let command = std::env::args().nth(1).unwrap_or_default();
-    let helper = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .ancestors()
-        .nth(2)
-        .map(|dir| dir.join("crisol-elevate.exe"))
-        .ok_or("no target directory")?;
-    let table = ElevatedNrpt::new(helper.clone());
-    let hosts = ElevatedHosts::new(helper);
+    let table = ElevatedNrpt::new().map_err(|e| e.to_string())?;
+    let hosts = ElevatedHosts::new().map_err(|e| e.to_string())?;
     let server = IpAddr::V4(DEFAULT_DNS_ADDR);
     match command.as_str() {
         "status" => println!("{:#?}", status(&table, SUFFIX).map_err(|e| e.to_string())?),

@@ -12,6 +12,7 @@ use super::PrivateDirs;
 struct State {
     created: Vec<PathBuf>,
     exposed: BTreeSet<PathBuf>,
+    user_writable: BTreeSet<PathBuf>,
 }
 
 /// Scriptable fake of [`PrivateDirs`]. A folder it creates is private; a path is open to other
@@ -36,6 +37,14 @@ impl FakePrivateDirs {
     /// Makes it private again.
     pub fn close(&self, path: &Path) {
         self.state().exposed.remove(path);
+        self.state().user_writable.remove(path);
+    }
+
+    /// Makes `path` (and what is inside it) writable by the current user only: private for
+    /// [`PrivateDirs::is_writable_by_others`], but not for the stricter
+    /// [`PrivateDirs::is_writable_by_non_administrators`].
+    pub fn make_user_writable(&self, path: &Path) {
+        self.state().user_writable.insert(path.to_path_buf());
     }
 
     /// The folders created through [`PrivateDirs::create_private_dir`], in order.
@@ -63,5 +72,12 @@ impl PrivateDirs for FakePrivateDirs {
     fn is_writable_by_others(&self, dir: &Path) -> io::Result<bool> {
         let state = self.state();
         Ok(dir.ancestors().any(|a| state.exposed.contains(a)))
+    }
+
+    fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool> {
+        let state = self.state();
+        Ok(path
+            .ancestors()
+            .any(|a| state.exposed.contains(a) || state.user_writable.contains(a)))
     }
 }

@@ -118,6 +118,9 @@ Leyenda: 🔒 requiere admin (operación aislada y opcional) · 🌐 requiere re
   - *Aceptación:* cada comando tiene prueba de integración contra un daemon en un `CRISOL_HOME` temporal.
 - **F8.4** Registro opcional del daemon al iniciar sesión (Programador de tareas o clave Run del usuario), sin servicio de Windows ni admin.
   - → nota: arranque al iniciar sesión con `Run` del usuario o una tarea sin nivel alto, nunca con privilegios de administrador.
+- **F8.5** 🔒 🪟 Instalar `crisol-elevate.exe` en `%ProgramFiles%\Crisol\` con la ACL por defecto de esa carpeta (solo Administradores, SYSTEM y TrustedInstaller escriben), desde un instalador que corre **una vez** con administrador (ADR-0014, revisión de la Fase 7, hallazgo 1). Aislada y opcional: sin ella no hay `.test` automático, pero nada más deja de funcionar. Después de copiarlo, comprobar con `HelperLocation::verify` y, en el mismo paso, crear la regla NRPT.
+  - *Aceptación:* tras instalar, `HelperLocation::installed().verify()` pasa; el ayudante nunca se ejecuta desde la home.
+- **F8.6** 🔒 🪟 Desinstalar: quitar la regla NRPT y el bloque de `hosts` (con el ayudante), y después borrar `%ProgramFiles%\Crisol\`. `hosts` y la NRPT quedan como antes (probado contra copias, F7).
 
 ## Fase 9 — Bases de datos y servicios extra
 

@@ -78,6 +78,12 @@ pub trait PrivateDirs: Send + Sync {
     /// Whether accounts other than the current user, the system and the administrators can
     /// write in `dir` or in what is created inside it.
     fn is_writable_by_others(&self, dir: &Path) -> io::Result<bool>;
+
+    /// The stricter rule for what runs with administrator rights (`crisol-elevate`, ADR-0014):
+    /// whether **anybody but the administrators, the system and the system's installer** can
+    /// write to `path` (a file or a folder), or owns it. The current user counts as somebody
+    /// else here: the program must not be something the user can replace without elevating.
+    fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool>;
 }
 
 /// How the home directory stood after [`CrisolPaths::ensure_private_layout`].
@@ -517,6 +523,10 @@ mod tests {
 
         fn is_writable_by_others(&self, _dir: &Path) -> io::Result<bool> {
             Ok(self.open_to_others)
+        }
+
+        fn is_writable_by_non_administrators(&self, _path: &Path) -> io::Result<bool> {
+            Ok(true)
         }
     }
 

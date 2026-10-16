@@ -22,7 +22,8 @@ use crisol_core::hosts::{
     BEGIN,
 };
 
-use crate::nrpt::run_elevated_op;
+use crate::helper_location::HelperLocation;
+use crate::system_paths::{hosts_file_in, ipconfig_exe_in, system_directory};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BACKUP_EXTENSION: &str = "crisol-bak";
@@ -40,17 +41,10 @@ impl FileHosts {
         Self { path: path.into() }
     }
 
-    /// The machine's `hosts`.
-    #[must_use]
-    pub fn system() -> Self {
-        let root = std::env::var_os("SystemRoot")
-            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-        Self::new(
-            root.join("System32")
-                .join("drivers")
-                .join("etc")
-                .join("hosts"),
-        )
+    /// The machine's `hosts`, found through the system directory the operating system
+    /// reports, never through `%SystemRoot%`.
+    pub fn system() -> io::Result<Self> {
+        Ok(Self::new(hosts_file_in(&system_directory()?)))
     }
 
     /// Where the copy of the original goes.
@@ -101,7 +95,7 @@ impl HostsFile for FileHosts {
 
 /// Empties the DNS client cache so that a change to `hosts` is seen at once.
 pub fn flush_dns() -> io::Result<()> {
-    let status = Command::new("ipconfig")
+    let status = Command::new(ipconfig_exe_in(&system_directory()?))
         .arg("/flushdns")
         .creation_flags(CREATE_NO_WINDOW)
         .output()?
@@ -119,28 +113,29 @@ pub fn flush_dns() -> io::Result<()> {
 /// prompt per change.
 #[derive(Debug, Clone)]
 pub struct ElevatedHosts {
-    helper: PathBuf,
+    helper: HelperLocation,
     file: FileHosts,
 }
 
 impl ElevatedHosts {
-    /// Over the machine's `hosts`, with the path of `crisol-elevate.exe`.
-    #[must_use]
-    pub fn new(helper: impl Into<PathBuf>) -> Self {
-        Self::over(helper, FileHosts::system())
+    /// Over the machine's `hosts`, with the helper at its fixed place
+    /// (`%ProgramFiles%\Crisol\crisol-elevate.exe`).
+    pub fn new() -> io::Result<Self> {
+        Ok(Self::over(
+            HelperLocation::installed()?,
+            FileHosts::system()?,
+        ))
     }
 
-    /// Reading another file (the helper still edits the machine's own). For tests.
+    /// Reading another file, with the helper at another place (still checked before every
+    /// prompt; the helper edits the machine's own `hosts`). For tests.
     #[must_use]
-    pub fn over(helper: impl Into<PathBuf>, file: FileHosts) -> Self {
-        Self {
-            helper: helper.into(),
-            file,
-        }
+    pub(crate) fn over(helper: HelperLocation, file: FileHosts) -> Self {
+        Self { helper, file }
     }
 
     fn run(&self, op: &ElevatedOp) -> Result<(), HostsManagerError> {
-        Ok(run_elevated_op(&self.helper, op)?)
+        Ok(self.helper.run(op)?)
     }
 }
 
@@ -260,8 +255,17 @@ mod tests {
 
     #[test]
     fn the_system_path_is_the_drivers_etc_file() {
-        let path = FileHosts::system().path;
-        assert!(path.ends_with(r"System32\drivers\etc\hosts"), "{path:?}");
+        let path = FileHosts::system().unwrap().path;
+        let text = path.to_string_lossy().to_ascii_lowercase();
+        assert!(text.ends_with(r"system32\drivers\etc\hosts"), "{path:?}");
+        assert!(path.is_absolute());
+    }
+
+    fn helper_at(path: PathBuf) -> HelperLocation {
+        HelperLocation::at(
+            path,
+            std::sync::Arc::new(crisol_core::paths::fake::FakePrivateDirs::new()),
+        )
     }
 
     #[test]
@@ -270,21 +274,22 @@ mod tests {
         // is a bad name, a damaged file, or a change that is not one.
         let (dir, file) = copy();
         let helper = dir.path().join("no-helper.exe");
-        let hosts = ElevatedHosts::over(&helper, file.clone());
+        let hosts = ElevatedHosts::over(helper_at(helper.clone()), file.clone());
         hosts.clear().unwrap(); // no block: nothing to ask for
         assert!(matches!(
             hosts.set(&names(&["example.com"])),
             Err(HostsManagerError::Hosts(_))
         ));
-        assert!(matches!(
-            hosts.set(&names(&["a.test"])),
-            Err(HostsManagerError::Io(_))
-        ));
+        // The helper is not there: that is said (kind NotFound) before any prompt.
+        match hosts.set(&names(&["a.test"])) {
+            Err(HostsManagerError::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
+        }
         assert_eq!(fs::read(&file.path).unwrap(), ORIGINAL);
 
         let damaged = dir.path().join("damaged");
         fs::write(&damaged, "# BEGIN CRISOL\r\n").unwrap();
-        let hosts = ElevatedHosts::over(&helper, FileHosts::new(&damaged));
+        let hosts = ElevatedHosts::over(helper_at(helper), FileHosts::new(&damaged));
         assert!(matches!(
             hosts.set(&names(&["a.test"])),
             Err(HostsManagerError::Hosts(_))

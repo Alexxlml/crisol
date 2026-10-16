@@ -46,7 +46,7 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 
 ## Corrección (2026-10-16, revisión de la Fase 7)
 
-Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase7.md`. Pendiente de implementar.
+Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase7.md`. Implementada el 2026-10-16 (la nota de implementación está al final).
 
 - **Dónde vive el ayudante.** `crisol-elevate.exe` se instala en `%ProgramFiles%\Crisol\`, una carpeta que solo pueden escribir los administradores. Lo deja ahí un instalador que corre una vez con administrador, y **nunca** se ejecuta desde la home ni desde otra carpeta que pueda escribir el usuario.
   - Antes de mostrar el UAC, quien lo llama comprueba que ni el ejecutable ni su carpeta los pueden escribir otras cuentas.
@@ -55,3 +55,10 @@ Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase7
   Sin esto, el aislamiento del punto 3 de la decisión no protege nada: otra cuenta que pudiera escribir junto al ayudante obtendría administrador.
 - **IPv6.** Nginx escucha también en `[::1]`, en los mismos puertos, para que la respuesta `::1` del DNS y de `hosts` llegue a Crisol y no a otro programa que escuche en IPv6.
 - **Con el daemon parado,** la regla NRPT se queda instalada y las consultas `.<tld>` esperan el tiempo de espera del DNS. Se acepta: `crisol stop` y `doctor` lo avisan, y el tiempo se mide en la verificación manual.
+
+### Cómo quedó el hallazgo 1 (ayudante de confianza)
+
+- **Ubicación fija.** `HelperLocation::installed()` construye `%ProgramFiles%\Crisol\crisol-elevate.exe` con `SHGetKnownFolderPath(FOLDERID_ProgramFiles)`; ni `ElevatedNrpt` ni `ElevatedHosts` reciben una ruta, y `run_elevated` ya no es pública. No existe instalador todavía (F8.5 y F8.6, marcadas como «requiere admin» en el plan).
+- **Comprobación antes del UAC.** `PrivateDirs::is_writable_by_non_administrators`, más estricta que `is_writable_by_others`: solo SYSTEM, Administradores y TrustedInstaller pueden escribir o ser dueños de la carpeta y del ejecutable; el usuario actual **no** cuenta como de confianza. Reutiliza el análisis de SDDL de `private_dir.rs` (el mismo que juzga la home), probado con texto SDDL literal, incluida la forma de un `Program Files\Crisol` por defecto. Si no se cumple, se niega sin mostrar el UAC y el mensaje dice qué hacer.
+- **Dentro del ayudante.** Rutas absolutas de `GetSystemDirectoryW` para `powershell.exe`, `ipconfig.exe` y `drivers\etc\hosts` (también en la lectura sin elevar); nunca `%SystemRoot%` ni búsqueda por nombre. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` al empezar. `build.rs` pide al enlazador MSVC el *manifest* `requireAdministrator` (`/MANIFESTUAC`, sin `mt.exe`) y `/DEPENDENTLOADFLAG:0x800`; `crisol-elevate/tests/hardening.rs` lo comprueba leyendo los bytes del binario construido, sin ejecutarlo. El binario no tiene arnés de pruebas propio (`test = false`): un ejecutable de pruebas con `requireAdministrator` ni siquiera arrancaría.
+- **Referencia.** Herd (`analisis/herd/observaciones.md`) separa igual lo privilegiado (Program Files) de los datos (carpeta del usuario), pero con un servicio SYSTEM permanente; Crisol mantiene el ayudante efímero con UAC.

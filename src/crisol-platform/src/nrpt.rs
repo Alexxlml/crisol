@@ -6,19 +6,22 @@
 //!   only the helper (`crisol-elevate`) uses it for that.
 //! - [`ElevatedNrpt`] is what the rest of Crisol uses: it reads directly, and for each change
 //!   starts the helper through the UAC prompt with the fixed arguments of an
-//!   [`ElevatedOp`](crisol_core::dns::ElevatedOp). Nothing else ever runs elevated.
+//!   [`ElevatedOp`](crisol_core::dns::ElevatedOp). The helper is found only at its fixed place
+//!   and checked first ([`HelperLocation`]). Nothing else ever runs elevated.
 //!
 //! Every value that reaches a script was validated first (a special-use suffix, an IP), so none
 //! of them can carry quotes or commands; the scripts are built by pure functions and tested as
 //! text. The tests never touch the real table; the owner tries the real thing by hand
-//! (`examples/nrpt_manual.rs`).
+//! (`examples/dns_manual.rs`).
 
 use std::io;
 use std::net::IpAddr;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
+use crate::helper_location::HelperLocation;
+use crate::system_paths::{powershell_exe_in, system_directory};
 use crisol_core::dns::{parse_nrpt_json, ElevatedOp, NrptPolicy, NrptRule, RULE_COMMENT};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -52,7 +55,8 @@ pub fn remove_script(namespace: &str) -> String {
 }
 
 fn powershell(script: &str) -> io::Result<String> {
-    let output = Command::new("powershell.exe")
+    // The absolute path of the system's PowerShell: a bare name is looked for in other places.
+    let output = Command::new(powershell_exe_in(&system_directory()?))
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -106,16 +110,20 @@ impl NrptPolicy for PowerShellNrpt {
 /// Reads directly and changes the table through the elevated helper, one UAC prompt per change.
 #[derive(Debug, Clone)]
 pub struct ElevatedNrpt {
-    helper: PathBuf,
+    helper: HelperLocation,
 }
 
 impl ElevatedNrpt {
-    /// With the path of `crisol-elevate.exe`.
+    /// With the helper at its fixed place (`%ProgramFiles%\Crisol\crisol-elevate.exe`).
+    pub fn new() -> io::Result<Self> {
+        Ok(Self::with_location(HelperLocation::installed()?))
+    }
+
+    /// With the helper at another place, which is still checked before every prompt. For
+    /// tests.
     #[must_use]
-    pub fn new(helper: impl Into<PathBuf>) -> Self {
-        Self {
-            helper: helper.into(),
-        }
+    pub(crate) fn with_location(helper: HelperLocation) -> Self {
+        Self { helper }
     }
 }
 
@@ -133,7 +141,7 @@ impl NrptPolicy for ElevatedNrpt {
             suffix: suffix_of(&rule.namespace),
             server: rule.name_server,
         };
-        run_elevated_op(&self.helper, &op)
+        self.helper.run(&op)
     }
 
     fn remove(&self, namespace: &str) -> io::Result<bool> {
@@ -141,12 +149,9 @@ impl NrptPolicy for ElevatedNrpt {
             .iter()
             .any(|r| r.is_ours() && r.namespace.eq_ignore_ascii_case(namespace));
         if existed {
-            run_elevated_op(
-                &self.helper,
-                &ElevatedOp::NrptRemove {
-                    suffix: suffix_of(namespace),
-                },
-            )?;
+            self.helper.run(&ElevatedOp::NrptRemove {
+                suffix: suffix_of(namespace),
+            })?;
         }
         Ok(existed)
     }
@@ -163,8 +168,9 @@ pub(crate) fn run_elevated_op(helper: &Path, op: &ElevatedOp) -> io::Result<()> 
 
 /// Runs `exe` with `args` through the UAC prompt and waits for it. Returns its exit code. If
 /// the user answers no, that is an error of kind `PermissionDenied`. The arguments are joined
-/// with spaces, so they must not contain any (the helper's never do).
-pub fn run_elevated(exe: &Path, args: &[String]) -> io::Result<u32> {
+/// with spaces, so they must not contain any (the helper's never do). Not public: the only
+/// caller is [`HelperLocation::run`], which has checked where `exe` is and who can write it.
+pub(crate) fn run_elevated(exe: &Path, args: &[String]) -> io::Result<u32> {
     if args.iter().any(|a| a.is_empty() || a.contains([' ', '"'])) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

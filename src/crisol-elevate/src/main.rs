@@ -18,9 +18,15 @@ use std::process::ExitCode;
 
 use crisol_core::dns::{DnsError, ElevatedOp};
 use crisol_core::hosts::DirectHosts;
-use crisol_platform::{flush_dns, FileHosts, PowerShellNrpt};
+use crisol_platform::{flush_dns, restrict_dll_search, FileHosts, PowerShellNrpt};
 
 fn main() -> ExitCode {
+    // From here on, DLLs are loaded from System32 only (the static imports are limited at link
+    // time, see build.rs).
+    if let Err(error) = restrict_dll_search() {
+        eprintln!("crisol-elevate: could not restrict where DLLs are loaded from: {error}");
+        return ExitCode::FAILURE;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let op = match ElevatedOp::parse(&args) {
         Ok(op) => op,
@@ -29,7 +35,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let hosts = DirectHosts::new(FileHosts::system());
+    let system_hosts = match FileHosts::system() {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("crisol-elevate: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let hosts = DirectHosts::new(system_hosts);
     match op.apply(&PowerShellNrpt, &hosts) {
         Ok(()) => {
             if matches!(op, ElevatedOp::HostsSet { .. } | ElevatedOp::HostsClear) {

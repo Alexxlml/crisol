@@ -5,6 +5,8 @@ mod console;
 #[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
+mod helper_location;
+#[cfg(windows)]
 mod hosts_file;
 #[cfg(windows)]
 mod job_object;
@@ -17,6 +19,8 @@ mod private_dir;
 #[cfg(windows)]
 mod root_certs;
 #[cfg(windows)]
+mod system_paths;
+#[cfg(windows)]
 mod trust_store;
 #[cfg(windows)]
 mod user_path;
@@ -26,17 +30,21 @@ pub use console::survive_ctrl_c;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
+pub use helper_location::HelperLocation;
+#[cfg(windows)]
 pub use hosts_file::{flush_dns, ElevatedHosts, FileHosts};
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]
-pub use nrpt::{run_elevated, ElevatedNrpt, PowerShellNrpt};
+pub use nrpt::{ElevatedNrpt, PowerShellNrpt};
 #[cfg(windows)]
 pub use port_probe::WindowsPortProbe;
 #[cfg(windows)]
 pub use private_dir::WindowsPrivateDirs;
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
+#[cfg(windows)]
+pub use system_paths::{restrict_dll_search, system_directory, HELPER_EXE, HELPER_FOLDER};
 #[cfg(windows)]
 pub use trust_store::WindowsTrustStore;
 #[cfg(windows)]

@@ -99,6 +99,12 @@ impl PrivateDirs for WindowsPrivateDirs {
             &current_user_sid()?,
         ))
     }
+
+    fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool> {
+        Ok(exposes_write_to_non_administrators(
+            &owner_and_dacl_as_sddl(path)?,
+        ))
+    }
 }
 
 /// UTF-16, NUL-terminated.
@@ -238,6 +244,15 @@ const TRUSTED: [&str; 7] = [
     "S-1-3-0",
 ];
 
+/// `NT SERVICE\TrustedInstaller`, which owns what Windows installs (and `Program Files`).
+const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
+/// Whether `who` may write to something that runs with administrator rights: `SYSTEM`, the
+/// administrators, the system's installer and the owner placeholders. Not the current user.
+fn is_administrator_trustee(who: &str) -> bool {
+    who == TRUSTED_INSTALLER || TRUSTED.contains(&who)
+}
+
 /// Whether `who` (a SID or an SDDL alias) is the user `user_sid`, `SYSTEM`, the administrators
 /// or a placeholder for the owner. The one definition of "trusted" shared by the folder
 /// check and the project-file owner check (ADR-0008, ADR-0010).
@@ -316,8 +331,18 @@ fn rights_mask(rights: &str) -> Option<u32> {
 /// their permissions. Deny entries are ignored: an unrelated deny does not make an allow for
 /// a stranger safe to rely on. Whatever cannot be understood counts as exposed.
 fn exposes_write(sddl: &str, user_sid: &str) -> bool {
-    let may_write = |who: &str| is_trusted_trustee(who, user_sid);
+    exposes_write_unless(sddl, &|who| is_trusted_trustee(who, user_sid))
+}
 
+/// The stricter version for programs that run elevated: only `SYSTEM`, the administrators and
+/// the system's installer may own or write the item. The current user is not among them: if
+/// they could rewrite it, so could anything that runs as them.
+fn exposes_write_to_non_administrators(sddl: &str) -> bool {
+    exposes_write_unless(sddl, &is_administrator_trustee)
+}
+
+/// [`exposes_write`] with the list of who may be trusted given as a function.
+fn exposes_write_unless(sddl: &str, may_write: &dyn Fn(&str) -> bool) -> bool {
     if owner_of(sddl).is_some_and(|owner| !may_write(owner)) {
         return true;
     }
@@ -454,6 +479,58 @@ mod tests {
         ] {
             assert!(!exposes_write(fine, ME), "{fine}");
         }
+    }
+
+    #[test]
+    fn what_runs_elevated_must_not_be_writable_by_the_user_either() {
+        // The strict rule: the user's own SID is not among the trusted ones.
+        let own = format!("O:{ME}G:{ME}D:P(A;OICI;FA;;;{ME})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        assert!(!exposes_write(&own, ME), "fine for a private home");
+        assert!(
+            exposes_write_to_non_administrators(&own),
+            "not for a privileged program"
+        );
+        assert!(exposes_write_to_non_administrators(&format!(
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FW;;;{ME})"
+        )));
+        // Owned by the user, even if the DACL is harmless: the owner can rewrite it.
+        assert!(exposes_write_to_non_administrators(&format!(
+            "O:{ME}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        )));
+        assert!(exposes_write_to_non_administrators("O:BAD:(A;;FA;;;AU)"));
+
+        // What a default `Program Files\Crisol` looks like: owned by the system's installer,
+        // administrators, SYSTEM and the installer with full control, users read and execute.
+        let program_files = format!(
+            "O:{TRUSTED_INSTALLER}D:PAI(A;;FA;;;{TRUSTED_INSTALLER})(A;CIIO;GA;;;{TRUSTED_INSTALLER})\
+             (A;OICIIO;GA;;;SY)(A;;FA;;;SY)(A;OICIIO;GA;;;BA)(A;;FA;;;BA)\
+             (A;OICIIO;GXGR;;;BU)(A;;0x1200a9;;;BU)(A;OICIIO;GXGR;;;S-1-15-2-1)\
+             (A;OICIIO;GA;;;CO)"
+        );
+        assert!(
+            !exposes_write_to_non_administrators(&program_files),
+            "{program_files}"
+        );
+
+        // A file owned by the administrators group with no DACL changes passes; anything
+        // unreadable does not.
+        assert!(!exposes_write_to_non_administrators("O:BAD:"));
+        assert!(exposes_write_to_non_administrators("O:BAD:(A;;ZZ;;;SY"));
+        assert!(exposes_write_to_non_administrators("O:BAD:(A;;ZZ;;;BU)"));
+    }
+
+    #[test]
+    fn the_real_folders_of_the_system_and_the_user_are_judged_apart() {
+        let dirs = WindowsPrivateDirs::new();
+        let system = crate::system_paths::system_directory().unwrap();
+        assert!(!dirs.is_writable_by_non_administrators(&system).unwrap());
+        // A folder made by a test: the user can write it, so it is not for a privileged program,
+        // but it is private for the home rule.
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("private");
+        assert!(dirs.create_private_dir(&private).unwrap());
+        assert!(!dirs.is_writable_by_others(&private).unwrap());
+        assert!(dirs.is_writable_by_non_administrators(&private).unwrap());
     }
 
     #[test]

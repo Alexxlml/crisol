@@ -9,6 +9,9 @@ publish.workspace = true
 [[bin]]
 name = "crisol-elevate"
 path = "src/main.rs"
+# No test harness for the binary: it is linked to require administrator rights (build.rs), so a
+# test executable made from it could not even start. Its checks are in tests/.
+test = false
 
 [dependencies]
 crisol-core.workspace = true
