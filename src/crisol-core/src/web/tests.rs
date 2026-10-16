@@ -164,7 +164,11 @@ impl Rig {
     /// Starts the stack with the current sites and brings everything up.
     fn run(&mut self) {
         let plan = self.plan();
-        self.stack.apply(&plan, self.at(0)).unwrap();
+        self.run_with(&plan);
+    }
+
+    fn run_with(&mut self, plan: &WebPlan) {
+        self.stack.apply(plan, self.at(0)).unwrap();
         self.stack.start(self.at(0));
         self.first_test_passes(100);
         let mut ports = vec![HTTP];
@@ -662,5 +666,141 @@ fn the_terminal_override_does_not_reach_the_sites_and_resolution_warnings_are_ke
             .any(|w| w.starts_with("odd.test: ignoring") && w.contains(".php-version")),
         "{:?}",
         plan.warnings
+    );
+}
+
+// ---- HTTPS (F6.2) ------------------------------------------------------------------
+
+impl Rig {
+    fn secure(&self, name: &str) {
+        crate::sites::set_secure(&self.paths, name, true).unwrap();
+    }
+
+    fn plan_with_secure(&self) -> WebPlan {
+        let none = |_: &str| None;
+        plan_web(
+            &self.paths,
+            &self.config,
+            &SitesFile::load(&self.paths).unwrap(),
+            &self.catalog,
+            &TrustAllOwners,
+            &none,
+        )
+    }
+}
+
+#[test]
+fn securing_a_site_makes_the_ca_and_the_certificate_and_the_config_uses_them() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.site("blog", None);
+    rig.secure("shop");
+    let plan = rig.plan_with_secure();
+    let applied = rig.stack.apply(&plan, rig.at(0)).unwrap();
+    assert!(applied.ca_created, "the user has to trust it");
+    assert_eq!(applied.certificate, Some(crate::tls::Renewal::Missing));
+    assert!(rig.paths.ca_cert().is_file() && rig.paths.site_cert().is_file());
+    assert_eq!(applied.warnings.len(), 0, "{:?}", applied.warnings);
+
+    // Start: the test passes, the config reaches the disk with the TLS block.
+    rig.stack.start(rig.at(0));
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(100);
+    let shop = fs::read_to_string(rig.final_conf("sites/shop.conf")).unwrap();
+    assert!(
+        shop.contains("ssl_certificate") && shop.contains("return 301"),
+        "{shop}"
+    );
+    let blog = fs::read_to_string(rig.final_conf("sites/blog.conf")).unwrap();
+    assert!(!blog.contains("ssl"), "only the secured site: {blog}");
+
+    // The second time nothing is made again.
+    let again = rig.stack.apply(&plan, rig.at(200)).unwrap();
+    assert!(!again.ca_created && again.certificate.is_none());
+    assert!(!again.config_changed);
+}
+
+#[test]
+fn without_a_secured_site_no_ca_and_no_certificate_are_made() {
+    let mut rig = Rig::new(&[]);
+    rig.site("blog", None);
+    let plan = rig.plan_with_secure();
+    let applied = rig.stack.apply(&plan, rig.at(0)).unwrap();
+    assert!(!applied.ca_created && applied.certificate.is_none());
+    assert!(!rig.paths.certs_dir().exists());
+}
+
+#[test]
+fn securing_another_site_issues_a_new_certificate_and_reloads() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.site("blog", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+    let before = fs::read(rig.paths.site_cert()).unwrap();
+
+    rig.secure("blog");
+    let applied = rig
+        .stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    assert_eq!(applied.certificate, Some(crate::tls::Renewal::Names));
+    assert!(!applied.ca_created);
+    assert!(applied.reload_requested);
+    assert_ne!(fs::read(rig.paths.site_cert()).unwrap(), before);
+}
+
+#[test]
+fn a_certificate_made_again_reloads_nginx_even_if_the_config_text_is_the_same() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+
+    // The certificate files vanish: they are made again, with the same paths in the config.
+    fs::remove_file(rig.paths.site_cert()).unwrap();
+    fs::remove_file(rig.paths.site_key()).unwrap();
+    let applied = rig
+        .stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    assert_eq!(applied.certificate, Some(crate::tls::Renewal::Missing));
+    assert!(
+        !applied.config_changed,
+        "the text of the config did not change"
+    );
+    assert!(
+        applied.reload_requested,
+        "but Nginx still has the old certificate in memory"
+    );
+
+    rig.tick(1100);
+    assert_eq!(rig.control_commands(), [["-t"]]);
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(1300);
+    assert_eq!(rig.control_commands(), [vec!["-t"], vec!["-s", "reload"]]);
+}
+
+#[test]
+fn a_broken_ca_leaves_the_secured_sites_on_http_and_says_why() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    fs::create_dir_all(rig.paths.certs_dir()).unwrap();
+    fs::write(rig.paths.ca_cert(), "garbage").unwrap();
+    fs::write(rig.paths.ca_key(), "garbage").unwrap();
+    let applied = rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    assert!(
+        applied
+            .warnings
+            .iter()
+            .any(|w| w.contains("served over HTTP")),
+        "{:?}",
+        applied.warnings
+    );
+    assert_eq!(
+        fs::read(rig.paths.ca_cert()).unwrap(),
+        b"garbage",
+        "an unusable CA is never replaced behind the user's back"
     );
 }

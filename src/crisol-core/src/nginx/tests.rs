@@ -22,6 +22,7 @@ fn site(name: &str, docroot: &str, rule: DocRoot, kind: SiteKind) -> Site {
         docroot: PathBuf::from(docroot),
         docroot_rule: rule,
         kind,
+        secure: false,
     }
 }
 
@@ -45,6 +46,7 @@ fn render_for(paths: &CrisolPaths, sites: &[NginxSite<'_>], pools: &PhpPools) ->
         paths,
         nginx_dir: &dir,
         http_port: 80,
+        tls: None,
         sites,
         pools,
     })
@@ -228,6 +230,7 @@ fn the_port_is_in_the_files_that_listen_and_nowhere_else_is_it_decided() {
         paths: &paths,
         nginx_dir: &dir,
         http_port: 19080,
+        tls: None,
         sites: &sites,
         pools: &pools,
     });
@@ -340,6 +343,7 @@ fn written(paths: &CrisolPaths, names: &[&str]) -> WrittenNginx {
         paths,
         nginx_dir: &dir,
         http_port: 80,
+        tls: None,
         sites: &entries,
         pools: &pools,
     })
@@ -517,6 +521,7 @@ fn real_nginx_accepts_the_generated_configuration_and_serves_from_it() {
         paths: &paths,
         nginx_dir: &installed.path,
         http_port: 19080,
+        tls: None,
         sites: &sites,
         pools: &pools,
     })
@@ -654,6 +659,7 @@ fn staged_input<'a>(
         paths,
         nginx_dir: dir,
         http_port: 80,
+        tls: None,
         sites,
         pools,
     }
@@ -787,4 +793,207 @@ fn pools_keep_away_from_the_reserved_ports() {
     // 9102-9103 clashes with 9102; 9104-9105 clashes with 9105; 9106-9107 is free.
     assert_eq!(pools.ports("8.4.26"), Some(&[9106, 9107][..]));
     assert_eq!(pools.ports("8.5.0"), Some(&[9108, 9109][..]));
+}
+
+// ---- HTTPS (F6.2) ------------------------------------------------------------------
+
+fn secured(name: &str, docroot: &str) -> Site {
+    Site {
+        secure: true,
+        ..site(name, docroot, DocRoot::Laravel, SiteKind::Parked)
+    }
+}
+
+fn tls_files() -> (PathBuf, PathBuf) {
+    let paths = home();
+    (paths.site_cert(), paths.site_key())
+}
+
+fn render_tls(sites: &[NginxSite<'_>], tls: Option<(u16, &(PathBuf, PathBuf))>) -> RenderedNginx {
+    let paths = home();
+    let dir = nginx_dir();
+    let pools = PhpPools::default().with("8.4.26", &[9100]);
+    render(&NginxInput {
+        paths: &paths,
+        nginx_dir: &dir,
+        http_port: 80,
+        tls: tls.map(|(https_port, (cert, key))| NginxTls {
+            cert,
+            key,
+            https_port,
+        }),
+        sites,
+        pools: &pools,
+    })
+}
+
+#[test]
+fn a_secured_site_gets_a_tls_block_and_its_http_block_only_redirects() {
+    let shop = secured("shop", "D:/shop/public");
+    let plain = site("blog", "D:/blog", DocRoot::Root, SiteKind::Parked);
+    let files = tls_files();
+    let rendered = render_tls(
+        &[
+            NginxSite {
+                site: &shop,
+                php: Some("8.4.26"),
+            },
+            NginxSite {
+                site: &plain,
+                php: None,
+            },
+        ],
+        Some((443, &files)),
+    );
+    assert_eq!(rendered.warnings, Vec::<String>::new());
+    for (name, text) in &rendered.files {
+        if matches!(
+            name.as_str(),
+            "nginx.conf" | "sites/shop.conf" | "sites/blog.conf"
+        ) {
+            insta::assert_snapshot!(format!("tls_{}", name.replace('/', "_")), normalised(text));
+        }
+    }
+}
+
+#[test]
+fn the_redirect_names_the_port_unless_it_is_443() {
+    let shop = secured("shop", "D:/shop");
+    let files = tls_files();
+    let entry = [NginxSite {
+        site: &shop,
+        php: None,
+    }];
+    let standard = render_tls(&entry, Some((443, &files)));
+    assert!(standard.files["sites/shop.conf"].contains("return 301 https://$host$request_uri;"));
+    let custom = render_tls(&entry, Some((19443, &files)));
+    let conf = &custom.files["sites/shop.conf"];
+    assert!(
+        conf.contains("return 301 https://$host:19443$request_uri;"),
+        "{conf}"
+    );
+    assert!(conf.contains("listen 127.0.0.1:19443 ssl;"), "{conf}");
+}
+
+#[test]
+fn the_tls_block_has_the_certificate_the_protocols_and_tells_php_it_is_https() {
+    let shop = secured("shop", "D:/shop");
+    let files = tls_files();
+    let conf = render_tls(
+        &[NginxSite {
+            site: &shop,
+            php: Some("8.4.26"),
+        }],
+        Some((443, &files)),
+    )
+    .files["sites/shop.conf"]
+        .clone();
+    let conf = normalised(&conf);
+    for line in [
+        "http2 on;",
+        "ssl_certificate \"<home>/certs/sites.pem\";",
+        "ssl_certificate_key \"<home>/certs/sites.key\";",
+        "ssl_protocols TLSv1.2 TLSv1.3;",
+        "fastcgi_param HTTPS on;",
+    ] {
+        assert!(conf.contains(line), "{line} in\n{conf}");
+    }
+    // The plain HTTP block comes first and only redirects: no root, no PHP.
+    let (redirect, secure) = conf.split_once("# shop.test: parked site").unwrap();
+    assert!(
+        redirect.contains("return 301") && !redirect.contains("root"),
+        "{redirect}"
+    );
+    assert!(
+        !redirect.contains("fastcgi") && secure.contains("root"),
+        "{conf}"
+    );
+}
+
+#[test]
+fn only_a_secured_site_makes_the_server_listen_with_tls_and_unknown_hosts_are_refused() {
+    let files = tls_files();
+    let plain = site("blog", "D:/blog", DocRoot::Root, SiteKind::Parked);
+    let none = render_tls(
+        &[NginxSite {
+            site: &plain,
+            php: None,
+        }],
+        Some((443, &files)),
+    );
+    let main = &none.files["nginx.conf"];
+    assert!(
+        !main.contains("ssl"),
+        "no secured site, no TLS listener: {main}"
+    );
+
+    let shop = secured("shop", "D:/shop");
+    let some = render_tls(
+        &[NginxSite {
+            site: &shop,
+            php: None,
+        }],
+        Some((443, &files)),
+    );
+    let main = &some.files["nginx.conf"];
+    assert!(
+        main.contains("listen 127.0.0.1:443 ssl default_server;"),
+        "{main}"
+    );
+    assert!(main.contains("ssl_reject_handshake on;"), "{main}");
+}
+
+#[test]
+fn a_secured_site_without_a_certificate_is_served_over_http_with_a_warning() {
+    let shop = secured("shop", "D:/shop");
+    let rendered = render_tls(
+        &[NginxSite {
+            site: &shop,
+            php: None,
+        }],
+        None,
+    );
+    assert_eq!(rendered.warnings.len(), 1, "{:?}", rendered.warnings);
+    assert!(rendered.warnings[0].contains("shop.test"));
+    let conf = &rendered.files["sites/shop.conf"];
+    assert!(
+        conf.contains("listen 127.0.0.1:80;") && !conf.contains("ssl"),
+        "{conf}"
+    );
+}
+
+#[test]
+fn a_site_that_is_not_secured_is_unchanged_whether_or_not_there_is_a_certificate() {
+    let plain = site("blog", "D:/blog", DocRoot::WordPress, SiteKind::Linked);
+    let files = tls_files();
+    let entry = [NginxSite {
+        site: &plain,
+        php: None,
+    }];
+    assert_eq!(
+        render_tls(&entry, Some((443, &files))).files["sites/blog.conf"],
+        render_tls(&entry, None).files["sites/blog.conf"]
+    );
+}
+
+#[test]
+fn a_certificate_path_nginx_would_misread_keeps_the_secured_site_out() {
+    let shop = secured("shop", "D:/shop");
+    let bad = (
+        PathBuf::from("D:/odd$dir/sites.pem"),
+        PathBuf::from("D:/k.key"),
+    );
+    let rendered = render_tls(
+        &[NginxSite {
+            site: &shop,
+            php: None,
+        }],
+        Some((443, &bad)),
+    );
+    assert!(!rendered.files.contains_key("sites/shop.conf"));
+    assert!(
+        rendered.warnings.iter().any(|w| w.contains("not served")),
+        "{:?}",
+        rendered.warnings
+    );
 }

@@ -29,14 +29,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use crate::ca::ensure_ca;
 use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
 use crate::manage::InstalledVersion;
 use crate::nginx::{
     config_differs, render, stage_nginx_config, write_nginx_config, NginxError, NginxInput,
-    NginxSite, PhpPools,
+    NginxSite, NginxTls, PhpPools,
 };
 use crate::paths::{CrisolPaths, PathsError};
 use crate::phppool::{pool_spec, service_name};
@@ -50,6 +51,7 @@ use crate::service::{
     HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
 };
 use crate::sites::{discover, Site, SitesFile};
+use crate::tls::{ensure_site_cert, Renewal};
 
 /// How long each step of a reload may take.
 const RELOAD_STEP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -214,6 +216,12 @@ pub struct Applied {
     pub retired_pools: Vec<String>,
     /// A reload was requested (or one under way will run again).
     pub reload_requested: bool,
+    /// The local CA was made now: it is not trusted by anything yet, so browsers will warn
+    /// until the user installs it (`TrustStore`, F6.3).
+    pub ca_created: bool,
+    /// The certificate for the secured sites was made again, and why; `None` if it was kept
+    /// (or there are no secured sites).
+    pub certificate: Option<Renewal>,
     /// Sites left out of the configuration and other things worth saying.
     pub warnings: Vec<String>,
 }
@@ -224,6 +232,11 @@ pub struct Applied {
 struct Desired {
     sites: Vec<(Site, Option<String>)>,
     pools: PhpPools,
+    /// The certificate and port of the secured sites, if there is a certificate for them.
+    tls: Option<(PathBuf, PathBuf, u16)>,
+    /// The certificate changed but the text of the configuration did not: Nginx still has to
+    /// reload to pick the new one up.
+    force_reload: bool,
 }
 
 impl Desired {
@@ -266,6 +279,8 @@ struct Pool {
 pub struct WebStack {
     paths: CrisolPaths,
     http_port: u16,
+    https_port: u16,
+    tld: String,
     php: PhpConfig,
     reserved: BTreeSet<u16>,
     nginx_dir: PathBuf,
@@ -308,6 +323,8 @@ impl WebStack {
         Self {
             paths,
             http_port: config.services.nginx.http_port,
+            https_port: config.services.nginx.https_port,
+            tld: config.sites.tld.clone(),
             php: config.php.clone(),
             reserved: config.reserved_ports(),
             nginx_dir,
@@ -371,6 +388,24 @@ impl WebStack {
                 &self.reserved,
             );
         }
+        let secured: Vec<String> = plan
+            .sites
+            .iter()
+            .filter(|s| s.site.secure)
+            .map(|s| s.site.domain.clone())
+            .collect();
+        let mut tls_warnings = Vec::new();
+        let (tls, ca_created, certificate) = if secured.is_empty() {
+            (None, false, None)
+        } else {
+            match self.prepare_tls(&secured, SystemTime::now()) {
+                Ok((files, created, certificate)) => (Some(files), created, certificate),
+                Err(why) => {
+                    tls_warnings.push(format!("the secured sites are served over HTTP: {why}"));
+                    (None, false, None)
+                }
+            }
+        };
         let desired = Desired {
             sites: plan
                 .sites
@@ -385,16 +420,62 @@ impl WebStack {
                 })
                 .collect(),
             pools: self.ports.clone(),
+            tls,
+            force_reload: certificate.is_some(),
         };
-        let (config_changed, warnings) = {
+        let (config_changed, mut warnings) = {
             let entries = desired.entries();
             let input = self.input(&desired, &entries);
             (config_differs(&input)?, render(&input).warnings)
         };
+        warnings.extend(tls_warnings);
         self.desired = Some(desired);
 
+        let (new_pools, retired_pools) = self.sync_pools(&versions)?;
+
+        if self.nginx.is_none() {
+            self.nginx = Some(self.nginx_service()?);
+        }
+
+        let mut reload_requested = false;
+        if self.running {
+            for version in &new_pools {
+                if let Some(pool) = self.pools.get_mut(version) {
+                    if pool.service.start(now).is_ok() {
+                        self.awaiting.insert(version.clone());
+                    }
+                }
+            }
+            if config_changed || certificate.is_some() || self.reload.is_some() {
+                self.request_reload(now);
+                reload_requested = true;
+            } else if !retired_pools.is_empty() {
+                // Nothing to reload, and nobody sends requests to these pools any more.
+                self.retire_unused(now);
+            }
+        } else {
+            self.retire_unused(now);
+        }
+
+        Ok(Applied {
+            config_changed,
+            new_pools,
+            retired_pools,
+            reload_requested,
+            ca_created,
+            certificate,
+            warnings,
+        })
+    }
+
+    /// Creates the pools for PHP versions that have none (not started) and marks as unused the
+    /// ones no site needs. Returns the new and the retired versions.
+    fn sync_pools(
+        &mut self,
+        versions: &BTreeMap<String, InstalledVersion>,
+    ) -> Result<(Vec<String>, Vec<String>), WebError> {
         let mut new_pools = Vec::new();
-        for (version, installed) in &versions {
+        for (version, installed) in versions {
             self.unused.remove(version);
             if self.pools.contains_key(version) {
                 continue;
@@ -415,37 +496,24 @@ impl WebStack {
             .collect();
         self.unused.extend(retired_pools.iter().cloned());
 
-        if self.nginx.is_none() {
-            self.nginx = Some(self.nginx_service()?);
-        }
+        Ok((new_pools, retired_pools))
+    }
 
-        let mut reload_requested = false;
-        if self.running {
-            for version in &new_pools {
-                if let Some(pool) = self.pools.get_mut(version) {
-                    if pool.service.start(now).is_ok() {
-                        self.awaiting.insert(version.clone());
-                    }
-                }
-            }
-            if config_changed || self.reload.is_some() {
-                self.request_reload(now);
-                reload_requested = true;
-            } else if !retired_pools.is_empty() {
-                // Nothing to reload, and nobody sends requests to these pools any more.
-                self.retire_unused(now);
-            }
-        } else {
-            self.retire_unused(now);
-        }
-
-        Ok(Applied {
-            config_changed,
-            new_pools,
-            retired_pools,
-            reload_requested,
-            warnings,
-        })
+    /// The local CA (made if there is none) and the certificate for `hosts`. Returns the files
+    /// and port for Nginx, whether the CA is new, and why the certificate was made again.
+    #[allow(clippy::type_complexity)]
+    fn prepare_tls(
+        &self,
+        hosts: &[String],
+        now: SystemTime,
+    ) -> Result<((PathBuf, PathBuf, u16), bool, Option<Renewal>), crate::ca::CaError> {
+        let ensured = ensure_ca(&self.paths, &self.tld, now)?;
+        let cert = ensure_site_cert(&self.paths, &ensured.ca, hosts, now)?;
+        Ok((
+            (cert.cert, cert.key, self.https_port),
+            ensured.created,
+            cert.changed,
+        ))
     }
 
     fn input<'a>(&'a self, desired: &'a Desired, entries: &'a [NginxSite<'a>]) -> NginxInput<'a> {
@@ -455,6 +523,14 @@ impl WebStack {
             http_port: self.http_port,
             sites: entries,
             pools: &desired.pools,
+            tls: desired
+                .tls
+                .as_ref()
+                .map(|(cert, key, https_port)| NginxTls {
+                    cert,
+                    key,
+                    https_port: *https_port,
+                }),
         }
     }
 
@@ -738,7 +814,12 @@ impl WebStack {
             let entries = desired.entries();
             let input = self.input(&desired, &entries);
             match config_differs(&input) {
-                Ok(false) if self.main_conf().is_ok_and(|main| main.is_file()) => None,
+                Ok(false)
+                    if !desired.force_reload
+                        && self.main_conf().is_ok_and(|main| main.is_file()) =>
+                {
+                    None
+                }
                 Ok(_) => Some(stage_nginx_config(&input)),
                 Err(e) => Some(Err(e)),
             }
@@ -811,6 +892,9 @@ impl WebStack {
         };
         if let Some(stage) = crate::nginx::staging_dir(&self.paths) {
             let _ = std::fs::remove_dir_all(stage);
+        }
+        if let Some(desired) = &mut self.desired {
+            desired.force_reload = false;
         }
         if let Err(e) = written {
             self.reload = Some(Reload {

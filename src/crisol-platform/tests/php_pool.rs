@@ -111,6 +111,7 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
         docroot: root,
         docroot_rule: DocRoot::Root,
         kind: SiteKind::Parked,
+        secure: false,
     };
     let pools = PhpPools::default().with(VERSION, &PORTS);
     let sites = [NginxSite {
@@ -121,6 +122,7 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
         paths: &paths,
         nginx_dir: &nginx_dir,
         http_port: HTTP,
+        tls: None,
         sites: &sites,
         pools: &pools,
     })

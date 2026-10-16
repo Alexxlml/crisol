@@ -246,6 +246,19 @@ impl CrisolPaths {
         self.certs_dir().join("ca.pem")
     }
 
+    /// The certificate for the sites (wildcard, signed by the local CA): `certs/sites.pem`.
+    /// Derived: renewed whenever it is not current. See [`crate::tls`].
+    #[must_use]
+    pub fn site_cert(&self) -> PathBuf {
+        self.certs_dir().join("sites.pem")
+    }
+
+    /// The private key of the sites certificate: `certs/sites.key`.
+    #[must_use]
+    pub fn site_key(&self) -> PathBuf {
+        self.certs_dir().join("sites.key")
+    }
+
     /// The private key of the local CA: `certs/ca.key`. Never leaves the private home.
     #[must_use]
     pub fn ca_key(&self) -> PathBuf {

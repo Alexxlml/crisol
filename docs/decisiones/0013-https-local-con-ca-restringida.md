@@ -1,6 +1,6 @@
 # ADR-0013 — HTTPS local: una CA restringida a `.test` y un certificado comodín
 
-- **Estado:** aceptada (decidida por el usuario el 2026-10-15, tras la revisión de la Fase 6 propuesta)
+- **Estado:** aceptada (decidida por el usuario el 2026-10-15, tras la revisión de la Fase 6 propuesta); **corregida el 2026-10-16** al implementar F6.2: sin comodín (ver «Corrección»)
 - **Fecha:** 2026-10-15
 
 ## Contexto
@@ -59,3 +59,23 @@ Riesgos y huecos que la revisión de la propuesta encontró:
 - **CA sin restricciones de nombres:** el robo de su clave permitiría suplantar cualquier dominio.
 - **Instalar la CA en el almacén de la máquina:** exige administrador y amplía el alcance a todos los usuarios del equipo.
 - **Importar la CA a Firefox (NSS):** hay que tocar cada perfil; fuera de alcance.
+
+## Corrección (2026-10-16, F6.2): el certificado no lleva comodín
+
+La decisión original era un único certificado con SAN `*.<tld>`. Al implementarlo y verificarlo con un validador real (`rustls-webpki`, el de los clientes Rust y Deno) resultó que **rechaza todo el certificado** si contiene un comodín directamente bajo un TLD de una sola etiqueta (`*.test`), con `MalformedDnsIdentifier`, **aunque el host pedido figure también de forma explícita** en la lista (hay una prueba que lo fija). Navegadores y OpenSSL (PHP, Node) sí lo aceptan, pero un certificado que un cliente de la propia herramienta rechaza no es aceptable.
+
+Se decide:
+
+- El certificado de hoja lista **los hosts de los sitios asegurados** (`shop.test`…), más `localhost`, `127.0.0.1` y `::1`. Sin `*.<tld>` y sin el TLD suelto.
+- Es más estricto que lo anterior: el certificado solo avala los sitios que el usuario pidió asegurar (menor superficie), y la CA sigue restringida a `.test`, `localhost`, etc. por sus *name constraints*.
+- Asegurar o desasegurar un sitio cambia la lista y genera un certificado nuevo (clave nueva, 1 año); eso va acompañado de la recarga de Nginx que ya ocurre al cambiar la configuración. Un certificado vigente, con la lista igual en cualquier orden, se conserva. La renovación (30 días antes), por CA distinta o por archivos dañados, sigue igual.
+- Si el certificado cambia pero el texto de la configuración no, `WebStack` fuerza igualmente la prueba y la recarga, porque Nginx mantiene el certificado viejo en memoria.
+- Se pierde la propiedad «un sitio nuevo no necesita emitir nada» para los sitios asegurados; los no asegurados nunca lo necesitaron (se sirven por HTTP).
+
+## Implementación de F6.2 (2026-10-16)
+
+- `crisol-core::tls` (`ensure_site_cert`, `expected_names`, `Renewal`): hoja ECDSA P-256 con clave propia en `certs/sites.pem` y `certs/sites.key`, `digitalSignature` + `serverAuth`, firmada por la CA.
+- `sites.toml`: lista `secure = ["nombre", …]` (parked y linked); `set_secure` la edita con `TomlEditor` conservando lo demás; `Site::secure`.
+- `crisol-core::nginx`: `NginxTls`; un sitio asegurado escucha en `127.0.0.1:<https_port> ssl` con `http2 on`, TLS 1.2 y 1.3 y `fastcgi_param HTTPS on`; su bloque HTTP solo redirige con `301` (con el puerto si no es el 443); un `default_server` TLS con `ssl_reject_handshake on` rechaza los demás nombres. Sin certificado, el sitio se sirve por HTTP con una advertencia.
+- `WebStack::apply` crea la CA si falta (`Applied::ca_created`: el usuario debe confiar en ella) y la hoja, y las usa en la configuración.
+- Verificado: el verificador de `rustls-webpki` con la CA como única raíz acepta los hosts asegurados y los locales y rechaza otros nombres, fechas fuera de rango y un certificado que la propia CA firmara para `bank.example.com` (`NameConstraintViolation`). Prueba real a pedido con Nginx 1.28.3 y PHP 7.4.33: `curl` (Schannel) con `--cacert certs/ca.pem` recibe la página con `HTTPS=on`; sin la CA falla; `/v.PHP`, `/v.Php`, `/v.php.` y `/v.php%20` ejecutan el script por TLS y nunca devuelven el código; HTTP redirige a `https://…:<puerto>/…`; un sitio no asegurado recibe el handshake rechazado por TLS y sigue sirviéndose por HTTP.

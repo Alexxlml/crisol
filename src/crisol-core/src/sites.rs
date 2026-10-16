@@ -76,6 +76,8 @@ pub struct Site {
     pub docroot_rule: DocRoot,
     /// Parked or linked.
     pub kind: SiteKind,
+    /// Served over HTTPS too (`secure` in `sites.toml`, ADR-0013).
+    pub secure: bool,
 }
 
 /// The sites that exist, and what to tell the user about the ones that do not.
@@ -93,6 +95,8 @@ pub struct SiteList {
 struct RawSites {
     #[serde(default)]
     linked: BTreeMap<String, RawLinked>,
+    #[serde(default)]
+    secure: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +120,8 @@ pub struct LinkedSite {
 pub struct SitesFile {
     /// Linked sites by name.
     pub linked: BTreeMap<String, LinkedSite>,
+    /// Names of the sites (parked or linked) served over HTTPS.
+    pub secure: BTreeSet<String>,
     /// Unknown fields.
     pub warnings: Vec<ConfigWarning>,
 }
@@ -150,7 +156,16 @@ impl SitesFile {
                 },
             );
         }
-        Ok(Self { linked, warnings })
+        let mut secure = BTreeSet::new();
+        for name in raw.secure {
+            validate_name(&name).map_err(|why| invalid(&format!("secure.{name}"), &why))?;
+            secure.insert(name);
+        }
+        Ok(Self {
+            linked,
+            secure,
+            warnings,
+        })
     }
 
     /// Reads `sites.toml`; a missing file is an empty list.
@@ -216,6 +231,40 @@ pub fn unlink(paths: &CrisolPaths, name: &str) -> Result<bool, SitesError> {
     let existed = editor.remove(&["linked", name])?;
     editor.save()?;
     Ok(existed)
+}
+
+/// Marks the site `name` (parked or linked) as served over HTTPS (`on`) or not. Only the
+/// `secure` list of `sites.toml` changes; the names in it keep their order. Returns whether the
+/// file changed. The name must be a valid site name; whether the site exists is for the caller
+/// to check against [`discover`].
+pub fn set_secure(paths: &CrisolPaths, name: &str, on: bool) -> Result<bool, SitesError> {
+    validate_name(name).map_err(|why| SitesError::Invalid {
+        what: format!("the name `{name}`"),
+        why,
+    })?;
+    let mut editor = TomlEditor::open_sites(paths)?;
+    let mut names: Vec<String> = editor
+        .get(&["secure"])
+        .and_then(|item| item.as_array())
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let present = names.iter().any(|n| n == name);
+    match (on, present) {
+        (true, false) => names.push(name.to_owned()),
+        (false, true) => names.retain(|n| n != name),
+        _ => return Ok(false),
+    }
+    if names.is_empty() {
+        editor.remove(&["secure"])?;
+    } else {
+        editor.set(&["secure"], names.into_iter().collect::<toml_edit::Array>())?;
+    }
+    Ok(editor.save()?)
 }
 
 /// Why a site could not be linked or unlinked.
@@ -304,6 +353,7 @@ pub fn discover(paths: &CrisolPaths, config: &Config, linked: &SitesFile) -> Sit
         let (docroot, docroot_rule) = choose_docroot(&root, explicit, &name, &mut list.warnings);
         list.sites.push(Site {
             domain: format!("{name}.{tld}"),
+            secure: linked.secure.contains(&name),
             name,
             root,
             docroot,

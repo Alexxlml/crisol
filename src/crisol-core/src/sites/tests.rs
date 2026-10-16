@@ -368,3 +368,76 @@ fn the_editor_refuses_to_save_a_sites_file_that_could_not_be_read_back() {
     assert!(matches!(editor.save(), Err(EditError::Rejected(_))));
     assert!(!world.paths.sites_file().exists());
 }
+
+// ---- secure (ADR-0013) -------------------------------------------------------------
+
+#[test]
+fn the_secure_list_marks_parked_and_linked_sites() {
+    let world = world();
+    fs::create_dir(world.www.join("blog")).unwrap();
+    fs::create_dir(world.www.join("shop")).unwrap();
+    let project = world.elsewhere.join("client");
+    fs::create_dir(&project).unwrap();
+    link(&world.paths, "client", &project, None).unwrap();
+
+    assert!(set_secure(&world.paths, "shop", true).unwrap());
+    assert!(set_secure(&world.paths, "client", true).unwrap());
+    let list = found(&world);
+    let flags: Vec<(&str, bool)> = list
+        .sites
+        .iter()
+        .map(|s| (s.name.as_str(), s.secure))
+        .collect();
+    assert_eq!(flags, [("blog", false), ("client", true), ("shop", true)]);
+}
+
+#[test]
+fn securing_is_idempotent_keeps_the_order_and_everything_else() {
+    let world = world();
+    let original = "# my sites\n[linked.keep]\npath = 'C:/keep' # old\n";
+    fs::write(world.paths.sites_file(), original).unwrap();
+    assert!(set_secure(&world.paths, "zeta", true).unwrap());
+    assert!(set_secure(&world.paths, "alpha", true).unwrap());
+    assert!(
+        !set_secure(&world.paths, "alpha", true).unwrap(),
+        "already there"
+    );
+    let text = fs::read_to_string(world.paths.sites_file()).unwrap();
+    assert!(
+        text.ends_with(original),
+        "everything the user wrote stays: {text}"
+    );
+    let file = SitesFile::load(&world.paths).unwrap();
+    assert_eq!(
+        file.secure.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["alpha", "zeta"]
+    );
+    assert!(
+        text.contains(r#"secure = ["zeta", "alpha"]"#),
+        "in the order they were secured: {text}"
+    );
+
+    assert!(set_secure(&world.paths, "zeta", false).unwrap());
+    assert!(!set_secure(&world.paths, "zeta", false).unwrap());
+    assert!(set_secure(&world.paths, "alpha", false).unwrap());
+    let text = fs::read_to_string(world.paths.sites_file()).unwrap();
+    assert_eq!(text, original, "an empty list leaves no trace");
+}
+
+#[test]
+fn secure_names_must_be_site_names() {
+    let world = world();
+    assert!(matches!(
+        set_secure(&world.paths, "Not A Name", true),
+        Err(SitesError::Invalid { .. })
+    ));
+    assert!(!world.paths.sites_file().exists());
+    let error = SitesFile::parse("secure = ['ok', 'Bad Name']\n")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("secure.Bad Name"), "{error}");
+    assert!(
+        SitesFile::parse("secure = 'shop'\n").is_err(),
+        "it is a list"
+    );
+}

@@ -32,6 +32,8 @@ sha2 = "0.11.1"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 x509-parser = "0.18.1"
 time = "0.3.55"
+rustls-webpki = { version = "0.103.15", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tempfile = "3.27.0"
 insta = "1.49.0"

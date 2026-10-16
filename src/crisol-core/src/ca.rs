@@ -83,6 +83,9 @@ pub enum CaError {
     /// A CA exists and the request was to create one without replacing it.
     #[error("a local CA already exists in `certs/`")]
     AlreadyExists,
+    /// The CA cannot issue for this name (it was made for another TLD).
+    #[error("the local CA cannot issue a certificate for `{0}`: make a new CA (it must be trusted again)")]
+    NotCovered(String),
 }
 
 /// What can be read from the CA's certificate.
@@ -139,7 +142,6 @@ impl LocalCa {
     }
 
     /// The signing key, for issuing certificates ([`crate::ca`] only).
-    #[allow(dead_code)] // used to sign the site certificate (F6.2)
     pub(crate) fn key(&self) -> &KeyPair {
         &self.key
     }
@@ -256,7 +258,13 @@ pub fn create_ca(
     let cert_der = cert.der().to_vec();
     let info = inspect(&cert_der, &key)?;
 
-    write_pair(paths, &cert_pem, &key.serialize_pem())?;
+    write_files(
+        &paths.certs_dir(),
+        &[
+            (paths.ca_key(), &key.serialize_pem()),
+            (paths.ca_cert(), &cert_pem),
+        ],
+    )?;
     Ok(LocalCa {
         cert_pem,
         cert_der,
@@ -398,10 +406,10 @@ fn cidr(bytes: &[u8]) -> String {
     }
 }
 
-/// Writes the certificate and the key: both to temporary files first, so a failure while
-/// writing the second leaves neither in place.
-fn write_pair(paths: &CrisolPaths, cert_pem: &str, key_pem: &str) -> Result<(), CaError> {
-    let dir = paths.certs_dir();
+/// Writes `files` (path, text) into `dir`: all of them to temporary files first, so a failure
+/// while preparing the last one leaves none of them in place; then each is moved over its
+/// target.
+pub(crate) fn write_files(dir: &Path, files: &[(std::path::PathBuf, &str)]) -> Result<(), CaError> {
     let io = |action: &'static str, path: &Path| {
         let path = path.to_path_buf();
         move |source| CaError::Io {
@@ -410,25 +418,22 @@ fn write_pair(paths: &CrisolPaths, cert_pem: &str, key_pem: &str) -> Result<(), 
             source,
         }
     };
-    fs::create_dir_all(&dir).map_err(io("cannot create", &dir))?;
-    let stage = |bytes: &str| -> Result<tempfile::NamedTempFile, CaError> {
+    fs::create_dir_all(dir).map_err(io("cannot create", dir))?;
+    let mut staged = Vec::with_capacity(files.len());
+    for (path, text) in files {
         let mut file = tempfile::Builder::new()
-            .prefix(".crisol-ca-")
-            .tempfile_in(&dir)
-            .map_err(io("cannot create a temporary file in", &dir))?;
-        file.write_all(bytes.as_bytes())
+            .prefix(".crisol-cert-")
+            .tempfile_in(dir)
+            .map_err(io("cannot create a temporary file in", dir))?;
+        file.write_all(text.as_bytes())
             .and_then(|()| file.as_file().sync_all())
-            .map_err(io("cannot write", &dir))?;
-        Ok(file)
-    };
-    let (key_file, cert_file) = (stage(key_pem)?, stage(cert_pem)?);
-    let (key_path, cert_path) = (paths.ca_key(), paths.ca_cert());
-    key_file
-        .persist(&key_path)
-        .map_err(|e| io("cannot write", &key_path)(e.error))?;
-    cert_file
-        .persist(&cert_path)
-        .map_err(|e| io("cannot write", &cert_path)(e.error))?;
+            .map_err(io("cannot write", path))?;
+        staged.push((path, file));
+    }
+    for (path, file) in staged {
+        file.persist(path)
+            .map_err(|e| io("cannot write", path)(e.error))?;
+    }
     Ok(())
 }
 

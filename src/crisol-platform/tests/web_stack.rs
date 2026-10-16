@@ -292,3 +292,156 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
         eprintln!("{line}");
     }
 }
+
+// ---- HTTPS (F6.2) -----------------------------------------------------------------------
+
+/// `curl` (the one that ships with Windows, built on Schannel) trusting **only** `ca`, for a
+/// name that is pointed at 127.0.0.1 without touching the hosts file.
+fn curl(ca: Option<&std::path::Path>, resolve: &str, args: &[&str]) -> std::process::Output {
+    let mut command = std::process::Command::new("curl");
+    command
+        .args([
+            "-sS",
+            "--max-time",
+            "15",
+            "--ssl-no-revoke",
+            "--resolve",
+            resolve,
+        ])
+        .args(args);
+    if let Some(ca) = ca {
+        command.arg("--cacert").arg(ca);
+    }
+    command.output().unwrap()
+}
+
+fn text(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n")
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 7.4.33 and Nginx 1.28.3, and curl (Windows)"]
+#[allow(clippy::too_many_lines)]
+fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca() {
+    const HTTPS: u16 = 19443;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
+    install_from_downloads(&paths, "php", "7.4.33");
+    write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
+    let mut config = Config::default();
+    config.services.nginx.http_port = HTTP;
+    config.services.nginx.https_port = HTTPS;
+    config.php.base_port = 19100;
+    config.php.workers = 2;
+    let catalog = Catalog::embedded().unwrap();
+
+    for name in ["secure", "plain"] {
+        let dir = paths.www_dir().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("v.php"),
+            format!(
+                "<?php echo '{name} https=', $_SERVER['HTTPS'] ?? 'off', ' PHP ', PHP_VERSION;"
+            ),
+        )
+        .unwrap();
+    }
+    crisol_core::sites::set_secure(&paths, "secure", true).unwrap();
+
+    let nobody = |_: &str| None;
+    let plan = plan_web(
+        &paths,
+        &config,
+        &SitesFile::load(&paths).unwrap(),
+        &catalog,
+        &TrustAllOwners,
+        &nobody,
+    );
+    let mut run = Run {
+        stack: WebStack::new(
+            paths.clone(),
+            &config,
+            nginx_dir,
+            Arc::new(JobObjectSupervisor::new()),
+            Arc::new(WindowsPortProbe::new()),
+        ),
+        events: Vec::new(),
+    };
+    let applied = run.stack.apply(&plan, Instant::now()).unwrap();
+    assert!(applied.ca_created, "the first secured site makes the CA");
+    assert_eq!(applied.warnings, Vec::<String>::new());
+    let started = run.stack.start(Instant::now());
+    run.events.extend(started);
+    run.tick_until("nginx and the pool to be running", |r| {
+        r.stack.nginx_state() == Some(&crisol_core::service::ServiceState::Running)
+            && r.stack.pool_state("7.4.33") == Some(&crisol_core::service::ServiceState::Running)
+    });
+
+    let ca = paths.ca_cert();
+    let on = format!("secure.test:{HTTPS}:127.0.0.1");
+    let url = format!("https://secure.test:{HTTPS}");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // A client that trusts only the local CA: the page, with PHP told it is HTTPS.
+        let page = curl(Some(&ca), &on, &[&format!("{url}/v.php")]);
+        assert!(
+            page.status.success(),
+            "{}",
+            String::from_utf8_lossy(&page.stderr)
+        );
+        assert_eq!(text(&page), "secure https=on PHP 7.4.33");
+
+        // The same request without the CA: the certificate is not trusted by anything else.
+        let untrusted = curl(None, &on, &[&format!("{url}/v.php")]);
+        assert!(
+            !untrusted.status.success(),
+            "the system must not trust it yet"
+        );
+        assert!(!text(&untrusted).contains("PHP 7.4.33"));
+
+        // The names Windows treats as the same file run the script over TLS too; the source
+        // is never sent.
+        for path in ["/v.PHP", "/v.Php", "/v.php.", "/v.php%20"] {
+            let answer = curl(Some(&ca), &on, &[&format!("{url}{path}")]);
+            let body = text(&answer);
+            assert!(
+                body.contains("PHP 7.4.33") && !body.contains("<?php"),
+                "{path}: {body} {}",
+                String::from_utf8_lossy(&answer.stderr)
+            );
+        }
+
+        // Plain HTTP only redirects, with the port.
+        let redirect = curl(
+            None,
+            &format!("secure.test:{HTTP}:127.0.0.1"),
+            &["-I", &format!("http://secure.test:{HTTP}/v.php?x=1")],
+        );
+        let head = text(&redirect);
+        assert!(head.starts_with("HTTP/1.1 301"), "{head}");
+        assert!(
+            head.contains(&format!("Location: https://secure.test:{HTTPS}/v.php?x=1")),
+            "{head}"
+        );
+
+        // A site that was not secured is not vouched for: the handshake is refused.
+        let other = curl(
+            Some(&ca),
+            &format!("plain.test:{HTTPS}:127.0.0.1"),
+            &[&format!("https://plain.test:{HTTPS}/v.php")],
+        );
+        assert!(!other.status.success() && text(&other).is_empty());
+        // And over plain HTTP it still works.
+        assert!(get("plain.test", "/v.php").contains("plain https=off PHP 7.4.33"));
+    }));
+
+    run.stack.stop(Instant::now());
+    let end = Instant::now() + Duration::from_secs(15);
+    while !run.stack.is_stopped() && Instant::now() < end {
+        run.tick_for(Duration::from_millis(100));
+    }
+    assert!(run.stack.is_stopped(), "the stack did not stop");
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}

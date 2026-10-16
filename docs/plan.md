@@ -93,7 +93,7 @@ Leyenda: 🔒 requiere admin (operación aislada y opcional) · 🌐 requiere re
   - → ver ADR-0013: la CA lleva *name constraints* (`test`, `localhost`, el TLD configurado, `127.0.0.0/8`, `::1`), `pathlen = 0`, ECDSA P-256 y 10 años; nunca se reemplaza sola.
   - → nota: CA propia con hojas por sitio, no un único certificado autofirmado.
 - **F6.2** Certificado por sitio (o comodín `*.test`) firmado por la CA; integrar en el server block.
-  - → ver ADR-0013: un solo certificado comodín de 1 año, renovación automática, `secure = [...]` en `sites.toml`, redirección HTTP→HTTPS; repetir sobre TLS la prueba de que el código PHP no se sirve.
+  - → ver ADR-0013 (y su corrección del 2026-10-16: sin comodín, el certificado lista los hosts asegurados porque `rustls-webpki` rechaza `*.test`): un solo certificado de 1 año con renovación automática, `secure = [...]` en `sites.toml`, redirección HTTP→HTTPS. Hecho.
   - → nota: evitar `.local` en los SAN. Vigencia corta en las hojas.
 - **F6.3** 🪟 Trait `TrustStore`: instalar la CA en el almacén **CurrentUser\Root** (no requiere admin, Windows muestra un diálogo de confirmación). Desinstalar la quita.
   - *Aceptación:* `crisol secure sitio` y la petición HTTPS valida sin `-k`. `crisol trust remove` deja el almacén como estaba.

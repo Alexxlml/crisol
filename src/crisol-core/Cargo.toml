@@ -26,6 +26,8 @@ crisol-protocol.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+rustls-webpki.workspace = true
+rustls-pki-types.workspace = true
 
 [lints]
 workspace = true

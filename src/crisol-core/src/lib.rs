@@ -22,6 +22,7 @@ pub mod resolve;
 pub mod service;
 pub mod shims;
 pub mod sites;
+pub mod tls;
 pub mod userpath;
 pub mod version;
 pub mod web;
