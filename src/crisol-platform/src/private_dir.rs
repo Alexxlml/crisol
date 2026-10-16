@@ -100,6 +100,15 @@ impl PrivateDirs for WindowsPrivateDirs {
         ))
     }
 
+    fn fix_command(&self, path: &Path) -> Option<String> {
+        let sid = current_user_sid().ok()?;
+        Some(crisol_core::paths::private_acl_fix_command(
+            path,
+            path.is_dir(),
+            &sid,
+        ))
+    }
+
     fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool> {
         Ok(exposes_write_to_non_administrators(
             &owner_and_dacl_as_sddl(path)?,
@@ -517,6 +526,51 @@ mod tests {
         assert!(!exposes_write_to_non_administrators("O:BAD:"));
         assert!(exposes_write_to_non_administrators("O:BAD:(A;;ZZ;;;SY"));
         assert!(exposes_write_to_non_administrators("O:BAD:(A;;ZZ;;;BU)"));
+    }
+
+    /// The guard of ADR-0008 with real permissions, on a temporary home: a folder opened to
+    /// Authenticated Users blocks, the message carries a command that works as printed (run
+    /// here through `cmd`, on that folder only), and after it the home is accepted again.
+    #[test]
+    fn a_real_open_runtime_folder_blocks_and_the_printed_command_closes_it() {
+        use crisol_core::paths::{require_private_home, CrisolPaths, HomeError};
+        use std::os::windows::process::CommandExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+        let dirs = WindowsPrivateDirs::new();
+        paths.ensure_private_layout(&dirs).unwrap();
+        fs::create_dir_all(paths.bin_dir()).unwrap();
+        require_private_home(&paths, &dirs).unwrap();
+
+        let grant = Command::new("icacls")
+            .arg(paths.bin_dir())
+            .args(["/grant", "*S-1-5-11:(OI)(CI)M"])
+            .output()
+            .unwrap();
+        assert!(grant.status.success());
+        let HomeError::Exposed { path, fix } = require_private_home(&paths, &dirs).unwrap_err()
+        else {
+            panic!("expected an exposed folder");
+        };
+        assert_eq!(path, paths.bin_dir());
+        assert!(
+            fix.contains("(OI)(CI)F") && fix.starts_with("icacls "),
+            "{fix}"
+        );
+
+        // The command, exactly as printed, in `cmd` (the folder is this test's own).
+        let ran = Command::new("cmd")
+            .arg("/C")
+            .raw_arg(format!("\"{fix}\""))
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        require_private_home(&paths, &dirs).unwrap();
     }
 
     #[test]

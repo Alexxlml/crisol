@@ -517,7 +517,13 @@ fn home_with_php(version: &str) -> Home {
 #[test]
 fn the_file_is_written_where_the_layout_says() {
     let home = home_with_php("8.4.26");
-    let written = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let written = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
 
     assert_eq!(written.path, home.paths.php_ini("8.4.26").unwrap());
     assert!(written
@@ -542,7 +548,13 @@ fn the_file_is_written_where_the_layout_says() {
 #[test]
 fn the_file_points_at_the_ca_bundle_when_it_exists_and_warns_when_it_does_not() {
     let home = home_with_php("8.4.26");
-    let without = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let without = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(without.warnings.len(), 1, "{:?}", without.warnings);
     assert!(without.warnings[0].contains("CA bundle"));
     let text = fs::read_to_string(&without.path).unwrap();
@@ -553,7 +565,13 @@ fn the_file_points_at_the_ca_bundle_when_it_exists_and_warns_when_it_does_not() 
 
     fs::create_dir_all(home.paths.php_cacert().parent().unwrap()).unwrap();
     fs::write(home.paths.php_cacert(), "bundle").unwrap();
-    let with = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let with = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(with.changed, "the bundle appearing changes the file");
     assert!(with.warnings.is_empty(), "{:?}", with.warnings);
     let text = fs::read_to_string(&with.path).unwrap();
@@ -571,11 +589,23 @@ fn the_file_points_at_the_ca_bundle_when_it_exists_and_warns_when_it_does_not() 
 #[test]
 fn generating_twice_does_not_touch_the_file_the_second_time() {
     let home = home_with_php("8.4.26");
-    let first = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let first = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let stamp = fs::metadata(&first.path).unwrap().modified().unwrap();
     std::thread::sleep(Duration::from_millis(50));
 
-    let second = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let second = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(!second.changed);
     assert_eq!(
         fs::metadata(&second.path).unwrap().modified().unwrap(),
@@ -586,14 +616,26 @@ fn generating_twice_does_not_touch_the_file_the_second_time() {
 #[test]
 fn a_new_override_changes_the_file_and_the_overrides_are_never_modified() {
     let home = home_with_php("8.4.26");
-    write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
 
     let overrides = home.paths.overrides_for("php").unwrap();
     fs::create_dir_all(&overrides).unwrap();
     let mine = overrides.join("10-mine.ini");
     fs::write(&mine, "memory_limit = 2G\n").unwrap();
 
-    let again = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let again = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(again.changed);
     let text = fs::read_to_string(&again.path).unwrap();
     assert!(text.trim_end().ends_with("memory_limit = 2G"), "{text}");
@@ -603,10 +645,22 @@ fn a_new_override_changes_the_file_and_the_overrides_are_never_modified() {
 #[test]
 fn a_hand_edited_generated_file_is_put_back() {
     let home = home_with_php("8.4.26");
-    let written = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let written = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     fs::write(&written.path, "; tampered\n").unwrap();
 
-    let again = write_php_ini(&home.paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let again = write_php_ini(
+        &home.paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(
         again.changed,
         "etc/ is derived: it is regenerated, not trusted"
@@ -621,17 +675,27 @@ fn versions_that_are_not_installed_or_not_valid_are_errors() {
     let home = home_with_php("8.4.26");
     let settings = PhpIniSettings::default();
     assert!(matches!(
-        write_php_ini(&home.paths, "8.3.35", &settings),
+        write_php_ini(&home.paths, "8.3.35", &settings, &crate::paths::fake::FakePrivateDirs::new()),
         Err(PhpIniError::NotInstalled(v)) if v == "8.3.35"
     ));
     assert!(matches!(
-        write_php_ini(&home.paths, "../x", &settings),
+        write_php_ini(
+            &home.paths,
+            "../x",
+            &settings,
+            &crate::paths::fake::FakePrivateDirs::new()
+        ),
         Err(PhpIniError::Paths(_))
     ));
 
     fs::remove_file(home.paths.bin_for("php", "8.4.26").unwrap().join(BASE_FILE)).unwrap();
     assert!(matches!(
-        write_php_ini(&home.paths, "8.4.26", &settings),
+        write_php_ini(
+            &home.paths,
+            "8.4.26",
+            &settings,
+            &crate::paths::fake::FakePrivateDirs::new()
+        ),
         Err(PhpIniError::NoBaseFile(_))
     ));
 }
@@ -648,6 +712,7 @@ fn versions_that_are_not_installed_or_not_valid_are_errors() {
 /// ```
 #[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the downloaded official PHP archives (Windows)"]
+#[allow(clippy::too_many_lines)]
 fn real_php_builds_load_every_extension_crisol_enables() {
     use crate::catalog::Catalog;
     use crate::fetch::fake::FakeFetcher;
@@ -682,7 +747,13 @@ fn real_php_builds_load_every_extension_crisol_enables() {
         .unwrap();
 
         let version = package.version.to_string();
-        let written = write_php_ini(&paths, &version, &PhpIniSettings::default()).unwrap();
+        let written = write_php_ini(
+            &paths,
+            &version,
+            &PhpIniSettings::default(),
+            &crate::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
         let php = paths.bin_for("php", &version).unwrap().join("php.exe");
         let output = std::process::Command::new(&php)
             .arg("-c")

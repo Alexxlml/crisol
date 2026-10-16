@@ -25,6 +25,7 @@ use std::io;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::ca::LocalCa;
+use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
 
 pub mod fake;
 
@@ -55,9 +56,28 @@ pub trait TrustStore: Send + Sync {
     fn certificates(&self) -> io::Result<Vec<Vec<u8>>>;
 }
 
-/// Makes the system trust the CA.
-pub fn trust_ca(store: &dyn TrustStore, ca: &LocalCa) -> io::Result<AddOutcome> {
-    store.add(ca.cert_der())
+/// Why the CA was not trusted.
+#[derive(Debug, thiserror::Error)]
+pub enum TrustError {
+    /// The home is open to other accounts: nothing is trusted from it.
+    #[error(transparent)]
+    Home(#[from] HomeError),
+    /// The trust store failed.
+    #[error("trust store: {0}")]
+    Store(#[from] io::Error),
+}
+
+/// Makes the system trust the CA. Refuses if the home, or the folders Crisol runs or trusts,
+/// can be written by other accounts: whoever could replace a binary could also have replaced
+/// what this certificate vouches for.
+pub fn trust_ca(
+    store: &dyn TrustStore,
+    ca: &LocalCa,
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+) -> Result<AddOutcome, TrustError> {
+    require_private_home(paths, dirs)?;
+    Ok(store.add(ca.cert_der())?)
 }
 
 /// Stops trusting the CA. Returns whether it was trusted.

@@ -33,7 +33,7 @@ use base64::Engine as _;
 
 use crate::ca::LocalCa;
 use crate::manage::list_installed;
-use crate::paths::CrisolPaths;
+use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::phpini::{write_if_changed, PhpIniError};
 
 /// The service name of Mozilla's bundle in the catalog.
@@ -320,8 +320,9 @@ pub struct WrittenCacert {
 pub fn write_php_cacert(
     paths: &CrisolPaths,
     system: &dyn RootCertificates,
+    dirs: &dyn PrivateDirs,
 ) -> Result<Option<WrittenCacert>, PhpIniError> {
-    write_php_cacert_with(paths, system, None)
+    write_php_cacert_with(paths, system, None, dirs)
 }
 
 /// [`write_php_cacert`] plus Crisol's own local CA (`certs/ca.pem`, ADR-0013). A [`LocalCa`]
@@ -335,7 +336,9 @@ pub fn write_php_cacert_with(
     paths: &CrisolPaths,
     system: &dyn RootCertificates,
     local_ca: Option<&LocalCa>,
+    dirs: &dyn PrivateDirs,
 ) -> Result<Option<WrittenCacert>, PhpIniError> {
+    require_private_home(paths, dirs)?;
     let Some(bundle) = list_installed(paths)
         .map_err(|e| PhpIniError::Io {
             action: "cannot list the installed bundles in",

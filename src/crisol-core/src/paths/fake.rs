@@ -74,6 +74,14 @@ impl PrivateDirs for FakePrivateDirs {
         Ok(dir.ancestors().any(|a| state.exposed.contains(a)))
     }
 
+    fn fix_command(&self, path: &Path) -> Option<String> {
+        Some(super::private_acl_fix_command(
+            path,
+            path.is_dir(),
+            "S-1-5-21-1-2-3-1001",
+        ))
+    }
+
     fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool> {
         let state = self.state();
         Ok(path

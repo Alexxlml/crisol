@@ -43,3 +43,10 @@ Decidida por el propietario (pregunta de la verificación V1 de la Fase 6). Sust
 - Siguen funcionando las operaciones de solo lectura y diagnóstico: `status`, `list` y `doctor`.
 - Crisol nunca cambia por su cuenta los permisos de una carpeta que ya existía.
 - Motivo: con la home abierta, otra cuenta puede editar un `php.ini` para cargar una DLL suya, o cambiar binarios en `bin\`, y eso se ejecutaría con el usuario de Crisol. Avisar no basta.
+
+### Cómo quedó la corrección (2026-10-16)
+
+- `require_private_home(paths, dirs)` (`crisol-core::paths`) falla si la home, `bin/`, `etc/`, `certs/` o `shims/` (los que existen) las pueden escribir otras cuentas, o si no se pueden leer sus permisos. El error (`HomeError::Exposed`) nombra la carpeta y trae el comando exacto de `PrivateDirs::fix_command` (en Windows, `private_acl_fix_command` con el SID del usuario: corta la herencia, concede el control a ti, SYSTEM y Administradores, y quita lo concedido de forma explícita a Todos, Usuarios autenticados y Usuarios). Una concesión explícita a otra cuenta con nombre propio no se puede listar de forma genérica: `doctor` (F11.1) debe mostrar los permisos de la carpeta para ese caso. Una carpeta que no existe todavía se salta (la crea `ensure_private_layout`, privada).
+- La llaman, antes de hacer nada: `WebStack::apply` (`WebError::Home`) y `WebStack::start` (`WebEvent::Blocked`, sin arrancar nada), `write_php_ini`, `write_php_cacert(_with)`, `write_nginx_config` y `stage_nginx_config`, `install_version`, `uninstall`, `install_shim_files` y `trust_ca` (que antes solo comprobaba `certs/`). Las de solo lectura (`list_installed`, `list_available`, `status`) no la llaman.
+- Crisol nunca cambia los permisos de una carpeta que ya existía; las pruebas lo vigilan (el árbol no cambia y el doble no crea carpetas).
+- Esto sustituye al comportamiento anterior de `WebStack::apply`, que con `certs/` abierta servía los sitios por HTTP con una advertencia: ahora se niega.

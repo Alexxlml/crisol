@@ -26,7 +26,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::paths::{CrisolPaths, PathsError};
+use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 
 /// The file PHP ships as the starting point.
 pub const BASE_FILE: &str = "php.ini-development";
@@ -98,6 +98,9 @@ pub enum PhpIniError {
     /// The service or version is not a valid folder name.
     #[error(transparent)]
     Paths(#[from] PathsError),
+    /// The home is open to other accounts: nothing is generated from it.
+    #[error(transparent)]
+    Home(#[from] HomeError),
     /// This PHP version is not installed (its `bin/php/<version>/` folder is missing).
     #[error("PHP {0} is not installed")]
     NotInstalled(String),
@@ -560,7 +563,9 @@ pub fn write_php_ini(
     paths: &CrisolPaths,
     version: &str,
     settings: &PhpIniSettings,
+    dirs: &dyn PrivateDirs,
 ) -> Result<WrittenPhpIni, PhpIniError> {
+    require_private_home(paths, dirs)?;
     let install = paths.bin_for("php", version)?;
     if !install.is_dir() {
         return Err(PhpIniError::NotInstalled(version.to_owned()));

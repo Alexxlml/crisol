@@ -35,7 +35,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::paths::{CrisolPaths, PathsError};
+use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phpini::{write_if_changed, PhpIniError};
 use crate::sites::{DocRoot, Site};
 
@@ -195,6 +195,9 @@ pub enum NginxError {
     /// A path is not allowed.
     #[error(transparent)]
     Paths(#[from] PathsError),
+    /// The home is open to other accounts: no configuration is generated from it.
+    #[error(transparent)]
+    Home(#[from] HomeError),
     /// A file could not be written.
     #[error(transparent)]
     Write(#[from] PhpIniError),
@@ -524,7 +527,11 @@ fn render_site(
 /// Writes the files of [`render`] under `etc/nginx/`, replacing only what changed, and deletes
 /// the `sites/*.conf` of sites that are gone. The folders for logs and temporary files are
 /// created, because Nginx does not create their parents.
-pub fn write_nginx_config(input: &NginxInput<'_>) -> Result<WrittenNginx, NginxError> {
+pub fn write_nginx_config(
+    input: &NginxInput<'_>,
+    dirs: &dyn PrivateDirs,
+) -> Result<WrittenNginx, NginxError> {
+    require_private_home(input.paths, dirs)?;
     let rendered = render(input);
     let etc = input.paths.etc_for(SERVICE)?;
     let io = |action: &'static str, path: &Path| {
@@ -627,7 +634,11 @@ pub struct StagedNginx {
 /// restarting server reads. The previous contents of the staging folder are discarded. Only
 /// after `nginx -t` accepts it is [`write_nginx_config`] called, with the same input, to
 /// make it the real one.
-pub fn stage_nginx_config(input: &NginxInput<'_>) -> Result<StagedNginx, NginxError> {
+pub fn stage_nginx_config(
+    input: &NginxInput<'_>,
+    dirs: &dyn PrivateDirs,
+) -> Result<StagedNginx, NginxError> {
+    require_private_home(input.paths, dirs)?;
     let stage = staging_dir(input.paths)
         .ok_or_else(|| NginxError::Paths(PathsError::InvalidComponent(SERVICE.to_owned())))?;
     let rendered = render_in(input, &stage);

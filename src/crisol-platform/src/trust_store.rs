@@ -189,7 +189,7 @@ mod tests {
 
     use super::*;
 
-    fn ca() -> (tempfile::TempDir, crisol_core::ca::LocalCa) {
+    fn ca() -> (tempfile::TempDir, CrisolPaths, crisol_core::ca::LocalCa) {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
         let ca = ensure_ca(
@@ -200,18 +200,36 @@ mod tests {
         )
         .unwrap()
         .ca;
-        (tmp, ca)
+        (tmp, paths, ca)
     }
 
     #[test]
     fn a_certificate_goes_into_a_private_store_and_out_again() {
-        let (_tmp, ca) = ca();
+        let (_tmp, paths, ca) = ca();
         let store = WindowsTrustStore::private_memory().unwrap();
         assert!(!store.contains(ca.cert_der()).unwrap());
-        assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::Added);
+        assert_eq!(
+            trust_ca(
+                &store,
+                &ca,
+                &paths,
+                &crisol_core::paths::fake::FakePrivateDirs::new()
+            )
+            .unwrap(),
+            AddOutcome::Added
+        );
         assert!(store.contains(ca.cert_der()).unwrap());
         assert_eq!(store.certificates().unwrap(), [ca.cert_der().to_vec()]);
-        assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::AlreadyThere);
+        assert_eq!(
+            trust_ca(
+                &store,
+                &ca,
+                &paths,
+                &crisol_core::paths::fake::FakePrivateDirs::new()
+            )
+            .unwrap(),
+            AddOutcome::AlreadyThere
+        );
 
         assert!(untrust_ca(&store, &ca).unwrap());
         assert!(!store.contains(ca.cert_der()).unwrap());
@@ -221,11 +239,23 @@ mod tests {
 
     #[test]
     fn removing_takes_exactly_one_certificate() {
-        let (_tmp1, first) = ca();
-        let (_tmp2, second) = ca();
+        let (_tmp1, paths, first) = ca();
+        let (_tmp2, _, second) = ca();
         let store = WindowsTrustStore::private_memory().unwrap();
-        trust_ca(&store, &first).unwrap();
-        trust_ca(&store, &second).unwrap();
+        trust_ca(
+            &store,
+            &first,
+            &paths,
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
+        trust_ca(
+            &store,
+            &second,
+            &paths,
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
         assert_eq!(store.certificates().unwrap().len(), 2);
         assert!(untrust_ca(&store, &first).unwrap());
         assert_eq!(store.certificates().unwrap(), [second.cert_der().to_vec()]);
@@ -245,11 +275,23 @@ mod tests {
 
     #[test]
     fn an_old_crisol_ca_is_found_and_removed_by_the_core_logic_over_a_real_store() {
-        let (_tmp1, old) = ca();
-        let (_tmp2, current) = ca();
+        let (_tmp1, paths, old) = ca();
+        let (_tmp2, _, current) = ca();
         let store = WindowsTrustStore::private_memory().unwrap();
-        trust_ca(&store, &old).unwrap();
-        trust_ca(&store, &current).unwrap();
+        trust_ca(
+            &store,
+            &old,
+            &paths,
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
+        trust_ca(
+            &store,
+            &current,
+            &paths,
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
         let state = status(&store, &current).unwrap();
         assert!(state.trusted);
         assert_eq!(state.stale.len(), 1);
@@ -260,12 +302,18 @@ mod tests {
 
     #[test]
     fn two_private_stores_do_not_share_anything() {
-        let (_tmp, ca) = ca();
+        let (_tmp, paths, ca) = ca();
         let (one, two) = (
             WindowsTrustStore::private_memory().unwrap(),
             WindowsTrustStore::private_memory().unwrap(),
         );
-        trust_ca(&one, &ca).unwrap();
+        trust_ca(
+            &one,
+            &ca,
+            &paths,
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
         assert!(!two.contains(ca.cert_der()).unwrap());
     }
 
@@ -273,7 +321,7 @@ mod tests {
     fn the_real_user_store_can_be_read_and_a_new_ca_is_not_in_it() {
         // Read only: nothing is added to or removed from the real store by a test.
         let real = WindowsTrustStore::current_user_root().unwrap();
-        let (_tmp, ca) = ca();
+        let (_tmp, _paths, ca) = ca();
         assert!(!real.contains(ca.cert_der()).unwrap());
         // Whatever the user has parses as certificates (there may be none in a fresh profile).
         for der in real.certificates().unwrap() {

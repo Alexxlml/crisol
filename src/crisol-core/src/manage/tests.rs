@@ -96,6 +96,7 @@ impl Rig {
             request,
             &InstallOptions::default(),
             &mut |_| {},
+            &crate::paths::fake::FakePrivateDirs::new(),
         )
     }
 
@@ -299,7 +300,13 @@ fn installing_and_uninstalling_php_leaves_the_disk_exactly_as_it_was() {
         .snapshot()
         .contains(&"bin/php/8.4.26/php.exe".to_owned()));
 
-    let removed = uninstall(&rig.paths, "php", "8.4.26").unwrap();
+    let removed = uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(removed.version.service, "php");
     assert!(removed.service_folder_removed);
     assert_eq!(rig.snapshot(), before, "bin/ must be exactly as it was");
@@ -314,7 +321,13 @@ fn uninstalling_one_version_keeps_the_others_and_the_service_folder() {
     rig.install(&catalog, &fetcher, "nginx", "1").unwrap();
     fs::write(rig.paths.bin_dir().join("notes.txt"), "mine").unwrap();
 
-    let removed = uninstall(&rig.paths, "php", "8.3.35").unwrap();
+    let removed = uninstall(
+        &rig.paths,
+        "php",
+        "8.3.35",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(
         !removed.service_folder_removed,
         "php 8.4.26 still lives there"
@@ -330,7 +343,13 @@ fn uninstalling_one_version_keeps_the_others_and_the_service_folder() {
         "untouched"
     );
 
-    let removed = uninstall(&rig.paths, "php", "8.4.26").unwrap();
+    let removed = uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(removed.service_folder_removed);
     assert_eq!(rig.installed(), ["nginx 1.30.5"]);
     assert!(!rig.paths.bin_dir().join("php").exists());
@@ -341,7 +360,13 @@ fn no_work_area_is_left_behind_by_an_uninstall() {
     let rig = Rig::new();
     let (catalog, fetcher) = world(&[("php", "8.4.26")]);
     rig.install(&catalog, &fetcher, "php", "8.4").unwrap();
-    uninstall(&rig.paths, "php", "8.4.26").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let hidden: Vec<String> = fs::read_dir(rig.paths.bin_dir())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -355,7 +380,13 @@ fn a_prefix_removes_the_only_version_it_matches() {
     let (catalog, fetcher) = world(&[("php", "8.4.26"), ("php", "8.3.35")]);
     rig.install(&catalog, &fetcher, "php", "8.4").unwrap();
     rig.install(&catalog, &fetcher, "php", "8.3").unwrap();
-    uninstall(&rig.paths, "php", "8.4").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(rig.installed(), ["php 8.3.35"]);
 }
 
@@ -366,7 +397,13 @@ fn an_ambiguous_request_removes_nothing_but_an_exact_one_works() {
         rig.mkdir(dir);
     }
     let before = rig.snapshot();
-    let error = uninstall(&rig.paths, "php", "8.4").unwrap_err();
+    let error = uninstall(
+        &rig.paths,
+        "php",
+        "8.4",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap_err();
     match &error {
         ManageError::Ambiguous { matches, .. } => assert_eq!(matches, &["8.4.2", "8.4.10"]),
         other => panic!("expected Ambiguous, got {other}"),
@@ -378,7 +415,13 @@ fn an_ambiguous_request_removes_nothing_but_an_exact_one_works() {
         "an ambiguous request must delete nothing"
     );
 
-    uninstall(&rig.paths, "php", "8.4.2").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4.2",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(
         rig.installed(),
         ["php 8.4.10"],
@@ -394,11 +437,23 @@ fn a_prefix_is_ambiguous_even_when_one_match_is_x_y_0() {
         rig.mkdir(dir);
     }
     let before = rig.snapshot();
-    let error = uninstall(&rig.paths, "php", "8.4").unwrap_err();
+    let error = uninstall(
+        &rig.paths,
+        "php",
+        "8.4",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap_err();
     assert!(matches!(error, ManageError::Ambiguous { .. }), "{error}");
     assert_eq!(rig.snapshot(), before);
 
-    uninstall(&rig.paths, "php", "8.4.0").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4.0",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(rig.installed(), ["php 8.4.26"]);
 }
 
@@ -409,22 +464,45 @@ fn removing_what_is_not_installed_says_what_is() {
     rig.mkdir("bin/php/8.3.35");
     let before = rig.snapshot();
 
-    let error = uninstall(&rig.paths, "php", "7.4").unwrap_err();
+    let error = uninstall(
+        &rig.paths,
+        "php",
+        "7.4",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "php 7.4 is not installed (installed: 8.3.35, 8.4.26)"
     );
-    let error = uninstall(&rig.paths, "ruby", "3").unwrap_err();
+    let error = uninstall(
+        &rig.paths,
+        "ruby",
+        "3",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "ruby 3 is not installed (installed: none)"
     );
     assert_eq!(rig.snapshot(), before);
 
-    uninstall(&rig.paths, "php", "8.4.26").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(
         matches!(
-            uninstall(&rig.paths, "php", "8.4.26"),
+            uninstall(
+                &rig.paths,
+                "php",
+                "8.4.26",
+                &crate::paths::fake::FakePrivateDirs::new()
+            ),
             Err(ManageError::NotInstalled { .. })
         ),
         "twice"
@@ -439,7 +517,12 @@ fn bad_names_and_versions_touch_nothing() {
     for service in ["../etc", "a/b", "", "C:"] {
         assert!(
             matches!(
-                uninstall(&rig.paths, service, "8.4"),
+                uninstall(
+                    &rig.paths,
+                    service,
+                    "8.4",
+                    &crate::paths::fake::FakePrivateDirs::new()
+                ),
                 Err(ManageError::Paths(_))
             ),
             "`{service}`"
@@ -448,7 +531,12 @@ fn bad_names_and_versions_touch_nothing() {
     for request in ["", "abc", "../8", "8.x"] {
         assert!(
             matches!(
-                uninstall(&rig.paths, "php", request),
+                uninstall(
+                    &rig.paths,
+                    "php",
+                    request,
+                    &crate::paths::fake::FakePrivateDirs::new()
+                ),
                 Err(ManageError::Version(_))
             ),
             "`{request}`"
@@ -479,7 +567,12 @@ fn a_version_with_a_running_program_cannot_be_removed_and_is_left_intact() {
         .unwrap();
     let before = rig.snapshot();
 
-    let result = uninstall(&rig.paths, "php", "8.4.26");
+    let result = uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    );
     let after = rig.snapshot();
     running.kill().unwrap();
     running.wait().unwrap();
@@ -494,7 +587,13 @@ fn a_version_with_a_running_program_cannot_be_removed_and_is_left_intact() {
     assert_eq!(after, before, "a refused uninstall changes nothing");
 
     // Once the program is gone it can be removed.
-    uninstall(&rig.paths, "php", "8.4.26").unwrap();
+    uninstall(
+        &rig.paths,
+        "php",
+        "8.4.26",
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert_eq!(rig.installed(), Vec::<String>::new());
 }
 

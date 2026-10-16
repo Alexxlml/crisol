@@ -136,7 +136,13 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
     install_from_downloads(&paths, "php", "7.4.33");
     install_from_downloads(&paths, "php", "8.4.26");
     for version in ["7.4.33", "8.4.26"] {
-        write_php_ini(&paths, version, &PhpIniSettings::default()).unwrap();
+        write_php_ini(
+            &paths,
+            version,
+            &PhpIniSettings::default(),
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
+        )
+        .unwrap();
     }
     let mut config = Config::default();
     config.services.nginx.http_port = HTTP;
@@ -343,8 +349,19 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
     let php_dir = install_from_downloads(&paths, "php", "7.4.33");
     install_from_downloads(&paths, "cacert", "2026.9.25");
     // PHP's cURL with Mozilla's bundle only: it does not know the local CA yet.
-    crisol_core::cacert::write_php_cacert(&paths, &crisol_core::cacert::NoRoots).unwrap();
-    write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
+    crisol_core::cacert::write_php_cacert(
+        &paths,
+        &crisol_core::cacert::NoRoots,
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
+    write_php_ini(
+        &paths,
+        "7.4.33",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let mut config = Config::default();
     config.services.nginx.http_port = HTTP;
     config.services.nginx.https_port = HTTPS;
@@ -470,6 +487,7 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             &paths,
             &crisol_core::cacert::NoRoots,
             Some(&local),
+            &crisol_core::paths::fake::FakePrivateDirs::new(),
         )
         .unwrap();
         assert_eq!(php(&script), "secure https=on PHP 7.4.33");
@@ -599,7 +617,13 @@ fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_bo
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
     install_from_downloads(&paths, "php", "8.4.26");
-    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let mut config = Config::default();
     config.services.nginx.http_port = HTTP;
     config.php.base_port = 19100;

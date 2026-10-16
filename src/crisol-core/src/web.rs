@@ -39,7 +39,7 @@ use crate::nginx::{
     config_differs, render, stage_nginx_config, write_nginx_config, NginxError, NginxInput,
     NginxSite, NginxTls, PhpPools,
 };
-use crate::paths::{CrisolPaths, PathsError, PrivateDirs};
+use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
 use crate::ports::{PortProbe, PortStatus};
 use crate::process::{
@@ -182,6 +182,9 @@ pub enum WebError {
     /// The Nginx configuration could not be written.
     #[error(transparent)]
     Nginx(#[from] NginxError),
+    /// The home is open to other accounts: nothing is started or generated from it.
+    #[error(transparent)]
+    Home(#[from] HomeError),
 }
 
 /// Something that happened in the web stack.
@@ -199,6 +202,13 @@ pub enum WebEvent {
     /// Nginx accepted the new configuration and was told to reload. Its new workers take over
     /// a moment later (`nginx -s reload` returns once the signal is sent).
     Reloaded,
+    /// Crisol will not start or change anything because the home, or a folder it runs or
+    /// trusts, can be written by other accounts. The reason says which folder and how to close
+    /// it; show it as it is.
+    Blocked {
+        /// The error message.
+        reason: String,
+    },
     /// The new configuration was not put in place: Nginx rejected it, or could not be asked
     /// to reload. The files in `etc/nginx/` are the ones that worked before.
     ReloadFailed {
@@ -402,6 +412,7 @@ impl WebStack {
     ///
     /// When the stack is stopped it only prepares: [`start`](Self::start) tests and runs it.
     pub fn apply(&mut self, plan: &WebPlan, now: Instant) -> Result<Applied, WebError> {
+        require_private_home(&self.paths, self.dirs.as_ref())?;
         let versions = plan.php_versions();
         for version in versions.keys() {
             self.ports.ensure(
@@ -614,7 +625,7 @@ impl WebStack {
             tls.cert = cert;
             tls.key = key;
         }
-        stage_nginx_config(&input).map_err(|e| e.to_string())
+        stage_nginx_config(&input, self.dirs.as_ref()).map_err(|e| e.to_string())
     }
 
     /// The Nginx service. `https` adds the HTTPS port to the ports that must be free to start
@@ -687,6 +698,12 @@ impl WebStack {
     /// why.
     pub fn start(&mut self, now: Instant) -> Vec<WebEvent> {
         let mut events = Vec::new();
+        if let Err(error) = require_private_home(&self.paths, self.dirs.as_ref()) {
+            events.push(WebEvent::Blocked {
+                reason: error.to_string(),
+            });
+            return events;
+        }
         self.running = true;
         for (name, pool) in &mut self.pools {
             if let Ok(list) = pool.service.start(now) {
@@ -1040,7 +1057,7 @@ impl WebStack {
             }
             let entries = tested.entries();
             let input = self.input(&tested, &entries);
-            write_nginx_config(&input)
+            write_nginx_config(&input, self.dirs.as_ref())
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })();

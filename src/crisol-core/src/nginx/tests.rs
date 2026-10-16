@@ -339,14 +339,17 @@ fn written(paths: &CrisolPaths, names: &[&str]) -> WrittenNginx {
         .collect();
     let dir = nginx_dir();
     let pools = PhpPools::default();
-    write_nginx_config(&NginxInput {
-        paths,
-        nginx_dir: &dir,
-        http_port: 80,
-        tls: None,
-        sites: &entries,
-        pools: &pools,
-    })
+    write_nginx_config(
+        &NginxInput {
+            paths,
+            nginx_dir: &dir,
+            http_port: 80,
+            tls: None,
+            sites: &entries,
+            pools: &pools,
+        },
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
     .unwrap()
 }
 
@@ -517,14 +520,17 @@ fn real_nginx_accepts_the_generated_configuration_and_serves_from_it() {
         },
     ];
     let pools = PhpPools::default();
-    let done = write_nginx_config(&NginxInput {
-        paths: &paths,
-        nginx_dir: &installed.path,
-        http_port: 19080,
-        tls: None,
-        sites: &sites,
-        pools: &pools,
-    })
+    let done = write_nginx_config(
+        &NginxInput {
+            paths: &paths,
+            nginx_dir: &installed.path,
+            http_port: 19080,
+            tls: None,
+            sites: &sites,
+            pools: &pools,
+        },
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
     .unwrap();
     assert_eq!(done.warnings, Vec::<String>::new());
 
@@ -675,7 +681,11 @@ fn a_staged_configuration_has_its_own_paths_and_leaves_the_real_one_alone() {
         site: &a,
         php: None,
     }];
-    write_nginx_config(&staged_input(&paths, &dir, &one, &pools)).unwrap();
+    write_nginx_config(
+        &staged_input(&paths, &dir, &one, &pools),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let real = fs::read_to_string(paths.etc_for("nginx").unwrap().join("nginx.conf")).unwrap();
 
     // A second site is staged: the real files do not change, the staged ones point at themselves.
@@ -690,7 +700,11 @@ fn a_staged_configuration_has_its_own_paths_and_leaves_the_real_one_alone() {
             php: None,
         },
     ];
-    let staged = stage_nginx_config(&staged_input(&paths, &dir, &two, &pools)).unwrap();
+    let staged = stage_nginx_config(
+        &staged_input(&paths, &dir, &two, &pools),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let etc = paths.etc_for("nginx").unwrap();
     assert_eq!(staged.main, etc.join(".next").join("nginx.conf"));
     assert_eq!(
@@ -719,25 +733,31 @@ fn staging_replaces_whatever_was_staged_before() {
     let pools = PhpPools::default();
     let a = site("a", "D:/a", DocRoot::Root, SiteKind::Parked);
     let b = site("b", "D:/b", DocRoot::Root, SiteKind::Parked);
-    stage_nginx_config(&staged_input(
-        &paths,
-        &dir,
-        &[NginxSite {
-            site: &a,
-            php: None,
-        }],
-        &pools,
-    ))
+    stage_nginx_config(
+        &staged_input(
+            &paths,
+            &dir,
+            &[NginxSite {
+                site: &a,
+                php: None,
+            }],
+            &pools,
+        ),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
     .unwrap();
-    let staged = stage_nginx_config(&staged_input(
-        &paths,
-        &dir,
-        &[NginxSite {
-            site: &b,
-            php: None,
-        }],
-        &pools,
-    ))
+    let staged = stage_nginx_config(
+        &staged_input(
+            &paths,
+            &dir,
+            &[NginxSite {
+                site: &b,
+                php: None,
+            }],
+            &pools,
+        ),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
     .unwrap();
     let sites = staged.main.parent().unwrap().join("sites");
     assert!(sites.join("b.conf").is_file() && !sites.join("a.conf").exists());
@@ -768,7 +788,11 @@ fn the_disk_is_compared_with_what_would_be_written() {
         config_differs(&staged_input(&paths, &dir, &one, &pools)).unwrap(),
         "nothing yet"
     );
-    write_nginx_config(&staged_input(&paths, &dir, &two, &pools)).unwrap();
+    write_nginx_config(
+        &staged_input(&paths, &dir, &two, &pools),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(!config_differs(&staged_input(&paths, &dir, &two, &pools)).unwrap());
     assert!(
         config_differs(&staged_input(&paths, &dir, &one, &pools)).unwrap(),

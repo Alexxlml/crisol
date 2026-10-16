@@ -859,7 +859,7 @@ fn a_broken_ca_leaves_the_secured_sites_on_http_and_says_why() {
 }
 
 #[test]
-fn a_certs_folder_open_to_other_accounts_keeps_the_secured_sites_on_http_and_says_why() {
+fn a_certs_folder_open_to_other_accounts_blocks_the_web_stack_and_names_the_folder() {
     let mut rig = Rig::new(&[]);
     rig.site("shop", None);
     rig.secure("shop");
@@ -867,21 +867,63 @@ fn a_certs_folder_open_to_other_accounts_keeps_the_secured_sites_on_http_and_say
     assert!(first.ca_created, "made in a private certs folder");
     assert!(rig.dirs.created().contains(&rig.paths.certs_dir()));
 
-    // Somebody opens the folder: from now on the CA is not used for anything.
+    // Somebody opens the folder: nothing more is generated or started from this home
+    // (ADR-0008, corrected 2026-10-16), and the error says which folder and how to close it.
     rig.dirs.expose(&rig.paths.certs_dir());
-    let applied = rig
+    let error = rig
         .stack
         .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap_err();
+    match &error {
+        WebError::Home(crate::paths::HomeError::Exposed { path, fix }) => {
+            assert_eq!(path, &rig.paths.certs_dir());
+            assert!(fix.starts_with("icacls "), "{fix}");
+        }
+        other => panic!("{other:?}"),
+    }
+    rig.dirs.close(&rig.paths.certs_dir());
+    rig.stack
+        .apply(&rig.plan_with_secure(), rig.at(2000))
         .unwrap();
+}
+
+#[test]
+fn an_open_home_stops_apply_and_start_and_nothing_runs() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", Some("8.4"));
+    rig.run();
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    let spawned = rig.supervisor.spawned().len();
+
+    rig.dirs.expose(rig.paths.home());
+    let error = rig.stack.apply(&rig.plan(), rig.at(12_000)).unwrap_err();
+    assert!(matches!(error, WebError::Home(_)), "{error:?}");
+    assert!(error.to_string().contains("will not go on"), "{error}");
+
+    let mut cold = rig.cold_stack();
+    let events = cold.start(rig.at(12_000));
     assert!(
-        applied
-            .warnings
-            .iter()
-            .any(|w| w.contains("served over HTTP") && w.contains("other accounts")),
-        "{:?}",
-        applied.warnings
+        matches!(events.as_slice(), [WebEvent::Blocked { reason }] if reason.contains("will not go on") && reason.contains("icacls")),
+        "{events:?}"
     );
-    assert!(applied.certificate.is_none() && !applied.ca_created);
+    assert_eq!(cold.nginx_state(), None, "nothing was started");
+    assert!(cold.is_stopped());
+    assert_eq!(
+        rig.supervisor.spawned().len(),
+        spawned,
+        "no process was launched"
+    );
+
+    // Closed again, it starts.
+    rig.dirs.close(rig.paths.home());
+    let events = cold.start(rig.at(13_000));
+    assert!(
+        !events.iter().any(|e| matches!(e, WebEvent::Blocked { .. })),
+        "{events:?}"
+    );
 }
 
 // ---- only local TLDs (review of phase 6, finding 2) ------------------------------------

@@ -161,8 +161,20 @@ fn a_certificate_the_ca_signs_for_a_public_site_is_refused_by_every_client() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // PHP's cURL gets the generated bundle (Mozilla's plus the local CA); Node gets the copy.
-    write_php_cacert_with(&paths, &WindowsRootCertificates, Some(&ca)).unwrap();
-    write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
+    write_php_cacert_with(
+        &paths,
+        &WindowsRootCertificates,
+        Some(&ca),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
+    write_php_ini(
+        &paths,
+        "7.4.33",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let node_ca = write_node_ca(&paths, &WindowsPrivateDirs, &ca).unwrap();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

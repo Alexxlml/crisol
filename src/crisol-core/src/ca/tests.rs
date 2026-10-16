@@ -645,7 +645,13 @@ fn nothing_can_be_trusted_when_certs_is_open() {
     // To trust a CA one has to hold a `LocalCa`, and it cannot be loaded now.
     match load_ca(&paths, &dirs, now()) {
         Ok(Some(loaded)) => {
-            trust_ca(&store, &loaded).unwrap();
+            trust_ca(
+                &store,
+                &loaded,
+                &paths,
+                &crate::paths::fake::FakePrivateDirs::new(),
+            )
+            .unwrap();
         }
         Ok(None) => {}
         Err(error) => assert!(matches!(error, CaError::Exposed { .. })),

@@ -31,33 +31,75 @@ fn stranger(name: &str) -> Vec<u8> {
 
 #[test]
 fn trusting_adds_exactly_the_ca_and_a_second_time_changes_nothing() {
-    let (_tmp, _paths, ca) = ca();
+    let (_tmp, paths, ca) = ca();
     let store = FakeTrustStore::new();
-    assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::Added);
+    assert_eq!(
+        trust_ca(
+            &store,
+            &ca,
+            &paths,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap(),
+        AddOutcome::Added
+    );
     assert!(store.contains(ca.cert_der()).unwrap());
     assert_eq!(store.certificates().unwrap(), [ca.cert_der().to_vec()]);
-    assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::AlreadyThere);
+    assert_eq!(
+        trust_ca(
+            &store,
+            &ca,
+            &paths,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap(),
+        AddOutcome::AlreadyThere
+    );
     assert_eq!(store.changes(), (1, 0));
 }
 
 #[test]
 fn a_refusal_in_the_system_dialog_is_an_outcome_not_an_error() {
-    let (_tmp, _paths, ca) = ca();
+    let (_tmp, paths, ca) = ca();
     let store = FakeTrustStore::new();
     store.decline_next();
-    assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::Declined);
+    assert_eq!(
+        trust_ca(
+            &store,
+            &ca,
+            &paths,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap(),
+        AddOutcome::Declined
+    );
     assert!(!store.contains(ca.cert_der()).unwrap());
     assert_eq!(store.changes(), (0, 0));
     // Asking again, and saying yes this time, works.
-    assert_eq!(trust_ca(&store, &ca).unwrap(), AddOutcome::Added);
+    assert_eq!(
+        trust_ca(
+            &store,
+            &ca,
+            &paths,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap(),
+        AddOutcome::Added
+    );
 }
 
 #[test]
 fn untrusting_removes_only_that_certificate() {
-    let (_tmp, _paths, ca) = ca();
+    let (_tmp, paths, ca) = ca();
     let other = stranger("corporate-proxy.example");
     let store = FakeTrustStore::with(&[&other]);
-    trust_ca(&store, &ca).unwrap();
+    trust_ca(
+        &store,
+        &ca,
+        &paths,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
 
     assert!(untrust_ca(&store, &ca).unwrap());
     assert_eq!(
@@ -74,10 +116,16 @@ fn untrusting_removes_only_that_certificate() {
 
 #[test]
 fn a_store_that_fails_is_an_error_and_nothing_is_claimed() {
-    let (_tmp, _paths, ca) = ca();
+    let (_tmp, paths, ca) = ca();
     let store = FakeTrustStore::new();
     store.fail_with("the store is locked");
-    assert!(trust_ca(&store, &ca).is_err());
+    assert!(trust_ca(
+        &store,
+        &ca,
+        &paths,
+        &crate::paths::fake::FakePrivateDirs::new()
+    )
+    .is_err());
     assert!(untrust_ca(&store, &ca).is_err());
     assert!(status(&store, &ca).is_err());
     store.recover();
@@ -86,7 +134,7 @@ fn a_store_that_fails_is_an_error_and_nothing_is_claimed() {
 
 #[test]
 fn the_status_says_whether_the_ca_is_trusted() {
-    let (_tmp, _paths, ca) = ca();
+    let (_tmp, paths, ca) = ca();
     let store = FakeTrustStore::with(&[&stranger("x.example")]);
     let before = status(&store, &ca).unwrap();
     assert_eq!(
@@ -96,7 +144,13 @@ fn the_status_says_whether_the_ca_is_trusted() {
             stale: vec![]
         }
     );
-    trust_ca(&store, &ca).unwrap();
+    trust_ca(
+        &store,
+        &ca,
+        &paths,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(status(&store, &ca).unwrap().trusted);
 }
 
@@ -104,7 +158,13 @@ fn the_status_says_whether_the_ca_is_trusted() {
 fn a_replaced_ca_stays_trusted_until_it_is_removed_and_is_found_by_name() {
     let (_tmp, paths, old) = ca();
     let store = FakeTrustStore::with(&[&stranger("corporate-proxy.example")]);
-    trust_ca(&store, &old).unwrap();
+    trust_ca(
+        &store,
+        &old,
+        &paths,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let old_name = old.info().common_name.clone();
 
     let new = create_ca(
@@ -115,7 +175,13 @@ fn a_replaced_ca_stays_trusted_until_it_is_removed_and_is_found_by_name() {
         true,
     )
     .unwrap();
-    trust_ca(&store, &new).unwrap();
+    trust_ca(
+        &store,
+        &new,
+        &paths,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
 
     let state = status(&store, &new).unwrap();
     assert!(state.trusted);

@@ -94,7 +94,13 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let php_dir = install_from_downloads(&paths, "php", VERSION);
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
-    write_php_ini(&paths, VERSION, &PhpIniSettings::default()).unwrap();
+    write_php_ini(
+        &paths,
+        VERSION,
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
 
     // A site whose script says which worker answered.
     let root = paths.home().join("www").join("docs");
@@ -118,14 +124,17 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
         site: &site,
         php: Some(VERSION),
     }];
-    let written = write_nginx_config(&NginxInput {
-        paths: &paths,
-        nginx_dir: &nginx_dir,
-        http_port: HTTP,
-        tls: None,
-        sites: &sites,
-        pools: &pools,
-    })
+    let written = write_nginx_config(
+        &NginxInput {
+            paths: &paths,
+            nginx_dir: &nginx_dir,
+            http_port: HTTP,
+            tls: None,
+            sites: &sites,
+            pools: &pools,
+        },
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
     .unwrap();
     let test = nginx(&nginx_dir, &written.main, &["-t"]);
     assert!(

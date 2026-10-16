@@ -84,6 +84,74 @@ pub trait PrivateDirs: Send + Sync {
     /// write to `path` (a file or a folder), or owns it. The current user counts as somebody
     /// else here: the program must not be something the user can replace without elevating.
     fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool>;
+
+    /// The exact command that closes `path` to other accounts, for messages. `None` when this
+    /// platform has no such command to give.
+    fn fix_command(&self, _path: &Path) -> Option<String> {
+        None
+    }
+}
+
+/// Why Crisol will not run or generate anything from this home.
+#[derive(Debug, thiserror::Error)]
+pub enum HomeError {
+    /// The home, or a folder of it that Crisol runs or trusts, can be written by other accounts.
+    #[error(
+        "`{}` can be modified by other accounts of this computer, and Crisol runs and trusts \
+         what is inside it, so it will not go on. Remove their write access: {fix}",
+        path.display()
+    )]
+    Exposed {
+        /// The folder that is open.
+        path: PathBuf,
+        /// What to do about it (the exact command, when the platform has one).
+        fix: String,
+    },
+    /// The permissions of a folder could not be read.
+    #[error("cannot check who can write to `{}`: {source}", path.display())]
+    Check {
+        /// The folder.
+        path: PathBuf,
+        /// What failed.
+        source: io::Error,
+    },
+}
+
+/// The common check before anything that runs or establishes trust (ADR-0008, corrected
+/// 2026-10-16): the home and the folders Crisol executes from or trusts (`bin/`, `etc/`,
+/// `certs/`, `shims/`) must not be writable by other accounts. Folders that do not exist yet
+/// are skipped. Nothing is ever changed: a folder that exists keeps its permissions, and the
+/// error says how to close it. If the permissions cannot be read, it fails as well.
+///
+/// Read-only operations (`list_installed`, `list_available`, `status`) do not call this.
+pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(), HomeError> {
+    for path in [
+        paths.home().to_path_buf(),
+        paths.bin_dir(),
+        paths.etc_dir(),
+        paths.certs_dir(),
+        paths.shims_dir(),
+    ] {
+        if !path.exists() {
+            continue;
+        }
+        let open = dirs
+            .is_writable_by_others(&path)
+            .map_err(|source| HomeError::Check {
+                path: path.clone(),
+                source,
+            })?;
+        if open {
+            let fix = dirs.fix_command(&path).unwrap_or_else(|| {
+                format!(
+                    "remove the write access of other accounts on `{}`",
+                    path.display()
+                )
+            });
+            return Err(HomeError::Exposed { path, fix });
+        }
+    }
+    Ok(())
 }
 
 /// The `icacls` command that leaves `path` writable only by the user with SID `user_sid`, the
@@ -93,12 +161,18 @@ pub trait PrivateDirs: Send + Sync {
 /// PowerShell: the user is named by SID (`%USERNAME%` is `cmd` only), every grant is one quoted
 /// word, and nothing in it is expanded by either shell (a path with a `$` or a backtick would
 /// be, in PowerShell).
+///
+/// Besides cutting the inheritance and granting the three, it removes whatever was granted
+/// *explicitly* to Everyone (`S-1-1-0`), Authenticated Users (`S-1-5-11`) and Users
+/// (`S-1-5-32-545`): a folder opened by a direct grant, not only by inheritance, is closed too.
+/// An explicit grant to some other named account cannot be listed generically; `doctor`
+/// (F11.1) shows the folder's permissions for that case.
 #[must_use]
 pub fn private_acl_fix_command(path: &Path, is_dir: bool, user_sid: &str) -> String {
     let flags = if is_dir { "(OI)(CI)" } else { "" };
     let grant = |who: &str| format!("\"*{who}:{flags}F\"");
     format!(
-        "icacls \"{}\" /inheritance:r /grant:r {} {} {}",
+        "icacls \"{}\" /inheritance:r /grant:r {} {} {} /remove:g \"*S-1-1-0\" \"*S-1-5-11\" \"*S-1-5-32-545\"",
         path.display(),
         grant(user_sid),
         grant("S-1-5-18"),
@@ -557,13 +631,14 @@ mod tests {
         assert_eq!(
             folder,
             "icacls \"C:\\Crisol\\etc\\node\" /inheritance:r /grant:r \"*S-1-5-21-1-2-3-1001:(OI)(CI)F\" \
-             \"*S-1-5-18:(OI)(CI)F\" \"*S-1-5-32-544:(OI)(CI)F\""
+             \"*S-1-5-18:(OI)(CI)F\" \"*S-1-5-32-544:(OI)(CI)F\" /remove:g \"*S-1-1-0\" \"*S-1-5-11\" \"*S-1-5-32-545\""
         );
         let file = private_acl_fix_command(Path::new(r"C:\Crisol\etc\node\ca.pem"), false, sid);
         assert_eq!(
             file,
             "icacls \"C:\\Crisol\\etc\\node\\ca.pem\" /inheritance:r /grant:r \
-             \"*S-1-5-21-1-2-3-1001:F\" \"*S-1-5-18:F\" \"*S-1-5-32-544:F\""
+             \"*S-1-5-21-1-2-3-1001:F\" \"*S-1-5-18:F\" \"*S-1-5-32-544:F\" \
+             /remove:g \"*S-1-1-0\" \"*S-1-5-11\" \"*S-1-5-32-545\""
         );
         // Nothing that only `cmd` expands, nothing that PowerShell would treat as a variable.
         for command in [&folder, &file] {

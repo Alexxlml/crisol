@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::catalog::{Catalog, CatalogError, Package, Target};
 use crate::fetch::Fetch;
 use crate::install::{install, InstallError, InstallOptions, Installed, Progress, STAGING_PREFIX};
-use crate::paths::{CrisolPaths, PathsError};
+use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::version::{Version, VersionError, VersionReq};
 
 /// A version that is installed.
@@ -52,6 +52,9 @@ pub enum ManageError {
     /// The installation itself failed.
     #[error(transparent)]
     Install(#[from] InstallError),
+    /// The home is open to other accounts: nothing is installed or removed.
+    #[error(transparent)]
+    Home(#[from] HomeError),
     /// The catalog has no such version.
     #[error(transparent)]
     Catalog(#[from] CatalogError),
@@ -186,7 +189,9 @@ pub fn install_version(
     request: &str,
     options: &InstallOptions,
     progress: &mut dyn FnMut(Progress),
+    dirs: &dyn PrivateDirs,
 ) -> Result<Installed, ManageError> {
+    require_private_home(env.paths, dirs)?;
     let package = if request == "latest" {
         env.catalog.latest(service, env.target)?
     } else {
@@ -218,7 +223,9 @@ pub fn uninstall(
     paths: &CrisolPaths,
     service: &str,
     request: &str,
+    dirs: &dyn PrivateDirs,
 ) -> Result<Removed, ManageError> {
+    require_private_home(paths, dirs)?;
     paths.bin_for(service, "x")?; // the service name must be a safe folder name
     let wanted = VersionReq::parse(request)?;
     let of_service: Vec<InstalledVersion> = list_installed(paths)?

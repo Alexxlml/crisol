@@ -77,7 +77,7 @@ fn run() -> Result<(), String> {
                 println!("Nothing was changed.");
                 return Ok(());
             }
-            match trust_ca(&store, &ca).map_err(|e| e.to_string())? {
+            match trust_ca(&store, &ca, &paths, &WindowsPrivateDirs).map_err(|e| e.to_string())? {
                 AddOutcome::Added => println!("Added. `status` should now say trusted: true."),
                 AddOutcome::AlreadyThere => println!("It was already trusted."),
                 AddOutcome::Declined => println!("Windows was told no. Nothing was changed."),

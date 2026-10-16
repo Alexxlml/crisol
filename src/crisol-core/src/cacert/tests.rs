@@ -170,7 +170,15 @@ fn home_with_bundle(versions: &[&str]) -> (TempDir, CrisolPaths) {
 #[test]
 fn without_an_installed_bundle_there_is_nothing_to_build() {
     let (_tmp, paths) = home_with_bundle(&[]);
-    assert_eq!(write_php_cacert(&paths, &NoRoots).unwrap(), None);
+    assert_eq!(
+        write_php_cacert(
+            &paths,
+            &NoRoots,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap(),
+        None
+    );
     assert!(!paths.php_cacert().exists());
 }
 
@@ -179,7 +187,9 @@ fn the_file_is_built_in_the_layout_from_the_bundle_and_the_system() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let system = Roots::plain(vec![fake(4), mozilla_ders()[1].clone()]);
 
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!(written.path, paths.php_cacert());
     assert!(written
         .path
@@ -199,7 +209,13 @@ fn the_file_is_built_in_the_layout_from_the_bundle_and_the_system() {
 #[test]
 fn the_newest_installed_bundle_is_used() {
     let (_tmp, paths) = home_with_bundle(&["2026.7.16", "2026.9.25", "2026.8.13"]);
-    let written = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    let written = write_php_cacert(
+        &paths,
+        &NoRoots,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(written.bundle_version, "2026.9.25");
     assert!(fs::read_to_string(written.path)
         .unwrap()
@@ -210,11 +226,15 @@ fn the_newest_installed_bundle_is_used() {
 fn generating_twice_does_not_touch_the_file() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let system = Roots::plain(vec![fake(4)]);
-    let first = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let first = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     let stamp = fs::metadata(&first.path).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let second = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let second = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert!(!second.changed);
     assert_eq!(
         fs::metadata(&second.path).unwrap().modified().unwrap(),
@@ -223,14 +243,21 @@ fn generating_twice_does_not_touch_the_file() {
 
     // A root added to the system later shows up the next time it is generated.
     let more = Roots::plain(vec![fake(4), fake(6)]);
-    assert!(write_php_cacert(&paths, &more).unwrap().unwrap().changed);
+    assert!(
+        write_php_cacert(&paths, &more, &crate::paths::fake::FakePrivateDirs::new())
+            .unwrap()
+            .unwrap()
+            .changed
+    );
 }
 
 #[test]
 fn a_system_store_that_cannot_be_read_still_gives_mozilla_s_bundle() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let system = Roots(Err(io::Error::other("the store is locked")));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!(written.added, 0);
     assert_eq!(written.warnings.len(), 1);
     assert!(written.warnings[0].contains("the store is locked"));
@@ -241,7 +268,9 @@ fn a_system_store_that_cannot_be_read_still_gives_mozilla_s_bundle() {
 fn invalid_system_certificates_are_reported_not_fatal() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let system = Roots::plain(vec![vec![0, 1], fake(8)]);
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!(written.added, 1);
     assert!(
         written.warnings[0].contains("1 system certificate"),
@@ -253,9 +282,24 @@ fn invalid_system_certificates_are_reported_not_fatal() {
 #[test]
 fn a_hand_edited_derived_file_is_put_back() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let written = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    let written = write_php_cacert(
+        &paths,
+        &NoRoots,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     fs::write(&written.path, "tampered").unwrap();
-    assert!(write_php_cacert(&paths, &NoRoots).unwrap().unwrap().changed);
+    assert!(
+        write_php_cacert(
+            &paths,
+            &NoRoots,
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .unwrap()
+        .unwrap()
+        .changed
+    );
     assert!(without_header(&fs::read_to_string(&written.path).unwrap()).starts_with(EXCERPT));
 }
 
@@ -280,7 +324,9 @@ fn a_root_limited_to_code_signing_or_mail_is_not_added() {
         root(2, Some(&[CODE_SIGNING, EMAIL]), false),
         root(3, Some(&[]), false),
     ]));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!((written.added, written.omitted), (0, 3));
     assert!(
         written.warnings[0].contains("3 system root"),
@@ -304,7 +350,9 @@ fn a_root_for_server_authentication_or_with_no_restriction_is_added() {
         root(3, Some(&[CODE_SIGNING, SERVER_AUTH]), false),
         root(4, Some(&[ANY_USAGE]), false),
     ]));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!((written.added, written.omitted), (4, 0));
     assert_eq!(written.warnings, Vec::<String>::new());
 }
@@ -317,7 +365,9 @@ fn a_partially_distrusted_root_is_not_added_even_if_it_allows_tls() {
         root(2, Some(&[SERVER_AUTH]), true),
         root(3, None, false),
     ]));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!((written.added, written.omitted), (1, 2));
     assert_eq!(
         pem_certificates(&fs::read_to_string(&written.path).unwrap())[2..],
@@ -344,15 +394,26 @@ fn the_local_ca_is_in_the_bundle_even_if_the_system_does_not_have_it() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let ca = local_ca(&paths);
     let local = ca.cert_der().to_vec();
-    let written = write_php_cacert_with(&paths, &NoRoots, Some(&ca))
-        .unwrap()
-        .unwrap();
+    let written = write_php_cacert_with(
+        &paths,
+        &NoRoots,
+        Some(&ca),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(written.added, 1);
     let text = fs::read_to_string(&written.path).unwrap();
     assert!(without_header(&text).starts_with(EXCERPT));
     assert_eq!(pem_certificates(&text).last(), Some(&local));
     // Without it, the file is exactly Mozilla's: the plain function is unchanged.
-    let plain = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    let plain = write_php_cacert(
+        &paths,
+        &NoRoots,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     assert!(plain.changed && plain.added == 0);
 }
 
@@ -373,9 +434,14 @@ fn the_local_ca_is_added_once_even_if_the_system_lists_it_and_is_not_filtered_li
         restricted,
         SystemRoot::unrestricted(fake(7)),
     ]));
-    let written = write_php_cacert_with(&paths, &system, Some(&ca))
-        .unwrap()
-        .unwrap();
+    let written = write_php_cacert_with(
+        &paths,
+        &system,
+        Some(&ca),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     let text = fs::read_to_string(&written.path).unwrap();
     let ders = pem_certificates(&text);
     assert_eq!(ders.iter().filter(|d| **d == local).count(), 1);
@@ -463,7 +529,9 @@ fn the_written_file_leaves_out_a_distrusted_mozilla_root_names_it_and_says_it_is
     assert_ne!(first, "unnamed certificate");
 
     let system = Distrusting(Roots::plain(vec![fake(5)]), Ok(vec![ders[0].clone()]));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     let text = fs::read_to_string(&written.path).unwrap();
     assert_eq!(written.excluded, vec![first.clone()]);
     assert_eq!(pem_certificates(&text), vec![ders[1].clone(), fake(5)]);
@@ -489,7 +557,13 @@ fn the_written_file_leaves_out_a_distrusted_mozilla_root_names_it_and_says_it_is
 #[test]
 fn nothing_distrusted_still_says_where_the_file_comes_from_and_leaves_the_bundle_whole() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
-    let written = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    let written = write_php_cacert(
+        &paths,
+        &NoRoots,
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     let text = fs::read_to_string(&written.path).unwrap();
     assert_eq!(written.excluded, Vec::<String>::new());
     assert!(
@@ -516,9 +590,14 @@ fn the_local_ca_still_goes_in_even_if_it_is_in_the_distrusted_list() {
         Roots::plain(vec![]),
         Ok(vec![local.clone(), mozilla_ders()[1].clone()]),
     );
-    let written = write_php_cacert_with(&paths, &system, Some(&ca))
-        .unwrap()
-        .unwrap();
+    let written = write_php_cacert_with(
+        &paths,
+        &system,
+        Some(&ca),
+        &crate::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     let ders = pem_certificates(&fs::read_to_string(&written.path).unwrap());
     assert_eq!(ders.last(), Some(&local), "the local CA is there");
     assert!(
@@ -532,7 +611,9 @@ fn the_local_ca_still_goes_in_even_if_it_is_in_the_distrusted_list() {
 fn a_distrusted_list_that_cannot_be_read_keeps_the_bundle_whole_and_says_so() {
     let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
     let system = Distrusting(Roots::plain(vec![]), Err(io::Error::other("store busy")));
-    let written = write_php_cacert(&paths, &system).unwrap().unwrap();
+    let written = write_php_cacert(&paths, &system, &crate::paths::fake::FakePrivateDirs::new())
+        .unwrap()
+        .unwrap();
     assert_eq!(written.excluded, Vec::<String>::new());
     assert!(written
         .warnings

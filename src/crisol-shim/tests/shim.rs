@@ -592,7 +592,13 @@ fn real_php_runs_through_the_shim() {
 
     let rig = Rig::new();
     let paths = install_downloaded(&rig, &[("php", "8.4.26")]);
-    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let php = rig.shim("php");
 
     // Arguments with quotes and spaces come back exactly, and so does the exit code.
@@ -642,10 +648,20 @@ fn real_php_7_4_runs_with_the_generated_ini_and_bundle() {
 
     let rig = Rig::new();
     let paths = install_downloaded(&rig, &[("php", "7.4.33"), ("cacert", "2026.9.25")]);
-    write_php_cacert(&paths, &WindowsRootCertificates)
-        .unwrap()
-        .unwrap();
-    let written = write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
+    write_php_cacert(
+        &paths,
+        &WindowsRootCertificates,
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
+    let written = write_php_ini(
+        &paths,
+        "7.4.33",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(written.warnings.is_empty(), "{:?}", written.warnings);
     let php = rig.shim("php");
 
@@ -743,7 +759,13 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     ";
 
     // 1. Without a bundle: the php.ini has no CA file and cURL cannot verify the site.
-    let without = write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let without = write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(
         without.warnings.iter().any(|w| w.contains("CA bundle")),
         "{:?}",
@@ -757,15 +779,25 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     );
 
     // 2. With it: Mozilla's bundle plus the roots of Windows, and the php.ini points at it.
-    let bundle = write_php_cacert(&paths, &WindowsRootCertificates)
-        .unwrap()
-        .unwrap();
+    let bundle = write_php_cacert(
+        &paths,
+        &WindowsRootCertificates,
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(bundle.bundle_version, "2026.9.25");
     eprintln!(
         "bundle: {} certificate(s) added from Windows, warnings {:?}",
         bundle.added, bundle.warnings
     );
-    let with = write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let with = write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     assert!(
         with.changed && with.warnings.is_empty(),
         "{:?}",
@@ -800,6 +832,7 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
 /// ```
 #[test]
 #[ignore = "needs the network and the downloaded PHP archive, composer.phar and CA bundle (Windows)"]
+#[allow(clippy::too_many_lines)]
 fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     use crisol_core::cacert::write_php_cacert;
     use crisol_core::phpini::{write_php_ini, PhpIniSettings};
@@ -828,7 +861,13 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     };
 
     // It runs, on the PHP Crisol resolved, with the generated php.ini.
-    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     let output = run(&["--version", "--no-ansi"]);
     assert!(
         output.status.success(),
@@ -886,10 +925,20 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     assert!(stdout(&without).contains("psr/log"), "{}", stdout(&without));
 
     // And with Crisol's bundle in place.
-    write_php_cacert(&paths, &WindowsRootCertificates)
-        .unwrap()
-        .unwrap();
-    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    write_php_cacert(
+        &paths,
+        &WindowsRootCertificates,
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap()
+    .unwrap();
+    write_php_ini(
+        &paths,
+        "8.4.26",
+        &PhpIniSettings::default(),
+        &crisol_core::paths::fake::FakePrivateDirs::new(),
+    )
+    .unwrap();
     fs::remove_dir_all(&composer_home).unwrap();
     let with = run(&query);
     assert!(with.status.success(), "{}{}", stdout(&with), stderr(&with));

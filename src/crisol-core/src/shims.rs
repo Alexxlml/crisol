@@ -17,7 +17,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::paths::CrisolPaths;
+use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 
 /// Prefix of a shim that was moved aside because it was running.
 const OLD_PREFIX: &str = ".crisol-shim-old-";
@@ -45,7 +45,13 @@ pub fn shim_file_name(command: &str) -> String {
 
 /// Makes `shims/<command>` a copy of `shim_exe` for every command. A shim that is already
 /// identical is left alone; one that differs (an older Crisol) is replaced atomically.
-pub fn install_shim_files(paths: &CrisolPaths, shim_exe: &Path) -> io::Result<ShimFiles> {
+pub fn install_shim_files(
+    paths: &CrisolPaths,
+    shim_exe: &Path,
+    dirs: &dyn PrivateDirs,
+) -> io::Result<ShimFiles> {
+    require_private_home(paths, dirs)
+        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
     let program = fs::read(shim_exe)?;
     let dir = paths.shims_dir();
     fs::create_dir_all(&dir)?;
@@ -152,7 +158,8 @@ mod tests {
     #[test]
     fn every_command_gets_a_copy_in_the_shims_folder() {
         let (_tmp, paths, exe) = setup();
-        let done = install_shim_files(&paths, &exe).unwrap();
+        let done =
+            install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         assert_eq!(done.written.len(), 5);
         assert!(done.unchanged.is_empty() && done.failed.is_empty());
         let expected: Vec<String> = SHIM_COMMANDS.iter().map(|c| shim_file_name(c)).collect();
@@ -166,17 +173,19 @@ mod tests {
     #[test]
     fn running_it_again_changes_nothing() {
         let (_tmp, paths, exe) = setup();
-        install_shim_files(&paths, &exe).unwrap();
-        let again = install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
+        let again =
+            install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         assert_eq!((again.written.len(), again.unchanged.len()), (0, 5));
     }
 
     #[test]
     fn a_new_version_replaces_the_old_shims() {
         let (_tmp, paths, exe) = setup();
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         fs::write(&exe, b"MZ the shim, version two").unwrap();
-        let again = install_shim_files(&paths, &exe).unwrap();
+        let again =
+            install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         assert_eq!(again.written.len(), 5);
         let php = paths.shims_dir().join(shim_file_name("php"));
         assert_eq!(fs::read(php).unwrap(), b"MZ the shim, version two");
@@ -185,7 +194,7 @@ mod tests {
     #[test]
     fn no_temporary_files_are_left_behind() {
         let (_tmp, paths, exe) = setup();
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         let count = fs::read_dir(paths.shims_dir()).unwrap().count();
         assert_eq!(count, 5);
     }
@@ -193,12 +202,12 @@ mod tests {
     #[test]
     fn removing_takes_the_shims_and_the_empty_folder_but_not_strangers() {
         let (_tmp, paths, exe) = setup();
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         let removed = remove_shim_files(&paths).unwrap();
         assert_eq!(removed.len(), 5);
         assert!(!paths.shims_dir().exists(), "an empty folder goes too");
 
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         let mine = paths.shims_dir().join("my-tool.cmd");
         fs::write(&mine, "@echo hi").unwrap();
         remove_shim_files(&paths).unwrap();
@@ -237,7 +246,8 @@ mod tests {
         let php = paths.shims_dir().join(shim_file_name("php"));
         assert!(fs::write(&php, b"direct overwrite").is_err(), "the premise");
 
-        let done = install_shim_files(&paths, &exe).unwrap();
+        let done =
+            install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         assert!(done.failed.is_empty(), "{:?}", done.failed);
         assert_eq!(done.written.len(), 5);
         assert_eq!(fs::read(&php).unwrap(), b"MZ the shim, version one");
@@ -253,7 +263,7 @@ mod tests {
         // Once it exits, the next install (or a removal) cleans it up.
         running.kill().unwrap();
         running.wait().unwrap();
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         assert_eq!(leftovers(), 0);
     }
 
@@ -262,7 +272,7 @@ mod tests {
     fn removing_cleans_up_what_an_earlier_update_left() {
         let (_tmp, paths, exe) = setup();
         let mut running = running_shim(&paths);
-        install_shim_files(&paths, &exe).unwrap();
+        install_shim_files(&paths, &exe, &crate::paths::fake::FakePrivateDirs::new()).unwrap();
         running.kill().unwrap();
         running.wait().unwrap();
         remove_shim_files(&paths).unwrap();
@@ -275,7 +285,12 @@ mod tests {
     #[test]
     fn a_missing_program_is_an_error_before_anything_is_written() {
         let (tmp, paths, _exe) = setup();
-        assert!(install_shim_files(&paths, &tmp.path().join("nope.exe")).is_err());
+        assert!(install_shim_files(
+            &paths,
+            &tmp.path().join("nope.exe"),
+            &crate::paths::fake::FakePrivateDirs::new()
+        )
+        .is_err());
         assert!(!paths.shims_dir().exists());
     }
 }
