@@ -28,6 +28,7 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 
 - F7.2 implementa 1 y 3 (respondedor en `crisol-core`/`crisol-dns`, regla y elevación en `crisol-platform`); F7.3 implementa 2.
 - `crisol doctor` (F11.1) comprueba con `getaddrinfo`, no con `nslookup`, y avisa de reglas/nombres ajenos.
+- **Con el daemon parado se acepta el tiempo de espera.** La regla NRPT se queda instalada (quitarla pediría un UAC cada vez) y los `.<tld>` no resuelven mientras el respondedor no corre: la consulta espera el tiempo de espera del DNS antes de fallar, también para lo que el usuario no lanzó a propósito (pestañas abiertas, tareas programadas). Por eso `crisol stop` (F8.3) lo avisa al parar y `crisol doctor` (F11.1) lo muestra cuando la regla existe y el respondedor no responde; el respaldo de `hosts` no tiene este problema. El tiempo real se mide en la verificación manual con administrador.
 - Queda por verificar a mano (con administrador): que la NRPT con IP de loopback funciona en Chrome, Edge, Firefox y `curl`; el tiempo de espera con el respondedor parado; la limpieza exacta de la regla.
 
 ## Notas de implementación (F7.2)
