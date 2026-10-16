@@ -327,7 +327,10 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
     let tmp = tempfile::TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
-    install_from_downloads(&paths, "php", "7.4.33");
+    let php_dir = install_from_downloads(&paths, "php", "7.4.33");
+    install_from_downloads(&paths, "cacert", "2026.9.25");
+    // PHP's cURL with Mozilla's bundle only: it does not know the local CA yet.
+    crisol_core::cacert::write_php_cacert(&paths, &crisol_core::cacert::NoRoots).unwrap();
     write_php_ini(&paths, "7.4.33", &PhpIniSettings::default()).unwrap();
     let mut config = Config::default();
     config.services.nginx.http_port = HTTP;
@@ -423,6 +426,35 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             head.contains(&format!("Location: https://secure.test:{HTTPS}/v.php?x=1")),
             "{head}"
         );
+
+        // PHP's cURL: refuses the site until the local CA is in `cacert.pem`, then accepts it,
+        // without the system store being involved (ADR-0013).
+        let script = format!(
+            "$c = curl_init('{url}/v.php'); curl_setopt_array($c, [CURLOPT_RESOLVE =>              ['secure.test:{HTTPS}:127.0.0.1'], CURLOPT_RETURNTRANSFER => true,              CURLOPT_TIMEOUT => 15]); $b = curl_exec($c);              echo $b === false ? 'FAIL: ' . curl_error($c) : $b;"
+        );
+        let php = |script: &str| {
+            let output = std::process::Command::new(php_dir.join("php.exe"))
+                .env("PHPRC", paths.etc_for("php").unwrap().join("7.4.33"))
+                .args(["-r", script])
+                .output()
+                .unwrap();
+            text(&output)
+        };
+        let before = php(&script);
+        assert!(
+            before.starts_with("FAIL:"),
+            "PHP must not trust it yet: {before}"
+        );
+        let local = crisol_core::ca::load_ca(&paths, std::time::SystemTime::now())
+            .unwrap()
+            .unwrap();
+        crisol_core::cacert::write_php_cacert_with(
+            &paths,
+            &crisol_core::cacert::NoRoots,
+            Some(local.cert_der()),
+        )
+        .unwrap();
+        assert_eq!(php(&script), "secure https=on PHP 7.4.33");
 
         // A site that was not secured is not vouched for: the handshake is refused.
         let other = curl(

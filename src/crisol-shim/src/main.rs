@@ -105,6 +105,9 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
         }
         IniChoice::Leave => {}
     }
+    if let Some(ca) = node_ca_for(command, &paths) {
+        process.env(NODE_CA_VAR, ca);
+    }
 
     // Ctrl+C reaches the child and the shim alike; only the child should die.
     let _ = crisol_platform::survive_ctrl_c();
@@ -163,6 +166,18 @@ fn program_for(
         ));
     }
     Ok((program, vec![phar]))
+}
+
+/// The variable Node reads to trust extra certificate authorities.
+const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
+
+/// Node, npm and npx trust the local CA (`certs/ca.pem`, ADR-0013) so that a request to
+/// `https://shop.test` works from JavaScript too, whether or not the CA is in the system's
+/// store. Only when the CA exists, and never over a value the user already set.
+fn node_ca_for(command: Command, paths: &CrisolPaths) -> Option<PathBuf> {
+    let for_node = matches!(command, Command::Node | Command::Npm | Command::Npx);
+    let ca = paths.ca_cert();
+    (for_node && std::env::var_os(NODE_CA_VAR).is_none() && ca.is_file()).then_some(ca)
 }
 
 /// The variable that records the `PHPRC` this shim set. A shim that finds a `PHPRC` equal to

@@ -295,3 +295,45 @@ fn a_partially_distrusted_root_is_not_added_even_if_it_allows_tls() {
         [fake(3)]
     );
 }
+
+// ---- the local CA (ADR-0013) -----------------------------------------------------------
+
+#[test]
+fn the_local_ca_is_in_the_bundle_even_if_the_system_does_not_have_it() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let local = fake(42);
+    let written = write_php_cacert_with(&paths, &NoRoots, Some(&local))
+        .unwrap()
+        .unwrap();
+    assert_eq!(written.added, 1);
+    let text = fs::read_to_string(&written.path).unwrap();
+    assert!(text.starts_with(EXCERPT));
+    assert_eq!(pem_certificates(&text).last(), Some(&local));
+    // Without it, the file is exactly Mozilla's: the plain function is unchanged.
+    let plain = write_php_cacert(&paths, &NoRoots).unwrap().unwrap();
+    assert!(plain.changed && plain.added == 0);
+}
+
+#[test]
+fn the_local_ca_is_added_once_even_if_the_system_lists_it_and_is_not_filtered_like_them() {
+    let (_tmp, paths) = home_with_bundle(&["2026.9.25"]);
+    let local = fake(42);
+    // The system lists it twice, once restricted to code signing (which would drop a system
+    // root): the local CA still ends up in the file, once.
+    let system = Roots(Ok(vec![
+        SystemRoot::unrestricted(local.clone()),
+        root(42, Some(&[CODE_SIGNING]), false),
+        SystemRoot::unrestricted(fake(7)),
+    ]));
+    let written = write_php_cacert_with(&paths, &system, Some(&local))
+        .unwrap()
+        .unwrap();
+    let text = fs::read_to_string(&written.path).unwrap();
+    let ders = pem_certificates(&text);
+    assert_eq!(ders.iter().filter(|d| **d == local).count(), 1);
+    assert!(ders.contains(&fake(7)));
+    assert_eq!(
+        written.omitted, 1,
+        "only the restricted system copy is reported"
+    );
+}

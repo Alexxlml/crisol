@@ -221,6 +221,19 @@ pub fn write_php_cacert(
     paths: &CrisolPaths,
     system: &dyn RootCertificates,
 ) -> Result<Option<WrittenCacert>, PhpIniError> {
+    write_php_cacert_with(paths, system, None)
+}
+
+/// [`write_php_cacert`] plus Crisol's own local CA (`certs/ca.pem`, ADR-0013), given as DER.
+///
+/// The local CA goes in **whatever the system store says**: PHP must trust `https://shop.test`
+/// even if the user never installed the CA in Windows (or declined), and it is not filtered
+/// like the system roots are. If the system store also lists it, it is added once.
+pub fn write_php_cacert_with(
+    paths: &CrisolPaths,
+    system: &dyn RootCertificates,
+    local_ca_der: Option<&[u8]>,
+) -> Result<Option<WrittenCacert>, PhpIniError> {
     let Some(bundle) = list_installed(paths)
         .map_err(|e| PhpIniError::Io {
             action: "cannot list the installed bundles in",
@@ -250,12 +263,13 @@ pub fn write_php_cacert(
         }
     };
     let total = roots.len();
-    let fit: Vec<Vec<u8>> = roots
+    let mut fit: Vec<Vec<u8>> = roots
         .into_iter()
         .filter(SystemRoot::is_fit_for_tls)
         .map(|r| r.der)
         .collect();
     let omitted = total - fit.len();
+    fit.extend(local_ca_der.map(<[u8]>::to_vec));
     let merged = merge_bundle(&text, &fit);
     if merged.skipped > 0 {
         warnings.push(format!(

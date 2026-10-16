@@ -13,6 +13,8 @@ mod private_dir;
 #[cfg(windows)]
 mod root_certs;
 #[cfg(windows)]
+mod trust_store;
+#[cfg(windows)]
 mod user_path;
 
 #[cfg(windows)]
@@ -27,6 +29,8 @@ pub use port_probe::WindowsPortProbe;
 pub use private_dir::WindowsPrivateDirs;
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
+#[cfg(windows)]
+pub use trust_store::WindowsTrustStore;
 #[cfg(windows)]
 pub use user_path::RegistryUserPath;
 

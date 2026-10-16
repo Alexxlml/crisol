@@ -26,6 +26,10 @@ fn main() {
         "CRISOL_PHPRC:{}",
         std::env::var("CRISOL_PHPRC").unwrap_or_else(|_| "-".to_owned())
     );
+    println!(
+        "NODE_EXTRA_CA_CERTS:{}",
+        std::env::var("NODE_EXTRA_CA_CERTS").unwrap_or_else(|_| "-".to_owned())
+    );
     for (index, arg) in std::env::args_os().skip(1).enumerate() {
         println!("ARG:{index}:{}", arg.to_string_lossy());
     }

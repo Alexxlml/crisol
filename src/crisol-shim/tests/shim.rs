@@ -82,6 +82,7 @@ impl Rig {
             .env_remove("CRISOL_NODE")
             .env_remove("PHPRC")
             .env_remove("CRISOL_PHPRC")
+            .env_remove("NODE_EXTRA_CA_CERTS")
             .env_remove("ECHO_EXIT")
             .env_remove("ECHO_STDIN");
         command
@@ -260,6 +261,38 @@ fn the_generated_php_ini_is_handed_to_php_unless_the_user_chose_one() {
 
     let own = rig.command(&php).env("PHPRC", "D:/mine").output().unwrap();
     assert_eq!(phprc(&own), "D:/mine", "the user's own PHPRC is respected");
+}
+
+#[test]
+fn node_is_told_to_trust_the_local_ca_only_when_there_is_one_and_the_user_has_not_chosen() {
+    let rig = Rig::new();
+    rig.install("node", "22.23.3", &exe_name("node"));
+    rig.install("php", "8.4.26", &exe_name("php"));
+    let node = rig.shim("node");
+    let php = rig.shim("php");
+    let seen = |output: &Output| echoed_var(output, "NODE_EXTRA_CA_CERTS");
+
+    // No CA yet: nothing is set.
+    assert_eq!(seen(&rig.run(&node, &[])), "-");
+
+    let ca = rig.home.join("certs").join("ca.pem");
+    fs::create_dir_all(ca.parent().unwrap()).unwrap();
+    fs::write(
+        &ca,
+        "-----BEGIN CERTIFICATE-----
+",
+    )
+    .unwrap();
+    assert_eq!(PathBuf::from(seen(&rig.run(&node, &[]))), ca);
+
+    // The user's own value wins, and PHP is not told anything.
+    let own = rig
+        .command(&node)
+        .env("NODE_EXTRA_CA_CERTS", "D:/mine.pem")
+        .output()
+        .unwrap();
+    assert_eq!(seen(&own), "D:/mine.pem");
+    assert_eq!(seen(&rig.run(&php, &[])), "-");
 }
 
 /// What a child prints for the variable `name` (`PHPRC`, `CRISOL_PHPRC`).

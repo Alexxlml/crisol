@@ -98,7 +98,7 @@ Leyenda: 🔒 requiere admin (operación aislada y opcional) · 🌐 requiere re
 - **F6.3** 🪟 Trait `TrustStore`: instalar la CA en el almacén **CurrentUser\Root** (no requiere admin, Windows muestra un diálogo de confirmación). Desinstalar la quita.
   - *Aceptación:* `crisol secure sitio` y la petición HTTPS valida sin `-k`. `crisol trust remove` deja el almacén como estaba.
   - → nota: instalar la CA en CurrentUser\Root (sin admin) evita el aviso del navegador.
-  - → ver ADR-0013: las pruebas automáticas usan un almacén privado; la instalación real la prueba el propietario a mano. La CA también va en `etc/php/cacert.pem` y en `NODE_EXTRA_CA_CERTS`.
+  - → ver ADR-0013: las pruebas automáticas usan un almacén privado; la instalación real la prueba el propietario a mano (`cargo run -p crisol-platform --example trust_manual`). La CA también va en `etc/php/cacert.pem` y en `NODE_EXTRA_CA_CERTS`. Hecho; falta solo la prueba manual.
 
 ## Fase 7 — Resolución de `.test`
 
