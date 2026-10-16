@@ -43,3 +43,15 @@ Los sitios necesitan que `*.test` llegue a `127.0.0.1`/`::1`. Windows no lo resu
 - `HostsManager` (`names`/`set`/`clear`) con `DirectHosts<F: HostsFile>` para el helper y las pruebas; solo escribe si el contenido cambia.
 - `crisol-platform::hosts_file`: `FileHosts` (cualquier ruta; `system()` es `drivers\etc\hosts`), escritura **en el sitio** para conservar los permisos del original, con copia `hosts.crisol-bak` antes del primer cambio, borrada al quitar el bloque; un archivo que no es UTF-8 se rechaza sin tocarlo. `ElevatedHosts` valida y comprueba el archivo **antes** de pedir el UAC y lanza el helper solo si hay un cambio real. `flush_dns` (`ipconfig /flushdns`) lo llama el helper tras cambiar `hosts`.
 - `crisol-elevate` suma `hosts-set <nombre>...` y `hosts-clear` (cuatro operaciones en total).
+
+## Corrección (2026-10-16, revisión de la Fase 7)
+
+Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase7.md`. Pendiente de implementar.
+
+- **Dónde vive el ayudante.** `crisol-elevate.exe` se instala en `%ProgramFiles%\Crisol\`, una carpeta que solo pueden escribir los administradores. Lo deja ahí un instalador que corre una vez con administrador, y **nunca** se ejecuta desde la home ni desde otra carpeta que pueda escribir el usuario.
+  - Antes de mostrar el UAC, quien lo llama comprueba que ni el ejecutable ni su carpeta los pueden escribir otras cuentas.
+  - El ayudante usa rutas absolutas del directorio del sistema (`GetSystemDirectoryW`) para `powershell.exe`, `ipconfig.exe` y `hosts`, y restringe la carga de DLL a System32.
+
+  Sin esto, el aislamiento del punto 3 de la decisión no protege nada: otra cuenta que pudiera escribir junto al ayudante obtendría administrador.
+- **IPv6.** Nginx escucha también en `[::1]`, en los mismos puertos, para que la respuesta `::1` del DNS y de `hosts` llegue a Crisol y no a otro programa que escuche en IPv6.
+- **Con el daemon parado,** la regla NRPT se queda instalada y las consultas `.<tld>` esperan el tiempo de espera del DNS. Se acepta: `crisol stop` y `doctor` lo avisan, y el tiempo se mide en la verificación manual.
