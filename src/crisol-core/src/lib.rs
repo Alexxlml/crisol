@@ -7,6 +7,7 @@ pub mod config;
 pub mod constraint;
 pub mod dns;
 pub mod edit;
+pub mod engine;
 pub mod fetch;
 pub mod hosts;
 pub mod install;

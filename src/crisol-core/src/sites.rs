@@ -233,6 +233,97 @@ pub fn unlink(paths: &CrisolPaths, name: &str) -> Result<bool, SitesError> {
     Ok(existed)
 }
 
+/// The text a parked folder is written and compared as: the path without a trailing separator.
+fn parked_text(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_owned()
+}
+
+/// Adds `dir` to the parked directories of `crisol.toml` (`[sites] parked`): every subfolder of
+/// it becomes a site. The folder must exist and be absolute. Only that list changes (the file's
+/// comments and order stay). Returns whether the file changed: parking a folder twice, or the
+/// one that is there by default, changes nothing.
+pub fn park(paths: &CrisolPaths, dir: &Path) -> Result<bool, SitesError> {
+    if !dir.is_absolute() {
+        return Err(SitesError::Invalid {
+            what: format!("`{}`", dir.display()),
+            why: "must be an absolute path".to_owned(),
+        });
+    }
+    if !dir.is_dir() {
+        return Err(SitesError::NotAFolder(dir.to_path_buf()));
+    }
+    let wanted = parked_text(dir);
+    let mut editor = TomlEditor::open_config(paths)?;
+    let mut parked = parked_list(&editor);
+    let config = Config::load_from(paths).map_err(|e| SitesError::Invalid {
+        what: "crisol.toml".to_owned(),
+        why: e.to_string(),
+    })?;
+    if config
+        .config
+        .parked_dirs(paths)
+        .iter()
+        .any(|p| parked_text(p).eq_ignore_ascii_case(&wanted))
+    {
+        return Ok(false);
+    }
+    if parked.is_empty() {
+        // The default list (`www`) is in effect: keep it when the user starts listing folders.
+        parked = config
+            .config
+            .sites
+            .parked
+            .iter()
+            .map(|p| parked_text(p))
+            .collect();
+    }
+    parked.push(wanted);
+    editor.set(
+        &["sites", "parked"],
+        parked.into_iter().collect::<toml_edit::Array>(),
+    )?;
+    Ok(editor.save()?)
+}
+
+/// Removes `dir` from the parked directories. Returns whether it was there. The folder and
+/// its sites' files are not touched. When the list becomes empty the key is removed, which
+/// brings the default (`www`) back.
+pub fn unpark(paths: &CrisolPaths, dir: &Path) -> Result<bool, SitesError> {
+    let wanted = parked_text(dir);
+    let mut editor = TomlEditor::open_config(paths)?;
+    let mut parked = parked_list(&editor);
+    let before = parked.len();
+    parked.retain(|p| !parked_text(Path::new(p)).eq_ignore_ascii_case(&wanted));
+    if parked.len() == before {
+        return Ok(false);
+    }
+    if parked.is_empty() {
+        editor.remove(&["sites", "parked"])?;
+    } else {
+        editor.set(
+            &["sites", "parked"],
+            parked.into_iter().collect::<toml_edit::Array>(),
+        )?;
+    }
+    editor.save()?;
+    Ok(true)
+}
+
+fn parked_list(editor: &TomlEditor) -> Vec<String> {
+    editor
+        .get(&["sites", "parked"])
+        .and_then(|item| item.as_array())
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Marks the site `name` (parked or linked) as served over HTTPS (`on`) or not. Only the
 /// `secure` list of `sites.toml` changes; the names in it keep their order. Returns whether the
 /// file changed. The name must be a valid site name; whether the site exists is for the caller
