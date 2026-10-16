@@ -41,14 +41,14 @@ use crate::nginx::{
 };
 use crate::paths::{CrisolPaths, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
-use crate::ports::PortProbe;
+use crate::ports::{PortProbe, PortStatus};
 use crate::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
 };
 use crate::project::FileOwners;
 use crate::resolve::{resolve, ResolveContext, Tool};
 use crate::service::{
-    HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
+    FailureReason, HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
 };
 use crate::sites::{discover, Site, SitesFile};
 use crate::tls::{
@@ -654,6 +654,33 @@ impl WebStack {
         ))
     }
 
+    /// Which of the ports the pending configuration listens on is taken by another program,
+    /// as the message of a failed start would put it. `None` if Nginx is running (the ports are
+    /// then its own) or all of them are free.
+    fn busy_port_note(&self) -> Option<String> {
+        let running = self
+            .nginx
+            .as_ref()
+            .is_some_and(|n| !matches!(n.state(), ServiceState::Stopped | ServiceState::Failed(_)));
+        let desired = self.desired.as_ref()?;
+        if running {
+            return None;
+        }
+        let mut ports = vec![self.http_port];
+        if Self::serves_tls(desired) {
+            ports.push(self.https_port);
+        }
+        ports
+            .into_iter()
+            .find_map(|port| match self.probe.probe(port) {
+                Ok(PortStatus::InUse(owners)) => {
+                    Some(FailureReason::PortBusy { port, owners }.to_string())
+                }
+                Ok(PortStatus::Reserved) => Some(FailureReason::PortReserved(port).to_string()),
+                _ => None,
+            })
+    }
+
     /// Starts the pools and, once the configuration has passed `nginx -t` and been written,
     /// Nginx. Call [`apply`](Self::apply) first. If the new configuration is rejected and an
     /// earlier one is on disk, Nginx starts with that one and [`WebEvent::ReloadFailed`] says
@@ -909,7 +936,14 @@ impl WebStack {
                         } else {
                             "nginx could not be asked to reload"
                         };
-                        let reason = format!("{what}; see {}", self.reload_log().display());
+                        // `nginx -t` also fails when somebody else holds a port it would listen
+                        // on, and says so only in its log. When Nginx is not running (so the
+                        // ports are not its own), name the culprit here.
+                        let busy = (phase == Phase::Test)
+                            .then(|| self.busy_port_note())
+                            .flatten()
+                            .map_or_else(String::new, |note| format!("; {note}"));
+                        let reason = format!("{what}{busy}; see {}", self.reload_log().display());
                         self.fail_reload(reason, now, events);
                     }
                 }

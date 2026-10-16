@@ -1354,3 +1354,37 @@ fn the_https_port_on_ipv6_is_checked_too() {
         cold.nginx_state()
     );
 }
+
+#[test]
+fn a_rejected_first_configuration_names_the_program_that_holds_the_port() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    // Another suite has [::1]:HTTP, so `nginx -t` fails on its own bind; its log is the only
+    // other place that says so.
+    rig.probe.occupy(
+        HTTP,
+        PortOwner {
+            pid: 777,
+            name: Some("herd.exe".to_owned()),
+            address: SocketAddr::from((Ipv6Addr::LOCALHOST, HTTP)),
+        },
+    );
+    rig.stack.apply(&rig.plan(), rig.at(1000)).unwrap();
+    rig.stack.start(rig.at(1000));
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    let events = rig.tick(1200);
+    let reason = events
+        .iter()
+        .find_map(|e| match e {
+            WebEvent::ReloadFailed { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        reason.contains("herd.exe")
+            && reason.contains("[::1]")
+            && reason.contains(&HTTP.to_string()),
+        "{reason}"
+    );
+    assert!(!reason.contains("  "), "{reason}");
+}

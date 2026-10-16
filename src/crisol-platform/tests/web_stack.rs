@@ -584,6 +584,7 @@ fn get_at(address: SocketAddr, host: &str) -> String {
 /// Needs PHP 8.4.26 and Nginx 1.28.3. A program holding `[::1]:HTTP` keeps Nginx from starting
 /// and is named in the failure; once it lets go, the same site answers on `[::1]` and on
 /// `127.0.0.1`, which is where `shop.test` goes when a client tries IPv6 first.
+#[allow(clippy::too_many_lines)]
 #[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 8.4.26 and Nginx 1.28.3 (Windows, IPv6 loopback)"]
 fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_both_addresses() {
@@ -641,14 +642,32 @@ fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_bo
     run.stack.apply(&plan, Instant::now()).unwrap();
     let started = run.stack.start(Instant::now());
     run.events.extend(started);
-    run.tick_for(Duration::from_secs(2));
-    let busy = matches!(
-        run.stack.nginx_state(),
-        Some(crisol_core::service::ServiceState::Failed(
-            crisol_core::service::FailureReason::PortBusy { port, owners }
-        )) if *port == HTTP && owners.iter().any(|o| o.address == ipv6)
-    );
-    let state = format!("{:?}", run.stack.nginx_state());
+    // The configuration is tested and promoted first; only then Nginx is started and fails.
+    run.tick_until("nginx to fail or run", |r| {
+        r.events
+            .iter()
+            .any(|e| matches!(e, WebEvent::ReloadFailed { .. }))
+            || matches!(
+                r.stack.nginx_state(),
+                Some(
+                    crisol_core::service::ServiceState::Failed(_)
+                        | crisol_core::service::ServiceState::Running
+                )
+            )
+    });
+    // `nginx -t` fails because the port is not free; the reason names who has it.
+    let reason = run
+        .events
+        .iter()
+        .find_map(|e| match e {
+            WebEvent::ReloadFailed { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let busy = reason.contains(&format!("port {HTTP} is already in use by"))
+        && reason.contains(&ipv6.to_string())
+        && run.stack.nginx_state() != Some(&crisol_core::service::ServiceState::Running);
+    let state = format!("{:?} {reason}", run.stack.nginx_state());
     stop(&mut run);
     assert!(busy, "{state}");
     // The squatter was not asked anything: nothing connected to it.
