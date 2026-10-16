@@ -865,11 +865,11 @@ fn the_redirect_names_the_port_unless_it_is_443() {
         php: None,
     }];
     let standard = render_tls(&entry, Some((443, &files)));
-    assert!(standard.files["sites/shop.conf"].contains("return 301 https://$host$request_uri;"));
+    assert!(standard.files["sites/shop.conf"].contains("return 302 https://$host$request_uri;"));
     let custom = render_tls(&entry, Some((19443, &files)));
     let conf = &custom.files["sites/shop.conf"];
     assert!(
-        conf.contains("return 301 https://$host:19443$request_uri;"),
+        conf.contains("return 302 https://$host:19443$request_uri;"),
         "{conf}"
     );
     assert!(conf.contains("listen 127.0.0.1:19443 ssl;"), "{conf}");
@@ -901,7 +901,7 @@ fn the_tls_block_has_the_certificate_the_protocols_and_tells_php_it_is_https() {
     // The plain HTTP block comes first and only redirects: no root, no PHP.
     let (redirect, secure) = conf.split_once("# shop.test: parked site").unwrap();
     assert!(
-        redirect.contains("return 301") && !redirect.contains("root"),
+        redirect.contains("return 302") && !redirect.contains("root"),
         "{redirect}"
     );
     assert!(

@@ -51,7 +51,9 @@ use crate::service::{
     HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
 };
 use crate::sites::{discover, Site, SitesFile};
-use crate::tls::{ensure_site_cert, Renewal};
+use crate::tls::{
+    install_site_cert, plan_site_cert, stage_site_cert, IssuedPair, Renewal, SiteCertPlan,
+};
 
 /// How long each step of a reload may take.
 const RELOAD_STEP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -232,11 +234,23 @@ pub struct Applied {
 struct Desired {
     sites: Vec<(Site, Option<String>)>,
     pools: PhpPools,
-    /// The certificate and port of the secured sites, if there is a certificate for them.
-    tls: Option<(PathBuf, PathBuf, u16)>,
+    /// The certificate of the secured sites, if there is one for them.
+    tls: Option<TlsDesired>,
     /// The certificate changed but the text of the configuration did not: Nginx still has to
     /// reload to pick the new one up.
     force_reload: bool,
+}
+
+/// The certificate the secured sites are to use.
+#[derive(Debug, Clone)]
+struct TlsDesired {
+    /// Where it is (or will be) in `certs/`.
+    cert: PathBuf,
+    key: PathBuf,
+    https_port: u16,
+    /// A new pair that exists only in memory: it is tested with the staged configuration and
+    /// written to `certs/` together with the real one, if Nginx accepts it (finding 3).
+    pending: Option<IssuedPair>,
 }
 
 impl Desired {
@@ -404,7 +418,16 @@ impl WebStack {
             (None, false, None)
         } else {
             match self.prepare_tls(&secured, SystemTime::now()) {
-                Ok((files, created, certificate)) => (Some(files), created, certificate),
+                Ok((plan, created)) => {
+                    let certificate = plan.change;
+                    let tls = TlsDesired {
+                        cert: plan.cert,
+                        key: plan.key,
+                        https_port: self.https_port,
+                        pending: plan.pending,
+                    };
+                    (Some(tls), created, certificate)
+                }
                 Err(why) => {
                     tls_warnings.push(format!("the secured sites are served over HTTP: {why}"));
                     (None, false, None)
@@ -439,7 +462,7 @@ impl WebStack {
         let (new_pools, retired_pools) = self.sync_pools(&versions)?;
 
         if self.nginx.is_none() {
-            self.nginx = Some(self.nginx_service()?);
+            self.nginx = Some(self.nginx_service(false)?);
         }
 
         let mut reload_requested = false;
@@ -504,26 +527,22 @@ impl WebStack {
         Ok((new_pools, retired_pools))
     }
 
-    /// The local CA (made if there is none) and the certificate for `hosts`. Returns the files
-    /// and port for Nginx, whether the CA is new, and why the certificate was made again.
-    #[allow(clippy::type_complexity)]
+    /// The local CA (made if there is none) and the plan for the certificate for `hosts`: the
+    /// new pair, if one is needed, only exists in memory. Returns the plan and whether the CA
+    /// is new.
     fn prepare_tls(
         &self,
         hosts: &[String],
         now: SystemTime,
-    ) -> Result<((PathBuf, PathBuf, u16), bool, Option<Renewal>), crate::ca::CaError> {
+    ) -> Result<(SiteCertPlan, bool), crate::ca::CaError> {
         if !crate::ca::is_special_use(&self.tld) {
             // No CA and no certificate for a TLD that could be a real domain, not even a look
             // at `certs/`.
             return Err(crate::ca::CaError::TldNotSpecialUse(self.tld.clone()));
         }
         let ensured = ensure_ca(&self.paths, self.dirs.as_ref(), &self.tld, now)?;
-        let cert = ensure_site_cert(&self.paths, &ensured.ca, hosts, now)?;
-        Ok((
-            (cert.cert, cert.key, self.https_port),
-            ensured.created,
-            cert.changed,
-        ))
+        let plan = plan_site_cert(&self.paths, &ensured.ca, hosts, now)?;
+        Ok((plan, ensured.created))
     }
 
     fn input<'a>(&'a self, desired: &'a Desired, entries: &'a [NginxSite<'a>]) -> NginxInput<'a> {
@@ -533,18 +552,52 @@ impl WebStack {
             http_port: self.http_port,
             sites: entries,
             pools: &desired.pools,
-            tls: desired
-                .tls
-                .as_ref()
-                .map(|(cert, key, https_port)| NginxTls {
-                    cert,
-                    key,
-                    https_port: *https_port,
-                }),
+            tls: desired.tls.as_ref().map(|tls| NginxTls {
+                cert: &tls.cert,
+                key: &tls.key,
+                https_port: tls.https_port,
+            }),
         }
     }
 
-    fn nginx_service(&self) -> Result<Service, WebError> {
+    /// Whether the secured sites are served with TLS in `desired`.
+    fn serves_tls(desired: &Desired) -> bool {
+        desired.tls.is_some() && desired.sites.iter().any(|(site, _)| site.secure)
+    }
+
+    /// Whether the configuration on disk (the one Nginx would read now) listens with TLS.
+    fn disk_has_tls(&self) -> bool {
+        self.main_conf()
+            .ok()
+            .and_then(|main| std::fs::read_to_string(main).ok())
+            .is_some_and(|text| text.contains(" ssl default_server;"))
+    }
+
+    /// Writes the configuration under test into the staging folder. A new certificate is
+    /// staged beside it (in the private `certs/.next/`) and the staged configuration points
+    /// at it, so `nginx -t` checks the pair that will be installed together.
+    fn stage(
+        &self,
+        desired: &Desired,
+        entries: &[NginxSite<'_>],
+    ) -> Result<crate::nginx::StagedNginx, String> {
+        let staged_files = match desired.tls.as_ref().and_then(|t| t.pending.as_ref()) {
+            Some(pair) => Some(stage_site_cert(&self.paths, pair).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let mut input = self.input(desired, entries);
+        if let (Some(tls), Some((cert, key))) = (input.tls.as_mut(), staged_files.as_ref()) {
+            tls.cert = cert;
+            tls.key = key;
+        }
+        stage_nginx_config(&input).map_err(|e| e.to_string())
+    }
+
+    /// The Nginx service. `https` adds the HTTPS port to the ports that must be free to start
+    /// and to the ones that must listen before it counts as running: with Herd on 443, the
+    /// user is told who has the port instead of seeing Nginx exit (review of phase 6,
+    /// finding 4).
+    fn nginx_service(&self, https: bool) -> Result<Service, WebError> {
         let program = self
             .nginx_dir
             .join(format!("nginx{}", std::env::consts::EXE_SUFFIX));
@@ -558,12 +611,18 @@ impl WebStack {
                 .args(extra.iter().copied())
         };
         let log = self.paths.runtime_log("nginx")?;
-        let spec = ServiceSpec::new("nginx")
+        let mut ports = vec![self.http_port];
+        if https {
+            ports.push(self.https_port);
+        }
+        let mut spec = ServiceSpec::new("nginx")
             .process(control(&[]).cwd(&self.nginx_dir).log_file(log))
-            .port(self.http_port)
-            .health(HealthCheck::Ports(vec![self.http_port]))
+            .health(HealthCheck::Ports(ports.clone()))
             .graceful_stop(control(&["-s", "quit"]))
             .policy(LifecyclePolicy::default());
+        for port in ports {
+            spec = spec.port(port);
+        }
         Ok(Service::new(
             spec,
             self.supervisor.clone(),
@@ -587,12 +646,30 @@ impl WebStack {
         if self.desired.is_some() {
             self.begin_test(true, now, &mut events);
         } else if on_disk {
-            self.start_nginx(now, &mut events);
+            let https = self.disk_has_tls();
+            self.start_nginx(now, &mut events, https);
         }
         events
     }
 
-    fn start_nginx(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
+    /// Starts Nginx. A service that is not running is built again first, because the ports it
+    /// needs depend on whether any site is served with TLS.
+    fn start_nginx(&mut self, now: Instant, events: &mut Vec<WebEvent>, https: bool) {
+        let down = self
+            .nginx
+            .as_ref()
+            .is_none_or(|n| matches!(n.state(), ServiceState::Stopped | ServiceState::Failed(_)));
+        if down {
+            match self.nginx_service(https) {
+                Ok(service) => self.nginx = Some(service),
+                Err(e) => {
+                    events.push(WebEvent::ReloadFailed {
+                        reason: e.to_string(),
+                    });
+                    return;
+                }
+            }
+        }
         if let Some(nginx) = &mut self.nginx {
             if let Ok(list) = nginx.start(now) {
                 events.extend(wrap("nginx", list));
@@ -729,7 +806,9 @@ impl WebStack {
         self.cancel_reload();
         events.push(WebEvent::ReloadFailed { reason });
         if then_start && self.running && self.main_conf().is_ok_and(|main| main.is_file()) {
-            self.start_nginx(now, events);
+            // With the configuration that worked before, which may or may not use TLS.
+            let https = self.disk_has_tls();
+            self.start_nginx(now, events, https);
         }
         self.finish_reload_round(now, false);
     }
@@ -830,15 +909,15 @@ impl WebStack {
                 {
                     None
                 }
-                Ok(_) => Some(stage_nginx_config(&input)),
-                Err(e) => Some(Err(e)),
+                Ok(_) => Some(self.stage(&desired, &entries)),
+                Err(e) => Some(Err(e.to_string())),
             }
         };
         let staged = match staged {
             // The disk already has exactly this: nothing to test or reload.
             None => {
                 if then_start {
-                    self.start_nginx(now, events);
+                    self.start_nginx(now, events, Self::serves_tls(&desired));
                 }
                 self.finish_reload_round(now, true);
                 return;
@@ -895,16 +974,34 @@ impl WebStack {
         let Some(tested) = reload.tested else {
             return;
         };
-        let written = {
+        // The certificate goes first, then the configuration that lists it; both only now that
+        // Nginx has accepted them together.
+        let written: Result<(), String> = (|| {
+            if let Some(pair) = tested.tls.as_ref().and_then(|t| t.pending.as_ref()) {
+                install_site_cert(&self.paths, pair).map_err(|e| e.to_string())?;
+            }
             let entries = tested.entries();
             let input = self.input(&tested, &entries);
             write_nginx_config(&input)
-        };
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })();
         if let Some(stage) = crate::nginx::staging_dir(&self.paths) {
             let _ = std::fs::remove_dir_all(stage);
         }
-        if let Some(desired) = &mut self.desired {
-            desired.force_reload = false;
+        if written.is_ok() {
+            // What was installed is no longer pending, unless a newer plan replaced it.
+            let tested_pair = tested.tls.as_ref().and_then(|t| t.pending.clone());
+            if let Some(desired) = &mut self.desired {
+                if let Some(tls) = desired.tls.as_mut() {
+                    if tls.pending == tested_pair {
+                        tls.pending = None;
+                    }
+                }
+                if desired.tls.as_ref().is_none_or(|t| t.pending.is_none()) {
+                    desired.force_reload = false;
+                }
+            }
         }
         if let Err(e) = written {
             self.reload = Some(Reload {
@@ -922,7 +1019,7 @@ impl WebStack {
             return;
         }
         if reload.then_start {
-            self.start_nginx(now, events);
+            self.start_nginx(now, events, Self::serves_tls(&tested));
             self.finish_reload_round(now, true);
             return;
         }

@@ -435,7 +435,7 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             &["-I", &format!("http://secure.test:{HTTP}/v.php?x=1")],
         );
         let head = text(&redirect);
-        assert!(head.starts_with("HTTP/1.1 301"), "{head}");
+        assert!(head.starts_with("HTTP/1.1 302"), "{head}");
         assert!(
             head.contains(&format!("Location: https://secure.test:{HTTPS}/v.php?x=1")),
             "{head}"
@@ -480,6 +480,72 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
         assert!(!other.status.success() && text(&other).is_empty());
         // And over plain HTTP it still works.
         assert!(get("plain.test", "/v.php").contains("plain https=off PHP 7.4.33"));
+
+        // Securing `plain` while an override is broken: Nginx rejects the pair under test, and
+        // neither the certificate nor the configuration on disk change (review of phase 6,
+        // finding 3). The sites keep working with the pair they had.
+        let overrides = paths.overrides_for("nginx").unwrap();
+        fs::create_dir_all(&overrides).unwrap();
+        fs::write(overrides.join("broken.conf"), "this is not nginx;\n").unwrap();
+        let cert_before = fs::read(paths.site_cert()).unwrap();
+        let conf_before = fs::read(
+            paths
+                .etc_for("nginx")
+                .unwrap()
+                .join("sites")
+                .join("plain.conf"),
+        )
+        .unwrap();
+        crisol_core::sites::set_secure(&paths, "plain", true).unwrap();
+        run.events.clear();
+        let plan = plan_web(
+            &paths,
+            &config,
+            &SitesFile::load(&paths).unwrap(),
+            &catalog,
+            &TrustAllOwners,
+            &nobody,
+        );
+        run.stack.apply(&plan, Instant::now()).unwrap();
+        run.tick_until("the rejected reload", |r| {
+            r.events
+                .iter()
+                .any(|e| matches!(e, WebEvent::ReloadFailed { .. }))
+        });
+        assert_eq!(fs::read(paths.site_cert()).unwrap(), cert_before);
+        assert_eq!(
+            fs::read(
+                paths
+                    .etc_for("nginx")
+                    .unwrap()
+                    .join("sites")
+                    .join("plain.conf")
+            )
+            .unwrap(),
+            conf_before
+        );
+        let still = curl(Some(&ca), &on, &[&format!("{url}/v.php")]);
+        assert_eq!(text(&still), "secure https=on PHP 7.4.33");
+
+        // Fixed: the same change goes in and `plain` is now served over TLS too.
+        fs::remove_file(overrides.join("broken.conf")).unwrap();
+        run.events.clear();
+        run.stack.apply(&plan, Instant::now()).unwrap();
+        run.tick_until("the reload after the fix", |r| r.saw(&WebEvent::Reloaded));
+        let plain_on = format!("plain.test:{HTTPS}:127.0.0.1");
+        let mut page = String::new();
+        for _ in 0..50 {
+            page = text(&curl(
+                Some(&ca),
+                &plain_on,
+                &[&format!("https://plain.test:{HTTPS}/v.php")],
+            ));
+            if !page.is_empty() {
+                break;
+            }
+            run.tick_for(Duration::from_millis(100));
+        }
+        assert_eq!(page, "plain https=on PHP 7.4.33");
     }));
 
     run.stack.stop(Instant::now());

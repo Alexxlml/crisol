@@ -457,11 +457,12 @@ fn render_site(
                     quote(tls.key)?,
                 ),
                 format!(
-                    "# {domain}: plain HTTP goes to HTTPS.\n\
+                    "# {domain}: plain HTTP goes to HTTPS. A 302, not a 301: browsers keep a 301 for\n\
+                     # good, and the site would look broken after being unsecured.\n\
                      server {{\n\
                      \x20   listen 127.0.0.1:{port};\n\
                      \x20   server_name {domain};\n\
-                     \x20   return 301 https://$host{suffix}$request_uri;\n\
+                     \x20   return 302 https://$host{suffix}$request_uri;\n\
                      }}\n\n",
                     domain = site.domain,
                 ),

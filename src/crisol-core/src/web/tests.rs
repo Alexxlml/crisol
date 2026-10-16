@@ -12,8 +12,10 @@ use crate::ports::PortOwner;
 use crate::process::fake::FakeSupervisor;
 use crate::project::TrustAllOwners;
 use crate::sites::SitesFile;
+use x509_parser::prelude::FromDer;
 
 const HTTP: u16 = 19080;
+const HTTPS: u16 = 19443;
 
 struct Rig {
     _tmp: TempDir,
@@ -41,6 +43,7 @@ impl Rig {
         config.services.nginx.http_port = HTTP;
         config.php.base_port = 19100;
         config.php.workers = 2;
+        config.services.nginx.https_port = HTTPS;
         adjust(&mut config);
         for version in php {
             fs::create_dir_all(paths.bin_for("php", version).unwrap()).unwrap();
@@ -177,6 +180,9 @@ impl Rig {
         self.stack.start(self.at(0));
         self.first_test_passes(100);
         let mut ports = vec![HTTP];
+        if plan.sites.iter().any(|s| s.site.secure) {
+            ports.push(HTTPS);
+        }
         for version in plan.php_versions().keys() {
             ports.extend(self.stack.pool_ports(version).unwrap());
         }
@@ -704,16 +710,21 @@ fn securing_a_site_makes_the_ca_and_the_certificate_and_the_config_uses_them() {
     let applied = rig.stack.apply(&plan, rig.at(0)).unwrap();
     assert!(applied.ca_created, "the user has to trust it");
     assert_eq!(applied.certificate, Some(crate::tls::Renewal::Missing));
-    assert!(rig.paths.ca_cert().is_file() && rig.paths.site_cert().is_file());
+    assert!(rig.paths.ca_cert().is_file(), "the CA exists at once");
+    assert!(
+        !rig.paths.site_cert().exists() && !rig.paths.site_key().exists(),
+        "the certificate waits for Nginx to accept it"
+    );
     assert_eq!(applied.warnings.len(), 0, "{:?}", applied.warnings);
 
-    // Start: the test passes, the config reaches the disk with the TLS block.
+    // Start: the test passes, then the certificate and the config reach the disk together.
     rig.stack.start(rig.at(0));
     rig.supervisor.exit(rig.last_control(), 0).unwrap();
     rig.tick(100);
+    assert!(rig.paths.site_cert().is_file() && rig.paths.site_key().is_file());
     let shop = fs::read_to_string(rig.final_conf("sites/shop.conf")).unwrap();
     assert!(
-        shop.contains("ssl_certificate") && shop.contains("return 301"),
+        shop.contains("ssl_certificate") && shop.contains("return 302"),
         "{shop}"
     );
     let blog = fs::read_to_string(rig.final_conf("sites/blog.conf")).unwrap();
@@ -752,7 +763,44 @@ fn securing_another_site_issues_a_new_certificate_and_reloads() {
     assert_eq!(applied.certificate, Some(crate::tls::Renewal::Names));
     assert!(!applied.ca_created);
     assert!(applied.reload_requested);
+    assert_eq!(
+        fs::read(rig.paths.site_cert()).unwrap(),
+        before,
+        "the old certificate stays until the new pair has passed `nginx -t`"
+    );
+
+    // The test passes: the new certificate and the new configuration go in together.
+    rig.tick(1100);
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(1300);
     assert_ne!(fs::read(rig.paths.site_cert()).unwrap(), before);
+    let blog = fs::read_to_string(rig.final_conf("sites/blog.conf")).unwrap();
+    assert!(blog.contains("ssl_certificate"), "{blog}");
+    assert!(
+        !rig.paths.certs_dir().join(".next").exists(),
+        "staging is cleaned up"
+    );
+    let pem = fs::read_to_string(rig.paths.site_cert()).unwrap();
+    let der = x509_parser::pem::parse_x509_pem(pem.as_bytes())
+        .unwrap()
+        .1
+        .contents;
+    let cert = x509_parser::prelude::X509Certificate::from_der(&der)
+        .unwrap()
+        .1;
+    let names: Vec<String> = cert
+        .subject_alternative_name()
+        .unwrap()
+        .unwrap()
+        .value
+        .general_names
+        .iter()
+        .filter_map(|n| match n {
+            x509_parser::extensions::GeneralName::DNSName(d) => Some((*d).to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.contains(&"blog.test".to_owned()) && names.contains(&"shop.test".to_owned()));
 }
 
 #[test]
@@ -897,7 +945,7 @@ fn an_existing_ca_does_not_get_a_certificate_for_a_tld_it_cannot_issue_for() {
     let mut rig = Rig::new(&[]);
     rig.site("shop", None);
     rig.secure("shop");
-    rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    rig.run_with(&rig.plan_with_secure());
     let cert_before = fs::read(rig.paths.site_cert()).unwrap();
 
     let mut other = Rig::with_config(&[], |config| config.sites.tld = "internal".to_owned());
@@ -930,4 +978,149 @@ fn an_existing_ca_does_not_get_a_certificate_for_a_tld_it_cannot_issue_for() {
         cert_before,
         "nothing new was issued"
     );
+}
+
+// ---- certificate and configuration go in together (review of phase 6, finding 3) ----------
+
+#[test]
+fn a_rejected_change_to_the_secured_sites_leaves_the_certificate_and_the_config_as_they_were() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.site("blog", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+    let cert = fs::read(rig.paths.site_cert()).unwrap();
+    let key = fs::read(rig.paths.site_key()).unwrap();
+    let config = fs::read(rig.final_conf("sites/shop.conf")).unwrap();
+    let blog_before = fs::read(rig.final_conf("sites/blog.conf")).unwrap();
+
+    // A broken override makes `nginx -t` fail while a second site is being secured.
+    rig.secure("blog");
+    let applied = rig
+        .stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    assert_eq!(applied.certificate, Some(crate::tls::Renewal::Names));
+    rig.tick(1100);
+    // The staged configuration is tested against the staged certificate, not the real one.
+    let staged = fs::read_to_string(rig.final_conf(".next/sites/blog.conf")).unwrap();
+    let shown = staged.replace('\\', "/");
+    assert!(shown.contains("/certs/.next/sites.pem"), "{shown}");
+    assert!(rig
+        .paths
+        .certs_dir()
+        .join(".next")
+        .join("sites.pem")
+        .is_file());
+
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    let events = rig.tick(1300);
+    assert!(
+        matches!(events.as_slice(), [WebEvent::ReloadFailed { .. }]),
+        "{events:?}"
+    );
+
+    // Nothing the next start would read has changed: the pair and the config still agree.
+    assert_eq!(fs::read(rig.paths.site_cert()).unwrap(), cert);
+    assert_eq!(fs::read(rig.paths.site_key()).unwrap(), key);
+    assert_eq!(fs::read(rig.final_conf("sites/shop.conf")).unwrap(), config);
+    assert_eq!(
+        fs::read(rig.final_conf("sites/blog.conf")).unwrap(),
+        blog_before,
+        "blog is still the plain HTTP site it was"
+    );
+}
+
+#[test]
+fn a_certificate_that_only_changes_is_also_tested_before_it_is_installed() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+    let config = fs::read(rig.final_conf("sites/shop.conf")).unwrap();
+
+    fs::remove_file(rig.paths.site_cert()).unwrap();
+    fs::remove_file(rig.paths.site_key()).unwrap();
+    rig.stack
+        .apply(&rig.plan_with_secure(), rig.at(1000))
+        .unwrap();
+    assert!(
+        !rig.paths.site_cert().exists(),
+        "made in memory, not written"
+    );
+    rig.tick(1100);
+    rig.supervisor.exit(rig.last_control(), 1).unwrap();
+    rig.tick(1300);
+    assert!(
+        !rig.paths.site_cert().exists(),
+        "rejected: still nothing in certs/"
+    );
+    assert_eq!(fs::read(rig.final_conf("sites/shop.conf")).unwrap(), config);
+}
+
+// ---- the HTTPS port counts (review of phase 6, finding 4) ----------------------------------
+
+#[test]
+fn another_program_on_the_https_port_is_named_and_nginx_is_not_started() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    // Herd, say, has 443 (here, the test's HTTPS port).
+    rig.probe.occupy(
+        HTTPS,
+        PortOwner {
+            pid: 4321,
+            name: Some("herd.exe".to_owned()),
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, HTTPS)),
+        },
+    );
+    rig.stack.start(rig.at(0));
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(100);
+    match rig.stack.nginx_state() {
+        Some(ServiceState::Failed(crate::service::FailureReason::PortBusy { port, owners })) => {
+            assert_eq!(*port, HTTPS);
+            assert_eq!(owners[0].name.as_deref(), Some("herd.exe"));
+        }
+        other => panic!("expected the port to be reported, got {other:?}"),
+    }
+    assert_eq!(rig.started("nginx"), 0, "nothing was started");
+}
+
+#[test]
+fn nginx_is_running_only_when_the_https_port_listens_too() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.stack.apply(&rig.plan_with_secure(), rig.at(0)).unwrap();
+    rig.stack.start(rig.at(0));
+    rig.supervisor.exit(rig.last_control(), 0).unwrap();
+    rig.tick(100);
+    rig.listen(&[HTTP]);
+    rig.tick(700);
+    assert_eq!(
+        rig.stack.nginx_state(),
+        Some(&ServiceState::Starting),
+        "TLS is not up"
+    );
+    rig.listen(&[HTTPS]);
+    rig.tick(1300);
+    assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
+}
+
+#[test]
+fn without_secured_sites_the_https_port_is_nobodys_business() {
+    let mut rig = Rig::new(&[]);
+    rig.site("blog", None);
+    rig.probe.occupy(
+        HTTPS,
+        PortOwner {
+            pid: 1,
+            name: Some("herd.exe".to_owned()),
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, HTTPS)),
+        },
+    );
+    rig.run();
+    assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
 }

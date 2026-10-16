@@ -87,28 +87,120 @@ pub fn expected_names(secured_hosts: &[String]) -> Vec<String> {
     names
 }
 
-/// The certificate in `certs/`, made (or made again) when it is not current. `ca` must be the
-/// CA of `certs/`; `secured_hosts` are the host names of the secured sites, all of which it
-/// must be able to issue for ([`LocalCa::covers`]).
+/// A certificate and its key that have been made but not put in `certs/` yet.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IssuedPair {
+    cert_pem: String,
+    key_pem: String,
+}
+
+impl std::fmt::Debug for IssuedPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The key is never printed.
+        f.debug_struct("IssuedPair").finish_non_exhaustive()
+    }
+}
+
+/// What [`plan_site_cert`] decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteCertPlan {
+    /// `certs/sites.pem`: where the certificate goes (or already is).
+    pub cert: std::path::PathBuf,
+    /// `certs/sites.key`.
+    pub key: std::path::PathBuf,
+    /// Why a new one is needed; `None` if the one in `certs/` can be kept.
+    pub change: Option<Renewal>,
+    /// The new pair, made but **not written anywhere**. Test it first
+    /// ([`stage_site_cert`]) and put it in place only afterwards ([`install_site_cert`]).
+    pub pending: Option<IssuedPair>,
+}
+
+/// Decides whether the certificate in `certs/` is current and, if it is not, makes the new one
+/// **in memory**. Nothing is written: a configuration that Nginx then rejects must not leave a
+/// new certificate next to the old configuration (review of phase 6, finding 3).
+///
+/// `ca` must be the CA of `certs/`; `secured_hosts` are the host names of the secured sites,
+/// all of which it must be able to issue for ([`LocalCa::covers`]).
+pub fn plan_site_cert(
+    paths: &CrisolPaths,
+    ca: &LocalCa,
+    secured_hosts: &[String],
+    now: SystemTime,
+) -> Result<SiteCertPlan, CaError> {
+    if let Some(host) = secured_hosts.iter().find(|h| !ca.covers(h)) {
+        return Err(CaError::NotCovered(host.clone()));
+    }
+    let names = expected_names(secured_hosts);
+    let (change, pending) = match why_not_current(paths, ca, &names, now) {
+        None => (None, None),
+        Some(reason) => (Some(reason), Some(issue(ca, &names, now)?)),
+    };
+    Ok(SiteCertPlan {
+        cert: paths.site_cert(),
+        key: paths.site_key(),
+        change,
+        pending,
+    })
+}
+
+/// Where a pair waits while Nginx tests it: `certs/.next/sites.pem` and `sites.key`, inside the
+/// private `certs/`.
+#[must_use]
+pub fn staged_paths(paths: &CrisolPaths) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = paths.certs_dir().join(".next");
+    (dir.join("sites.pem"), dir.join("sites.key"))
+}
+
+/// Writes the pair into the staging folder, replacing whatever was staged before, and returns
+/// the paths for the configuration under test.
+pub fn stage_site_cert(
+    paths: &CrisolPaths,
+    pair: &IssuedPair,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), CaError> {
+    let (cert, key) = staged_paths(paths);
+    if let Some(dir) = cert.parent() {
+        let _ = fs::remove_dir_all(dir);
+        write_files(
+            dir,
+            &[(key.clone(), &pair.key_pem), (cert.clone(), &pair.cert_pem)],
+        )?;
+    }
+    Ok((cert, key))
+}
+
+/// Puts the pair in `certs/` (both files, or neither) and removes the staging folder.
+pub fn install_site_cert(paths: &CrisolPaths, pair: &IssuedPair) -> Result<(), CaError> {
+    write_files(
+        &paths.certs_dir(),
+        &[
+            (paths.site_key(), &pair.key_pem),
+            (paths.site_cert(), &pair.cert_pem),
+        ],
+    )?;
+    if let Some(dir) = staged_paths(paths).0.parent() {
+        let _ = fs::remove_dir_all(dir);
+    }
+    Ok(())
+}
+
+/// The certificate in `certs/`, made (or made again) and written at once when it is not
+/// current: [`plan_site_cert`] and [`install_site_cert`] together, for callers that have no
+/// configuration to test first.
 pub fn ensure_site_cert(
     paths: &CrisolPaths,
     ca: &LocalCa,
     secured_hosts: &[String],
     now: SystemTime,
 ) -> Result<SiteCert, CaError> {
-    if let Some(host) = secured_hosts.iter().find(|h| !ca.covers(h)) {
-        return Err(CaError::NotCovered(host.clone()));
+    let plan = plan_site_cert(paths, ca, secured_hosts, now)?;
+    if let Some(pair) = &plan.pending {
+        install_site_cert(paths, pair)?;
     }
-    let names = expected_names(secured_hosts);
-    let (cert, key) = (paths.site_cert(), paths.site_key());
-    let changed = match why_not_current(paths, ca, &names, now) {
-        None => None,
-        Some(reason) => {
-            issue(paths, ca, &names, now)?;
-            Some(reason)
-        }
-    };
-    Ok(SiteCert { cert, key, changed })
+    Ok(SiteCert {
+        cert: plan.cert,
+        key: plan.key,
+        changed: plan.change,
+    })
 }
 
 /// `None` if the certificate in `certs/` can be kept.
@@ -198,12 +290,7 @@ fn unix(time: SystemTime) -> i64 {
 }
 
 /// Makes a certificate with its own key, signed by the CA, and writes both files.
-fn issue(
-    paths: &CrisolPaths,
-    ca: &LocalCa,
-    names: &[String],
-    now: SystemTime,
-) -> Result<(), CaError> {
+fn issue(ca: &LocalCa, names: &[String], now: SystemTime) -> Result<IssuedPair, CaError> {
     let invalid = |e: rcgen::Error| CaError::Invalid(e.to_string());
     let key = KeyPair::generate().map_err(invalid)?;
     let mut params = CertificateParams::new(names.to_vec()).map_err(invalid)?;
@@ -222,13 +309,10 @@ fn issue(
 
     let issuer = Issuer::from_ca_cert_pem(ca.cert_pem(), ca.key()).map_err(invalid)?;
     let cert = params.signed_by(&key, &issuer).map_err(invalid)?;
-    write_files(
-        &paths.certs_dir(),
-        &[
-            (paths.site_key(), &key.serialize_pem()),
-            (paths.site_cert(), &cert.pem()),
-        ],
-    )
+    Ok(IssuedPair {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+    })
 }
 
 fn serial(key: &KeyPair, now: SystemTime) -> SerialNumber {
