@@ -8,6 +8,7 @@ expression: normalised(text)
 # blog.test: linked site, WordPress
 server {
     listen 127.0.0.1:80;
+    listen [::1]:80;
     server_name blog.test;
     root "D:/code/blog";
     index index.php index.html;

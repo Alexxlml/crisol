@@ -249,7 +249,14 @@ impl fmt::Display for FailureReason {
             Self::PortBusy { port, owners } => {
                 let who: Vec<String> = owners
                     .iter()
-                    .map(|o| format!("{} (pid {})", o.name.as_deref().unwrap_or("unknown"), o.pid))
+                    .map(|o| {
+                        format!(
+                            "{} (pid {}, {})",
+                            o.name.as_deref().unwrap_or("unknown"),
+                            o.pid,
+                            o.address
+                        )
+                    })
                     .collect();
                 write!(f, "port {port} is already in use by {}", who.join(", "))
             }

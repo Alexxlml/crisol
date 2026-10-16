@@ -34,6 +34,7 @@ http {
     # Any host that is not a site: close the connection.
     server {
         listen 127.0.0.1:80 default_server;
+        listen [::1]:80 default_server;
         server_name _;
         return 444;
     }
@@ -41,6 +42,7 @@ http {
     # Any host that is not a site, over HTTPS: refuse the handshake.
     server {
         listen 127.0.0.1:443 ssl default_server;
+        listen [::1]:443 ssl default_server;
         server_name _;
         ssl_reject_handshake on;
     }

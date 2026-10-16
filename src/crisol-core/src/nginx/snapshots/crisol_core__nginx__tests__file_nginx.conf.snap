@@ -34,6 +34,7 @@ http {
     # Any host that is not a site: close the connection.
     server {
         listen 127.0.0.1:80 default_server;
+        listen [::1]:80 default_server;
         server_name _;
         return 444;
     }

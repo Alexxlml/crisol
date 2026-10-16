@@ -997,3 +997,75 @@ fn a_certificate_path_nginx_would_misread_keeps_the_secured_site_out() {
         rendered.warnings
     );
 }
+
+// ---- review of phase 7, finding 2: Nginx listens on [::1] too ------------------------------
+
+/// Every `listen` on IPv4 loopback has its twin on `[::1]` with the same port and options, in
+/// every file, and nothing listens anywhere else.
+fn assert_listens_on_both_loopbacks(text: &str) {
+    let listens: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("listen "))
+        .collect();
+    assert_ne!(listens.len(), 0);
+    for line in &listens {
+        assert!(
+            line.starts_with("listen 127.0.0.1:") || line.starts_with("listen [::1]:"),
+            "{line}"
+        );
+    }
+    for line in listens
+        .iter()
+        .filter(|l| l.starts_with("listen 127.0.0.1:"))
+    {
+        let twin = line.replacen("127.0.0.1", "[::1]", 1);
+        assert!(
+            listens.contains(&twin.as_str()),
+            "{line} has no twin\n{text}"
+        );
+    }
+    let (v4, v6) = (
+        listens.iter().filter(|l| l.contains("127.0.0.1")).count(),
+        listens.iter().filter(|l| l.contains("[::1]")).count(),
+    );
+    assert_eq!(v4, v6, "{text}");
+}
+
+#[test]
+fn every_listen_is_duplicated_on_ipv6_loopback_including_the_default_servers_and_tls() {
+    let shop = secured("shop", "D:/shop/public");
+    let plain = site("blog", "D:/blog", DocRoot::Root, SiteKind::Parked);
+    let files = tls_files();
+    for port in [443, 19443] {
+        let rendered = render_tls(
+            &[
+                NginxSite {
+                    site: &shop,
+                    php: Some("8.4.26"),
+                },
+                NginxSite {
+                    site: &plain,
+                    php: None,
+                },
+            ],
+            Some((port, &files)),
+        );
+        for name in ["nginx.conf", "sites/shop.conf", "sites/blog.conf"] {
+            assert_listens_on_both_loopbacks(&rendered.files[name]);
+        }
+        let main = &rendered.files["nginx.conf"];
+        assert!(
+            main.contains(&format!("listen [::1]:{port} ssl default_server;")),
+            "{main}"
+        );
+        assert!(main.contains("default_server;\n        server_name _;\n        return 444;"));
+        // The secured site's HTTPS block takes the HTTPS port, its redirect the HTTP one.
+        let conf = &rendered.files["sites/shop.conf"];
+        assert!(
+            conf.contains(&format!("listen [::1]:{port} ssl;")),
+            "{conf}"
+        );
+        assert!(conf.contains("listen [::1]:80;"), "{conf}");
+    }
+}

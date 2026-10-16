@@ -21,8 +21,10 @@
 //! control character) keeps its site out, with a warning, instead of producing a file Nginx
 //! would misread.
 //!
-//! The server listens on `127.0.0.1` only. A site marked `secure` (ADR-0013) also gets an
-//! HTTPS server block with the certificate in [`NginxTls`], and its HTTP block only redirects
+//! The server listens on `127.0.0.1` and `[::1]` only, on the same ports: the DNS responder and
+//! the `hosts` block answer both addresses (ADR-0014), and clients try IPv6 first, so a program
+//! listening on `[::1]:80` would otherwise receive the requests meant for a site. A site marked
+//! `secure` (ADR-0013) also gets an HTTPS server block with the certificate in [`NginxTls`], and its HTTP block only redirects
 //! to it; a secured site without a certificate is served over HTTP, with a warning. A
 //! `default_server` answers 444 (closes the connection) for any host that is not a site. The
 //! PHP workers are the pool of F5.3: [`PhpPools`] says which ports each version listens on.
@@ -323,11 +325,12 @@ fn render_main(input: &NginxInput<'_>, etc: &Path, any_secure: bool) -> Result<S
         Some(tls) if any_secure => format!(
             "    # Any host that is not a site, over HTTPS: refuse the handshake.\n\
              \x20   server {{\n\
-             \x20       listen 127.0.0.1:{} ssl default_server;\n\
+             \x20       listen 127.0.0.1:{port} ssl default_server;\n\
+             \x20       listen [::1]:{port} ssl default_server;\n\
              \x20       server_name _;\n\
              \x20       ssl_reject_handshake on;\n\
              \x20   }}\n\n",
-            tls.https_port
+            port = tls.https_port
         ),
         _ => String::new(),
     };
@@ -358,6 +361,7 @@ fn render_main(input: &NginxInput<'_>, etc: &Path, any_secure: bool) -> Result<S
          \x20   # Any host that is not a site: close the connection.\n\
          \x20   server {{\n\
          \x20       listen 127.0.0.1:{port} default_server;\n\
+         \x20       listen [::1]:{port} default_server;\n\
          \x20       server_name _;\n\
          \x20       return 444;\n\
          \x20   }}\n\n\
@@ -398,6 +402,12 @@ const PHP_NOTE: &str =
     "    # Windows ignores the case of a name and a trailing dot or space, so `.php` is\n\
      \x20   # matched without regard to case and with those endings: `/wp-config.PHP` and\n\
      \x20   # `/wp-config.php.` run the script, they are never sent as text.\n";
+
+/// The `listen` lines for `port` on both loopback addresses (`127.0.0.1` and `[::1]`), with
+/// `options` (such as ` ssl default_server`) after the address.
+fn listen_loopbacks(indent: &str, port: u16, options: &str) -> String {
+    format!("{indent}listen 127.0.0.1:{port}{options};\n{indent}listen [::1]:{port}{options};\n")
+}
 
 fn render_site(
     input: &NginxInput<'_>,
@@ -457,28 +467,29 @@ fn render_site(
             };
             (
                 format!(
-                    "    listen 127.0.0.1:{} ssl;\n\
+                    "{listens}\
                      \x20   http2 on;\n\
                      \x20   ssl_certificate {};\n\
                      \x20   ssl_certificate_key {};\n\
                      \x20   ssl_protocols TLSv1.2 TLSv1.3;\n",
-                    tls.https_port,
                     quote(tls.cert)?,
                     quote(tls.key)?,
+                    listens = listen_loopbacks("    ", tls.https_port, " ssl"),
                 ),
                 format!(
                     "# {domain}: plain HTTP goes to HTTPS. A 302, not a 301: browsers keep a 301 for\n\
                      # good, and the site would look broken after being unsecured.\n\
                      server {{\n\
-                     \x20   listen 127.0.0.1:{port};\n\
+                     {listens}\
                      \x20   server_name {domain};\n\
                      \x20   return 302 https://$host{suffix}$request_uri;\n\
                      }}\n\n",
                     domain = site.domain,
+                    listens = listen_loopbacks("    ", port, ""),
                 ),
             )
         }
-        _ => (format!("    listen 127.0.0.1:{port};\n"), String::new()),
+        _ => (listen_loopbacks("    ", port, ""), String::new()),
     };
 
     Ok(format!(

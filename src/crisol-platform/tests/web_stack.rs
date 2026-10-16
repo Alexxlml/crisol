@@ -16,7 +16,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -558,6 +558,132 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
     }
     assert!(run.stack.is_stopped(), "the stack did not stop");
     if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+// ---- review of phase 7, finding 2: Nginx listens on [::1] too ------------------------------
+
+/// One HTTP/1.1 request to `address` for `host`; the whole answer as text ("" if cut).
+fn get_at(address: SocketAddr, host: &str) -> String {
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_secs(5)) else {
+        return String::new();
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let _ = write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    );
+    let mut body = String::new();
+    let _ = stream.read_to_string(&mut body);
+    body
+}
+
+/// Needs PHP 8.4.26 and Nginx 1.28.3. A program holding `[::1]:HTTP` keeps Nginx from starting
+/// and is named in the failure; once it lets go, the same site answers on `[::1]` and on
+/// `127.0.0.1`, which is where `shop.test` goes when a client tries IPv6 first.
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 8.4.26 and Nginx 1.28.3 (Windows, IPv6 loopback)"]
+fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_both_addresses() {
+    let _ports = ports();
+    let ipv6 = SocketAddr::from((Ipv6Addr::LOCALHOST, HTTP));
+    let Ok(squatter) = TcpListener::bind(ipv6) else {
+        eprintln!("no IPv6 loopback on this machine: nothing to test");
+        return;
+    };
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
+    install_from_downloads(&paths, "php", "8.4.26");
+    write_php_ini(&paths, "8.4.26", &PhpIniSettings::default()).unwrap();
+    let mut config = Config::default();
+    config.services.nginx.http_port = HTTP;
+    config.php.base_port = 19100;
+    config.php.workers = 1;
+    site(&paths, "shop", None);
+    let catalog = Catalog::embedded().unwrap();
+    let nobody = |_: &str| None;
+    let plan = plan_web(
+        &paths,
+        &config,
+        &SitesFile::default(),
+        &catalog,
+        &TrustAllOwners,
+        &nobody,
+    );
+    let new_stack = || {
+        WebStack::new(
+            paths.clone(),
+            &config,
+            nginx_dir.clone(),
+            Arc::new(JobObjectSupervisor::new()),
+            Arc::new(WindowsPortProbe::new()),
+            Arc::new(WindowsPrivateDirs),
+        )
+    };
+    let stop = |run: &mut Run| {
+        run.stack.stop(Instant::now());
+        let end = Instant::now() + Duration::from_secs(15);
+        while !run.stack.is_stopped() && Instant::now() < end {
+            run.tick_for(Duration::from_millis(100));
+        }
+        assert!(run.stack.is_stopped(), "the stack did not stop");
+    };
+
+    // 1. Somebody else has [::1]:HTTP: Nginx does not start, and the failure names the port.
+    let mut run = Run {
+        stack: new_stack(),
+        events: Vec::new(),
+    };
+    run.stack.apply(&plan, Instant::now()).unwrap();
+    let started = run.stack.start(Instant::now());
+    run.events.extend(started);
+    run.tick_for(Duration::from_secs(2));
+    let busy = matches!(
+        run.stack.nginx_state(),
+        Some(crisol_core::service::ServiceState::Failed(
+            crisol_core::service::FailureReason::PortBusy { port, owners }
+        )) if *port == HTTP && owners.iter().any(|o| o.address == ipv6)
+    );
+    let state = format!("{:?}", run.stack.nginx_state());
+    stop(&mut run);
+    assert!(busy, "{state}");
+    // The squatter was not asked anything: nothing connected to it.
+    squatter.set_nonblocking(true).unwrap();
+    assert!(
+        squatter.accept().is_err(),
+        "a request reached the other program"
+    );
+    drop(squatter);
+
+    // 2. With the port free, the site answers on both loopback addresses.
+    let mut run = Run {
+        stack: new_stack(),
+        events: Vec::new(),
+    };
+    run.stack.apply(&plan, Instant::now()).unwrap();
+    let started = run.stack.start(Instant::now());
+    run.events.extend(started);
+    run.tick_until("nginx and the pool to be running", |r| {
+        r.stack.nginx_state() == Some(&crisol_core::service::ServiceState::Running)
+            && r.stack.pool_state("8.4.26") == Some(&crisol_core::service::ServiceState::Running)
+    });
+    let both = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let v6 = get_at(ipv6, "shop.test");
+        let v4 = get_at(SocketAddr::from(([127, 0, 0, 1], HTTP)), "shop.test");
+        assert!(v6.contains("shop PHP 8.4.26"), "[::1]: {v6}");
+        assert!(v4.contains("shop PHP 8.4.26"), "127.0.0.1: {v4}");
+        assert_eq!(
+            get_at(ipv6, "unknown.test"),
+            "",
+            "an unknown host is cut on [::1] too"
+        );
+    }));
+    stop(&mut run);
+    if let Err(panic) = both {
         std::panic::resume_unwind(panic);
     }
 }

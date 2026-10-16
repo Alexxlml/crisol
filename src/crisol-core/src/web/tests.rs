@@ -1,7 +1,7 @@
 //! Orchestration tests: temporary home, the process and port fakes, a made-up clock.
 
 use std::fs;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use tempfile::TempDir;
 
@@ -1276,4 +1276,81 @@ fn a_rejected_new_config_falls_back_to_the_old_one_with_the_old_ports_even_with_
     rig.listen(&[HTTP]);
     rig.tick(12_900);
     assert_eq!(rig.stack.nginx_state(), Some(&ServiceState::Running));
+}
+
+// ---- review of phase 7, finding 2: a program on [::1] is a busy port ------------------------
+
+#[test]
+fn a_program_listening_on_ipv6_loopback_stops_nginx_from_starting_and_is_named() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.run();
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    rig.probe.release(HTTP);
+
+    // Another suite's proxy has [::1]:HTTP, which is where "shop.test" would go first.
+    rig.probe.occupy(
+        HTTP,
+        PortOwner {
+            pid: 777,
+            name: Some("herd.exe".to_owned()),
+            address: SocketAddr::from((Ipv6Addr::LOCALHOST, HTTP)),
+        },
+    );
+    let mut cold = rig.cold_stack();
+    cold.start(rig.at(12_000));
+    match cold.nginx_state() {
+        Some(ServiceState::Failed(crate::service::FailureReason::PortBusy { port, owners })) => {
+            assert_eq!(*port, HTTP);
+            assert_eq!(
+                owners[0].address,
+                SocketAddr::from((Ipv6Addr::LOCALHOST, HTTP))
+            );
+            let said = crate::service::FailureReason::PortBusy {
+                port: *port,
+                owners: owners.clone(),
+            }
+            .to_string();
+            assert!(
+                said.contains("herd.exe") && said.contains("[::1]"),
+                "{said}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_https_port_on_ipv6_is_checked_too() {
+    let mut rig = Rig::new(&[]);
+    rig.site("shop", None);
+    rig.secure("shop");
+    rig.run_with(&rig.plan_with_secure());
+    rig.stack.stop(rig.at(1000));
+    for ms in [1100, 6000, 6100, 11_000] {
+        rig.tick(ms);
+    }
+    rig.probe.release(HTTP);
+    rig.probe.release(HTTPS);
+    rig.probe.occupy(
+        HTTPS,
+        PortOwner {
+            pid: 778,
+            name: Some("proxy.exe".to_owned()),
+            address: SocketAddr::from((Ipv6Addr::LOCALHOST, HTTPS)),
+        },
+    );
+    let mut cold = rig.cold_stack();
+    cold.start(rig.at(12_000));
+    assert!(
+        matches!(
+            cold.nginx_state(),
+            Some(ServiceState::Failed(crate::service::FailureReason::PortBusy { port, .. })) if *port == HTTPS
+        ),
+        "{:?}",
+        cold.nginx_state()
+    );
 }

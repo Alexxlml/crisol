@@ -8,6 +8,7 @@ expression: normalised(text)
 # shop.test: parked site, Laravel
 server {
     listen 127.0.0.1:80;
+    listen [::1]:80;
     server_name shop.test;
     root "D:/code/shop/public";
     index index.php index.html;

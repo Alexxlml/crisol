@@ -8,6 +8,7 @@ expression: normalised(text)
 # docs.test: parked site, plain folder
 server {
     listen 127.0.0.1:80;
+    listen [::1]:80;
     server_name docs.test;
     root "D:/code/docs";
     index index.php index.html;

@@ -311,7 +311,7 @@ fn a_busy_port_fails_the_start_and_nothing_is_killed_or_spawned() {
     assert_eq!(rig.supervisor.group_count(), 0);
     assert_eq!(
         reason.to_string(),
-        "port 8000 is already in use by nginx.exe (pid 4321)"
+        "port 8000 is already in use by nginx.exe (pid 4321, 127.0.0.1:8000)"
     );
 }
 
