@@ -30,7 +30,7 @@ Conclusión: con Rust actual, `%`, `^`, `"` y espacios son seguros incluso por u
 
 Y con el `.cmd` el salto de línea no pasa. Por eso `crisol_core::nodetool` arma `node.exe <script> <argumentos>` para `npm`, `npx`, `corepack`, `pnpm`, `pnpx`, `yarn` y `yarnpkg`, sin `cmd.exe`. Con los Node oficiales reales (`real_node_runs_through_the_shims`): `%`, `^`, `"`, espacios, `&`, `|`, una cadena vacía y un salto de línea llegan intactos a `node`, y el código de salida vuelve.
 
-**Lo que se pierde al no usar `npm.cmd`:** `npm-prefix.js` permite que `npm install -g npm` (una copia nueva de npm en el prefijo global) gane sobre el npm del ZIP. El shim lo reproduce en F10.3 mirando `<prefijo>/node_modules/npm` (ver `docs/decisiones/0018-shims-de-node.md`).
+**Lo que se pierde al no usar `npm.cmd`:** `npm-prefix.js` permite que `npm install -g npm` (una copia nueva de npm en el prefijo global) gane sobre el npm del ZIP. El shim lo reproduce mirando `<prefijo global>/node_modules/npm` antes que la copia del ZIP (ADR-0018).
 
 **Ctrl+C:** el shim sigue sobreviviendo a Ctrl+C y deja que lo reciba el hijo (F4.2). Sin `cmd.exe` de por medio no sale el «¿Desea terminar el trabajo por lotes (S/N)?».
 

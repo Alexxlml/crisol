@@ -5,7 +5,8 @@
 //! (F4.2). Copies, not links, so that a shim keeps working if the original moves, and so that
 //! Windows needs no special permission to make them.
 //!
-//! Only these names (and the `.crisol-shim-old-*` leftovers described below) are ever
+//! Only these names (the shims of the global programs listed in `shims/.crisol-globals`, see
+//! [`crate::globals`], and the `.crisol-shim-old-*` leftovers described below) are ever
 //! created or removed here. The folder is Crisol's, but nothing else in it is touched.
 //!
 //! Windows will not overwrite a program that is running, but it does let it be **renamed**. So a
@@ -79,7 +80,7 @@ pub fn install_shim_files(
     Ok(result)
 }
 
-fn write_atomically(dir: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(dir: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temp = tempfile::Builder::new()
         .prefix(".crisol-shim-")
         .tempfile_in(dir)?;
@@ -92,7 +93,7 @@ fn write_atomically(dir: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Moves the program at `target` (which cannot be overwritten, so it is probably running)
 /// out of the way and puts `bytes` in its place. If the new file cannot be written, the old
 /// one goes back.
-fn replace_running(dir: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn replace_running(dir: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -124,6 +125,10 @@ pub fn remove_shim_files(paths: &CrisolPaths) -> io::Result<Vec<PathBuf>> {
     let dir = paths.shims_dir();
     let mut removed = Vec::new();
     remove_leftovers(&dir);
+    // The shims of the global programs (`tsc.exe`) are ours too, and only the ones in the list.
+    for name in crate::globals::remove_global_shims(paths)? {
+        removed.push(dir.join(shim_file_name(&name)));
+    }
     for command in SHIM_COMMANDS {
         let target = dir.join(shim_file_name(command));
         match fs::remove_file(&target) {

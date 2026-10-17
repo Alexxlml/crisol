@@ -10,6 +10,7 @@
 use std::io;
 use std::path::Path;
 
+use crate::globals::{shimmed_globals, sync_global_shims, GlobalSync};
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::shims::{install_shim_files, remove_shim_files, shim_file_name, SHIM_COMMANDS};
@@ -37,6 +38,12 @@ pub struct ShimsInstalled {
     pub unchanged: Vec<String>,
     /// Shims that could not be written, with why.
     pub failed: Vec<(String, String)>,
+    /// The commands of global programs (`tsc`) that got a shim now.
+    pub globals_added: Vec<String>,
+    /// The commands of global programs whose shim was deleted because the program is gone.
+    pub globals_removed: Vec<String>,
+    /// Commands of global programs left alone, with why.
+    pub globals_skipped: Vec<(String, String)>,
 }
 
 fn file_name(path: &Path) -> String {
@@ -54,7 +61,12 @@ pub fn install_shims(
 ) -> Result<ShimsInstalled, ShimsError> {
     require_trusted_program(shim_exe, dirs)?;
     let done = install_shim_files(paths, shim_exe, dirs)?;
+    // The shims of the global programs are copies of the same program: they follow it.
+    let globals = sync_global_shims(paths, shim_exe)?;
     Ok(ShimsInstalled {
+        globals_added: globals.added,
+        globals_removed: globals.removed,
+        globals_skipped: globals.skipped,
         written: done.written.iter().map(|p| file_name(p)).collect(),
         unchanged: done.unchanged.iter().map(|p| file_name(p)).collect(),
         failed: done
@@ -65,12 +77,29 @@ pub fn install_shims(
     })
 }
 
+/// Makes the commands of the global programs match what the Node versions have, with the same
+/// distrust of the program as [`install_shims`].
+pub fn sync_globals(
+    paths: &CrisolPaths,
+    shim_exe: &Path,
+    dirs: &dyn PrivateDirs,
+) -> Result<GlobalSync, ShimsError> {
+    require_trusted_program(shim_exe, dirs)?;
+    Ok(sync_global_shims(paths, shim_exe)?)
+}
+
 /// Removes the shims (and the folder, if that leaves it empty). Returns the file names.
 pub fn remove_shims_files(paths: &CrisolPaths) -> io::Result<Vec<String>> {
     Ok(remove_shim_files(paths)?
         .iter()
         .map(|p| file_name(p))
         .collect())
+}
+
+/// The commands of global programs that have a shim (`tsc`).
+#[must_use]
+pub fn global_shims(paths: &CrisolPaths) -> Vec<String> {
+    shimmed_globals(paths)
 }
 
 /// Which shims are in `shims/`: `(command, present)`.

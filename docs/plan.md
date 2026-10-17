@@ -141,6 +141,7 @@ Para cada uno: entrada de catálogo, plantilla de config, inicialización del di
 - **F10.1** Catálogo de Node (nodejs.org publica `SHASUMS256.txt`) e instalación por versión.
 - **F10.2** Shims de `node`, `npm`, `npx` (y `corepack` para pnpm/yarn) con la misma resolución por proyecto.
 - **F10.3** Prefijo global de npm por versión dentro de `CRISOL_HOME`, para que los paquetes globales no se mezclen entre versiones ni ensucien `%APPDATA%\npm`.
+  - *Hecho (2026-10-17):* ver ADR-0018 y `analisis/node-shims.md`. Catálogo con Node 20/22/24 y `[recommended] node = "24"` (F10.1); shims de Node y `crisol shims|path|env` (F10.2); prefijo por versión, caché propia y un comando por programa global (F10.3).
 
 ## Fase 11 — Salud del sistema y limpieza
 

@@ -970,6 +970,34 @@ fn shims_install_status_and_remove_only_touch_the_shims_folder() {
 }
 
 #[test]
+fn shims_sync_gives_a_command_to_each_global_program_and_install_and_remove_follow_it() {
+    let env = Env::new(&[]);
+    let version = env.paths.bin_for("node", "24.22.0").unwrap();
+    fs::create_dir_all(&version).unwrap();
+    let global = env.paths.node_global("24.22.0").unwrap();
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("tsc.cmd"), "@echo off").unwrap();
+
+    let out = env.ok(&["shims", "sync"]);
+    assert!(
+        out.contains("up to date") && out.contains("added: tsc"),
+        "{out}"
+    );
+    assert!(env.paths.shims_dir().join("tsc.exe").is_file());
+    assert!(env
+        .ok(&["shims", "status"])
+        .contains("Commands of global programs: tsc"));
+    assert!(env
+        .ok(&["--json", "shims", "sync"])
+        .contains(r#""added":[]"#));
+
+    // Installing the shims again refreshes them; removing takes the commands too.
+    env.ok(&["shims", "install"]);
+    assert!(env.ok(&["shims", "remove"]).contains("11 shim(s) removed"));
+    assert!(!env.paths.shims_dir().exists());
+}
+
+#[test]
 fn a_shim_program_other_accounts_could_replace_is_not_installed() {
     let env = Env::new(&[]);
     env.dirs.expose(env.shim_exe.parent().unwrap());

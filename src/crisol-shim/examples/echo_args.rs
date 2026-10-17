@@ -34,6 +34,17 @@ fn main() {
         "COREPACK_HOME:{}",
         std::env::var("COREPACK_HOME").unwrap_or_else(|_| "-".to_owned())
     );
+    for name in ["npm_config_prefix", "npm_config_cache"] {
+        println!(
+            "{}:{}",
+            name.to_uppercase(),
+            std::env::var(name).unwrap_or_else(|_| "-".to_owned())
+        );
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for (index, folder) in std::env::split_paths(&path).take(2).enumerate() {
+        println!("PATH{index}:{}", folder.display());
+    }
     for (index, arg) in std::env::args_os().skip(1).enumerate() {
         println!("ARG:{index}:{}", arg.to_string_lossy());
     }

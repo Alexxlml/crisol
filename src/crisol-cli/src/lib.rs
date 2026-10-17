@@ -183,89 +183,150 @@ impl Session<'_> {
     }
 
     fn shims(&mut self, action: ShimsAction) -> u8 {
-        let paths = &self.context.paths;
-        let folder = paths.shims_dir().display().to_string();
         match action {
-            ShimsAction::Install => {
-                let Some(exe) = self.context.shim_exe.clone() else {
-                    return self.fail(&RpcError::new(
-                        ErrorCode::NotAvailable,
-                        "crisol-shim.exe was not found next to this program",
-                    ));
-                };
-                let done = match shimsetup::install_shims(paths, &exe, self.context.dirs.as_ref()) {
-                    Ok(done) => done,
-                    Err(ShimsError::Program(e)) => return self.fail(&program_error(&e)),
-                    Err(ShimsError::Io(e)) => {
-                        return self.fail(&RpcError::new(ErrorCode::Io, e.to_string()));
-                    }
-                };
-                let mut text = format!(
-                    "{} shim(s) written and {} already up to date in {folder}",
-                    done.written.len(),
-                    done.unchanged.len()
-                );
-                for (name, why) in &done.failed {
-                    text.push_str(&["\n  could not write ", name, ": ", why].concat());
-                }
-                text.push_str(
-                    "
-They run in a terminal once the folder is in your PATH: `crisol path add`",
-                );
-                let failed: Vec<_> = done
-                    .failed
-                    .iter()
-                    .map(|(n, w)| serde_json::json!({"shim": n, "why": w}))
-                    .collect();
-                let json = serde_json::json!({
-                    "written": done.written,
-                    "unchanged": done.unchanged,
-                    "failed": failed,
-                });
-                self.say(&text, &json);
-                if done.failed.is_empty() {
-                    EXIT_OK
+            ShimsAction::Install => self.shims_install(),
+            ShimsAction::Sync => self.shims_sync(),
+            ShimsAction::Remove => self.shims_remove(),
+            ShimsAction::Status => self.shims_status(),
+        }
+    }
+
+    /// The `crisol-shim` next to this program, or the failure that says it is not there.
+    fn shim_exe(&mut self) -> Result<PathBuf, u8> {
+        match self.context.shim_exe.clone() {
+            Some(exe) => Ok(exe),
+            None => Err(self.fail(&RpcError::new(
+                ErrorCode::NotAvailable,
+                "crisol-shim.exe was not found next to this program",
+            ))),
+        }
+    }
+
+    fn shims_error(&mut self, error: &ShimsError) -> u8 {
+        match error {
+            ShimsError::Program(e) => self.fail(&program_error(e)),
+            ShimsError::Io(e) => self.fail(&RpcError::new(ErrorCode::Io, e.to_string())),
+        }
+    }
+
+    fn shims_install(&mut self) -> u8 {
+        let exe = match self.shim_exe() {
+            Ok(exe) => exe,
+            Err(code) => return code,
+        };
+        let folder = self.context.paths.shims_dir().display().to_string();
+        let done =
+            match shimsetup::install_shims(&self.context.paths, &exe, self.context.dirs.as_ref()) {
+                Ok(done) => done,
+                Err(error) => return self.shims_error(&error),
+            };
+        let mut text = format!(
+            "{} shim(s) written and {} already up to date in {folder}",
+            done.written.len(),
+            done.unchanged.len()
+        );
+        for (name, why) in &done.failed {
+            text.push_str(&["\n  could not write ", name, ": ", why].concat());
+        }
+        text.push_str(&globals_text(
+            &done.globals_added,
+            &done.globals_removed,
+            &done.globals_skipped,
+        ));
+        text.push_str(
+            "\nThey run in a terminal once the folder is in your PATH: `crisol path add`",
+        );
+        let failed: Vec<_> = done
+            .failed
+            .iter()
+            .map(|(n, w)| serde_json::json!({"shim": n, "why": w}))
+            .collect();
+        let json = serde_json::json!({
+            "written": done.written,
+            "unchanged": done.unchanged,
+            "failed": failed,
+            "globals_added": done.globals_added,
+            "globals_removed": done.globals_removed,
+        });
+        self.say(&text, &json);
+        if done.failed.is_empty() {
+            EXIT_OK
+        } else {
+            EXIT_FAILED
+        }
+    }
+
+    fn shims_sync(&mut self) -> u8 {
+        let exe = match self.shim_exe() {
+            Ok(exe) => exe,
+            Err(code) => return code,
+        };
+        let done =
+            match shimsetup::sync_globals(&self.context.paths, &exe, self.context.dirs.as_ref()) {
+                Ok(done) => done,
+                Err(error) => return self.shims_error(&error),
+            };
+        let mut text = String::from("The commands of the global programs are up to date");
+        text.push_str(&globals_text(&done.added, &done.removed, &done.skipped));
+        let skipped: Vec<_> = done
+            .skipped
+            .iter()
+            .map(|(n, w)| serde_json::json!({"command": n, "why": w}))
+            .collect();
+        let json = serde_json::json!({
+            "added": done.added, "removed": done.removed, "skipped": skipped,
+        });
+        self.say(&text, &json);
+        EXIT_OK
+    }
+
+    fn shims_remove(&mut self) -> u8 {
+        let folder = self.context.paths.shims_dir().display().to_string();
+        match shimsetup::remove_shims_files(&self.context.paths) {
+            Ok(removed) => {
+                let text = if removed.is_empty() {
+                    format!("There were no shims in {folder}")
                 } else {
-                    EXIT_FAILED
-                }
-            }
-            ShimsAction::Remove => match shimsetup::remove_shims_files(paths) {
-                Ok(removed) => {
-                    let text = if removed.is_empty() {
-                        format!("There were no shims in {folder}")
-                    } else {
-                        format!("{} shim(s) removed from {folder}", removed.len())
-                    };
-                    self.say(&text, &serde_json::json!({ "removed": removed }));
-                    EXIT_OK
-                }
-                Err(e) => self.fail(&RpcError::new(ErrorCode::Io, e.to_string())),
-            },
-            ShimsAction::Status => {
-                let present = shimsetup::shims_present(paths);
-                let missing: Vec<&str> = present
-                    .iter()
-                    .filter(|(_, p)| !p)
-                    .map(|(c, _)| *c)
-                    .collect();
-                let text = if missing.is_empty() {
-                    format!("All the shims are in {folder}")
-                } else if missing.len() == present.len() {
-                    format!("There are no shims in {folder}; `crisol shims install` makes them")
-                } else {
-                    format!(
-                        "Missing in {folder}: {}; `crisol shims install` makes them",
-                        missing.join(", ")
-                    )
+                    format!("{} shim(s) removed from {folder}", removed.len())
                 };
-                let list: Vec<_> = present
-                    .iter()
-                    .map(|(c, p)| serde_json::json!({"command": c, "present": p}))
-                    .collect();
-                self.say(&text, &serde_json::json!({"folder": folder, "shims": list}));
+                self.say(&text, &serde_json::json!({ "removed": removed }));
                 EXIT_OK
             }
+            Err(e) => self.fail(&RpcError::new(ErrorCode::Io, e.to_string())),
         }
+    }
+
+    fn shims_status(&mut self) -> u8 {
+        let paths = &self.context.paths;
+        let folder = paths.shims_dir().display().to_string();
+        let present = shimsetup::shims_present(paths);
+        let missing: Vec<&str> = present
+            .iter()
+            .filter(|(_, p)| !p)
+            .map(|(c, _)| *c)
+            .collect();
+        let mut text = if missing.is_empty() {
+            format!("All the shims are in {folder}")
+        } else if missing.len() == present.len() {
+            format!("There are no shims in {folder}; `crisol shims install` makes them")
+        } else {
+            format!(
+                "Missing in {folder}: {}; `crisol shims install` makes them",
+                missing.join(", ")
+            )
+        };
+        let globals = shimsetup::global_shims(paths);
+        if !globals.is_empty() {
+            text.push_str("\nCommands of global programs: ");
+            text.push_str(&globals.join(", "));
+        }
+        let list: Vec<_> = present
+            .iter()
+            .map(|(c, p)| serde_json::json!({"command": c, "present": p}))
+            .collect();
+        let json = serde_json::json!({"folder": folder, "shims": list, "globals": globals});
+        self.say(&text, &json);
+        EXIT_OK
     }
 
     fn path(&mut self, action: PathAction) -> u8 {
@@ -594,6 +655,27 @@ They run in a terminal once the folder is in your PATH: `crisol path add`",
             }
         }
     }
+}
+
+/// The lines about the commands of global programs (`tsc`), for what `shims install|sync` did.
+fn globals_text(added: &[String], removed: &[String], skipped: &[(String, String)]) -> String {
+    let mut lines = Vec::new();
+    if !added.is_empty() {
+        lines.push(["commands for global programs added: ", &added.join(", ")].concat());
+    }
+    if !removed.is_empty() {
+        lines.push(
+            [
+                "commands for programs that are gone removed: ",
+                &removed.join(", "),
+            ]
+            .concat(),
+        );
+    }
+    for (name, why) in skipped {
+        lines.push(["no command `", name, "`: ", why].concat());
+    }
+    lines.iter().flat_map(|l| ["\n  ", l.as_str()]).collect()
 }
 
 fn client_error(error: ClientError) -> RpcError {

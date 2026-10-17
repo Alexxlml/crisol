@@ -84,6 +84,14 @@ impl Rig {
             .env_remove("CRISOL_PHPRC")
             .env_remove("NODE_EXTRA_CA_CERTS")
             .env_remove("COREPACK_HOME")
+            .env_remove("npm_config_prefix")
+            .env_remove("npm_config_cache")
+            .env_remove("NPM_CONFIG_PREFIX")
+            .env_remove("NPM_CONFIG_CACHE")
+            .env_remove("NPM_CONFIG_USERCONFIG")
+            // The shim reads the user's `.npmrc`: never the real one.
+            .env("USERPROFILE", &self.work)
+            .env("HOME", &self.work)
             .env_remove("ECHO_EXIT")
             .env_remove("ECHO_STDIN");
         command
@@ -523,6 +531,155 @@ fn a_node_command_without_its_script_says_the_installation_is_damaged() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn npm_runs_with_a_global_folder_per_version_and_a_cache_in_the_home() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, false);
+    let seen = |output: &Output, name: &str| echoed_var(output, name);
+    let global = rig
+        .home
+        .join("data")
+        .join("node")
+        .join("24.22.0")
+        .join("global");
+
+    for name in ["npm", "npx", "node"] {
+        let output = rig.run(&rig.shim(name), &[]);
+        assert!(output.status.success(), "{name}: {}", stderr(&output));
+        assert_eq!(PathBuf::from(seen(&output, "NPM_CONFIG_PREFIX")), global);
+        assert_eq!(
+            PathBuf::from(seen(&output, "NPM_CONFIG_CACHE")),
+            rig.home.join("cache").join("npm")
+        );
+        // The global programs and then this Node itself come first in the PATH of the child.
+        assert_eq!(PathBuf::from(seen(&output, "PATH0")), global);
+        assert_eq!(PathBuf::from(seen(&output, "PATH1")), dir);
+    }
+
+    // What the user chose in the environment or in their own `.npmrc` is left alone.
+    let own = rig
+        .command(&rig.shim("npm"))
+        .env("npm_config_prefix", "D:/mine")
+        .output()
+        .unwrap();
+    assert_eq!(seen(&own, "NPM_CONFIG_PREFIX"), "D:/mine");
+    assert_eq!(PathBuf::from(seen(&own, "PATH0")), dir);
+    fs::write(rig.work.join(".npmrc"), "cache=D:/my-cache\n").unwrap();
+    let output = rig.run(&rig.shim("npm"), &[]);
+    assert_eq!(
+        seen(&output, "NPM_CONFIG_CACHE"),
+        "-",
+        "{}",
+        stdout(&output)
+    );
+    assert!(seen(&output, "NPM_CONFIG_PREFIX").contains("global"));
+}
+
+/// A shim for a global program, the way `npm install -g` and the `npm` shim leave them: the
+/// copy of the shim called like the program, in the shims folder of the home.
+#[test]
+fn a_global_program_gets_its_command_when_npm_installs_it_and_runs_under_the_right_node() {
+    let rig = Rig::new();
+    let node_22 = rig.install("node", "22.23.3", &exe_name("node"));
+    let node_24 = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&node_22, false);
+    add_node_scripts(&node_24, false);
+    // The shims of a real installation live in `<home>/shims`.
+    let shims = rig.home.join("shims");
+    fs::create_dir_all(&shims).unwrap();
+    let npm = shims.join(exe_name("npm"));
+    fs::copy(EXE, &npm).unwrap();
+
+    // "npm install -g typescript" under Node 24 leaves tsc.cmd in the global folder of Node 24.
+    let global = rig
+        .home
+        .join("data")
+        .join("node")
+        .join("24.22.0")
+        .join("global");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(
+        global.join("tsc.cmd"),
+        format!("@\"{}\" %*\r\n", echo_args().display()),
+    )
+    .unwrap();
+    fs::write(rig.work.join(".nvmrc"), "24\n").unwrap();
+    let output = rig.run(&npm, &["install", "--global", "typescript"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let tsc = shims.join(exe_name("tsc"));
+    assert!(tsc.is_file(), "the command appeared: {}", stderr(&output));
+
+    // It runs the program of the Node that applies here, with that Node first in the PATH.
+    let output = rig.run(&tsc, &["--version", "a b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(args_seen(&output), ["--version", "a b"]);
+    assert_eq!(PathBuf::from(echoed_var(&output, "PATH1")), node_24);
+
+    // Under another version it says where the program is, instead of failing in the dark.
+    fs::write(rig.work.join(".nvmrc"), "22\n").unwrap();
+    let output = rig.run(&tsc, &["--version"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(
+        text.contains("`tsc` is not installed for Node 22.23.3, only for Node 24.22.0")
+            && text.contains("crisol use node 24.22.0"),
+        "{text}"
+    );
+
+    // Uninstalling it (the files go) and running npm again takes the command away.
+    fs::remove_file(global.join("tsc.cmd")).unwrap();
+    let output = rig.run(&npm, &["uninstall", "-g", "typescript"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!tsc.exists());
+    assert!(!shims.join(".crisol-globals").exists());
+}
+
+#[test]
+fn a_copy_of_the_shim_with_a_made_up_name_does_nothing() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, false);
+    // Not in the shims folder of the home, and not in the list.
+    let outside = rig.shims.join(exe_name("tsc"));
+    fs::copy(EXE, &outside).unwrap();
+    assert_eq!(rig.run(&outside, &[]).status.code(), Some(2));
+    let shims = rig.home.join("shims");
+    fs::create_dir_all(&shims).unwrap();
+    let unlisted = shims.join(exe_name("tsc"));
+    fs::copy(EXE, &unlisted).unwrap();
+    assert_eq!(rig.run(&unlisted, &[]).status.code(), Some(2));
+}
+
+#[test]
+fn npm_commands_that_do_not_touch_the_global_programs_leave_the_commands_alone() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, false);
+    let shims = rig.home.join("shims");
+    fs::create_dir_all(&shims).unwrap();
+    let npm = shims.join(exe_name("npm"));
+    fs::copy(EXE, &npm).unwrap();
+    let global = rig
+        .home
+        .join("data")
+        .join("node")
+        .join("24.22.0")
+        .join("global");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("tsc.cmd"), "@echo off\r\n").unwrap();
+    for args in [
+        &["install", "typescript"][..],
+        &["list", "-g"],
+        &["--version"],
+    ] {
+        assert!(rig.run(&npm, args).status.success());
+        assert!(!shims.join(exe_name("tsc")).exists(), "{args:?}");
+    }
+    assert!(rig.run(&npm, &["i", "-g", "x"]).status.success());
+    assert!(shims.join(exe_name("tsc")).exists());
 }
 
 #[test]
@@ -1323,5 +1480,148 @@ fn real_pnpm_goes_through_corepack_and_downloads_only_into_the_home() {
         snapshot(&outside),
         before,
         "nothing was written to %LOCALAPPDATA%\node"
+    );
+}
+
+/// The F10.3 acceptance with the official binaries and the real npm registry: `npm install -g`
+/// writes into the global folder of each Node version and into Crisol's cache, a program
+/// installed globally (`semver`) can be run from the shims folder, each version has its own, and
+/// nothing is touched in `%APPDATA%\npm` or `%LOCALAPPDATA%\npm-cache`.
+///
+/// ```text
+/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip and node-v24.22.0-win-x64.zip> cargo test -p crisol-shim real_global -- --ignored --nocapture
+/// ```
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario, read top to bottom
+#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 20.20.2 and 24.22.0 archives (Windows)"]
+fn real_global_programs_live_in_the_home_one_set_per_node_version() {
+    let rig = Rig::new();
+    install_downloaded(&rig, &[("node", "20.20.2"), ("node", "24.22.0")]);
+    let shims = rig.home.join("shims");
+    fs::create_dir_all(&shims).unwrap();
+    for name in ["node", "npm"] {
+        fs::copy(EXE, shims.join(exe_name(name))).unwrap();
+    }
+    let (npm, semver) = (shims.join(exe_name("npm")), shims.join(exe_name("semver")));
+
+    // What the machine has outside the home, to prove it does not change.
+    let outside: Vec<PathBuf> = ["APPDATA", "LOCALAPPDATA"]
+        .iter()
+        .zip(["npm", "npm-cache"])
+        .filter_map(|(var, folder)| std::env::var_os(var).map(|d| PathBuf::from(d).join(folder)))
+        .collect();
+    let snapshot = |dirs: &[PathBuf]| -> Vec<(PathBuf, usize)> {
+        dirs.iter()
+            .map(|d| {
+                (
+                    d.clone(),
+                    fs::read_dir(d).map_or(0, |e| e.flatten().count()),
+                )
+            })
+            .collect()
+    };
+    let before = snapshot(&outside);
+
+    let global = |version: &str| {
+        rig.home
+            .join("data")
+            .join("node")
+            .join(version)
+            .join("global")
+    };
+    let first_line = |output: &Output| {
+        stdout(output)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_owned()
+    };
+
+    // Node 24: install, and the command appears.
+    fs::write(rig.work.join(".nvmrc"), "24\n").unwrap();
+    let output = rig.run(&npm, &["install", "--global", "semver@7"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(global("24.22.0").join("semver.cmd").is_file());
+    assert!(global("24.22.0")
+        .join("node_modules")
+        .join("semver")
+        .is_dir());
+    assert!(
+        semver.is_file(),
+        "the command was made: {}",
+        stderr(&output)
+    );
+    assert!(
+        rig.home.join("cache").join("npm").is_dir(),
+        "npm used Crisol's cache"
+    );
+    assert_eq!(
+        PathBuf::from(first_line(&rig.run(&npm, &["root", "--global"]))),
+        global("24.22.0").join("node_modules")
+    );
+
+    // It runs.
+    let output = rig.run(&semver, &["--increment", "minor", "1.2.3"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(first_line(&output), "1.3.0");
+
+    // Under Node 20 it is not there, and the message says where it is.
+    fs::write(rig.work.join(".nvmrc"), "20\n").unwrap();
+    let output = rig.run(&semver, &["1.2.3"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("only for Node 24.22.0"),
+        "{}",
+        stderr(&output)
+    );
+    // Each version has its own set: install it for Node 20 too.
+    let output = rig.run(&npm, &["install", "-g", "semver@7"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(global("20.20.2").join("semver.cmd").is_file());
+    let output = rig.run(&semver, &["--increment", "major", "1.2.3"]);
+    assert_eq!(first_line(&output), "2.0.0", "{}", stderr(&output));
+
+    // Remove it for Node 24: the command stays because Node 20 still has the program, and goes
+    // with the last one.
+    fs::write(rig.work.join(".nvmrc"), "24\n").unwrap();
+    let output = rig.run(&npm, &["uninstall", "-g", "semver"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(!global("24.22.0").join("semver.cmd").exists());
+    assert!(semver.is_file());
+    fs::write(rig.work.join(".nvmrc"), "20\n").unwrap();
+    let output = rig.run(&npm, &["uninstall", "-g", "semver"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(!semver.exists(), "no Node has the program any more");
+
+    assert_eq!(
+        snapshot(&outside),
+        before,
+        "nothing changed outside the home"
     );
 }

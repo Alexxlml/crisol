@@ -13,6 +13,7 @@ pub mod dns;
 pub mod edit;
 pub mod engine;
 pub mod fetch;
+pub mod globals;
 pub mod hosts;
 pub mod install;
 pub mod ipc;

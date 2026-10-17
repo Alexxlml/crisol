@@ -1,4 +1,5 @@
-//! How the Node shims start their programs (F10.2).
+//! How the Node shims start their programs (F10.2) and where Node keeps what it installs
+//! globally (F10.3).
 //!
 //! `npm`, `npx`, `corepack`, `pnpm` and `yarn` are not programs but scripts that run on Node.
 //! The files that start them in the Node ZIP are batch files (`npm.cmd`), and a batch file is a
@@ -7,6 +8,19 @@
 //! argument with a line break; and the quoting rules of `cmd.exe` are not the ones of anything
 //! else (`analisis/node-shims.md`). So the shim runs the script itself, the way the batch file
 //! ends up doing: `node.exe <script> <arguments>`.
+//!
+//! The environment of the child is what keeps the versions apart (ADR-0018):
+//!
+//! - `npm_config_prefix` is `data/node/<version>/global`, so `npm install -g` writes there and
+//!   not in `%APPDATA%\npm`, and a package installed for Node 22 is not seen by Node 24;
+//! - `npm_config_cache` is `cache/npm`, so the cache is not `%LOCALAPPDATA%\npm-cache`;
+//! - `COREPACK_HOME` is `cache/corepack`;
+//! - the folder of the global programs and the folder of the Node itself go first in the child's
+//!   `PATH`, so that a script, `npx` or a global program that says `node` gets the version that
+//!   was chosen, not whichever `node` the terminal happens to find first.
+//!
+//! None of it is written anywhere: no `.npmrc`, no registry. A value the user already chose, in
+//! the environment or in their own `.npmrc`, is left as it is.
 //!
 //! This module only decides **what** to run and with which environment. It touches nothing, so
 //! it is tested without starting anything; the shim (`crisol-shim`) starts the process.
@@ -19,6 +33,10 @@ use crate::resolve::Command;
 
 /// The variable Corepack keeps its downloads in. Without it they go to `%LOCALAPPDATA%\node`.
 pub const COREPACK_HOME: &str = "COREPACK_HOME";
+/// The variable that makes npm use a global folder.
+pub const NPM_PREFIX: &str = "npm_config_prefix";
+/// The variable that makes npm use a cache folder.
+pub const NPM_CACHE: &str = "npm_config_cache";
 
 /// What the shim of a Node command starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +47,8 @@ pub struct NodeLaunch {
     pub leading: Vec<OsString>,
     /// Variables to set in the child (the ones the user already set are not in the list).
     pub env: Vec<(OsString, OsString)>,
+    /// Folders that go in front of the `PATH` of the child, first one first.
+    pub path_prepend: Vec<PathBuf>,
 }
 
 /// Why a command cannot be started.
@@ -50,8 +70,34 @@ pub enum LaunchError {
     },
 }
 
-/// The script (relative to the installation) that runs a command, if it is one of those that
-/// are scripts.
+/// Everything [`plan_launch`] needs to know.
+pub struct LaunchInput<'a> {
+    /// The command that was typed.
+    pub command: Command,
+    /// The installation of the version that was chosen.
+    pub install: &'a Path,
+    /// That version.
+    pub version: &'a str,
+    /// The Crisol home.
+    pub paths: &'a CrisolPaths,
+    /// Reads the environment of the shim.
+    pub lookup: &'a dyn Fn(&str) -> Option<OsString>,
+    /// The text of the user's own `.npmrc` (empty if there is none), to see what they chose.
+    pub user_npmrc: &'a str,
+}
+
+impl std::fmt::Debug for LaunchInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaunchInput")
+            .field("command", &self.command)
+            .field("install", &self.install)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The script (relative to the installation or to a global folder) that runs a command, if it
+/// is one of those that are scripts.
 fn script_of(command: Command) -> Option<&'static [&'static str]> {
     Some(match command {
         Command::Npm => &["node_modules", "npm", "bin", "npm-cli.js"],
@@ -88,15 +134,35 @@ fn is_corepack_family(command: Command) -> bool {
     )
 }
 
-/// What to start for `command` (any of the Node ones) in the installation `install` of
-/// `version`. `lookup` reads the environment of the shim.
-pub fn plan_launch(
-    command: Command,
-    install: &Path,
-    version: &str,
-    paths: &CrisolPaths,
-    lookup: &dyn Fn(&str) -> Option<OsString>,
-) -> Result<NodeLaunch, LaunchError> {
+/// Whether the environment has `name`, in either case (Windows ignores the case, others do not
+/// and npm accepts both).
+fn env_has(lookup: &dyn Fn(&str) -> Option<OsString>, name: &str) -> bool {
+    lookup(name).is_some() || lookup(&name.to_ascii_uppercase()).is_some()
+}
+
+/// Whether the text of an `.npmrc` sets `key` (`prefix`, `cache`) on a line of its own. Comments
+/// (`;` and `#`) do not count; spaces around the name and the `=` do not matter.
+#[must_use]
+pub fn npmrc_sets(text: &str, key: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with([';', '#'])
+            && line
+                .split_once('=')
+                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+    })
+}
+
+/// What to start for `command` (any of the Node ones) in the installation `input.install`.
+pub fn plan_launch(input: &LaunchInput<'_>) -> Result<NodeLaunch, LaunchError> {
+    let LaunchInput {
+        command,
+        install,
+        version,
+        paths,
+        lookup,
+        user_npmrc,
+    } = *input;
     let node = install.join(if cfg!(windows) {
         "node.exe"
     } else {
@@ -109,11 +175,23 @@ pub fn plan_launch(
         program: node,
         leading: Vec::new(),
         env: Vec::new(),
+        path_prepend: Vec::new(),
     };
+    let global = paths.node_global(version).ok();
+
     if let Some(parts) = script_of(command) {
-        let script: PathBuf = parts
-            .iter()
-            .fold(install.to_path_buf(), |path, part| path.join(part));
+        // A copy of npm (or of Corepack) installed globally wins over the one in the ZIP, which
+        // is what `npm.cmd` does for `npm install -g npm`.
+        let under = |root: &Path| {
+            parts
+                .iter()
+                .fold(root.to_path_buf(), |p, part| p.join(part))
+        };
+        let script = global
+            .as_deref()
+            .map(under)
+            .filter(|s| s.is_file())
+            .unwrap_or_else(|| under(install));
         if !script.is_file() {
             return Err(if is_corepack_family(command) {
                 LaunchError::NoCorepack {
@@ -126,13 +204,34 @@ pub fn plan_launch(
         }
         launch.leading.push(script.into_os_string());
     }
+
+    let mut set = |name: &str, value: &Path| {
+        launch
+            .env
+            .push((name.into(), value.as_os_str().to_os_string()));
+    };
     if is_corepack_family(command) && lookup(COREPACK_HOME).is_none() {
         if let Ok(home) = paths.cache_for("corepack") {
-            launch
-                .env
-                .push((COREPACK_HOME.into(), home.into_os_string()));
+            set(COREPACK_HOME, &home);
         }
     }
+    // The global folder is Crisol's unless the user chose their own prefix.
+    let ours = global
+        .as_ref()
+        .filter(|_| !env_has(lookup, NPM_PREFIX) && !npmrc_sets(user_npmrc, "prefix"));
+    if matches!(command, Command::Node | Command::Npm | Command::Npx) {
+        if let Some(global) = ours {
+            set(NPM_PREFIX, global);
+        }
+        if !env_has(lookup, NPM_CACHE) && !npmrc_sets(user_npmrc, "cache") {
+            if let Ok(cache) = paths.cache_for("npm") {
+                set(NPM_CACHE, &cache);
+            }
+        }
+    }
+    // The global programs of this version, then this version of Node itself.
+    launch.path_prepend.extend(ours.cloned());
+    launch.path_prepend.push(install.to_path_buf());
     Ok(launch)
 }
 
@@ -167,6 +266,160 @@ pub fn corepack_enable_note(args: &[OsString]) -> Option<String> {
          `yarnpkg` are already commands of Crisol's shims, they use the Node version of the project and \
          Corepack keeps what it downloads in Crisol's cache folder."
     ))
+}
+
+/// The npm commands (and their aliases) that install, remove or update programs.
+const CHANGING: &[&str] = &[
+    "install",
+    "i",
+    "add",
+    "in",
+    "ins",
+    "inst",
+    "insta",
+    "instal",
+    "isnt",
+    "isnta",
+    "isntal",
+    "isntall",
+    "uninstall",
+    "un",
+    "unlink",
+    "remove",
+    "rm",
+    "r",
+    "update",
+    "up",
+    "upgrade",
+    "link",
+    "ln",
+    "dedupe",
+    "ddp",
+    "prune",
+    "rebuild",
+    "rb",
+];
+/// Other npm commands. They are here so that `npm view install -g` is read as `view`, and
+/// so that the value of a flag (`--loglevel warn`) is not taken for the command.
+const OTHERS: &[&str] = &[
+    "ls",
+    "list",
+    "ll",
+    "la",
+    "view",
+    "v",
+    "info",
+    "show",
+    "root",
+    "bin",
+    "prefix",
+    "config",
+    "c",
+    "get",
+    "set",
+    "run",
+    "run-script",
+    "rum",
+    "urm",
+    "exec",
+    "x",
+    "test",
+    "t",
+    "start",
+    "stop",
+    "restart",
+    "publish",
+    "pack",
+    "outdated",
+    "search",
+    "s",
+    "find",
+    "cache",
+    "help",
+    "audit",
+    "fund",
+    "doctor",
+    "explain",
+    "why",
+    "init",
+    "create",
+    "login",
+    "logout",
+    "whoami",
+    "token",
+    "team",
+    "org",
+    "owner",
+    "access",
+    "deprecate",
+    "dist-tag",
+    "ping",
+    "pkg",
+    "repo",
+    "docs",
+    "home",
+    "bugs",
+    "diff",
+    "query",
+    "sbom",
+    "stars",
+    "star",
+    "unstar",
+    "version",
+    "completion",
+    "edit",
+    "explore",
+    "hook",
+    "profile",
+    "set-script",
+    "shrinkwrap",
+    "unpublish",
+    "install-test",
+    "it",
+    "install-ci-test",
+    "cit",
+    "ci",
+    "clean-install",
+    "ic",
+];
+
+/// Whether the arguments of an `npm` command are for the global folder: it is installing,
+/// removing or updating programs there, and the shim must refresh the commands that stand for
+/// them ([`crate::globals`]).
+#[must_use]
+pub fn changes_globals(args: &[OsString]) -> bool {
+    let mut global = false;
+    let mut changing = None;
+    let mut location_value = false;
+    for arg in args.iter().map(|a| a.to_string_lossy()) {
+        let word = arg.as_ref();
+        if word == "--" {
+            break;
+        }
+        if location_value {
+            global |= word == "global";
+            location_value = false;
+            continue;
+        }
+        match word {
+            "-g" | "--global" | "--location=global" => global = true,
+            "--location" => location_value = true,
+            // Short flags can be glued together: `-gD`.
+            short if short.starts_with('-') && !short.starts_with("--") => {
+                global |= short[1..].contains('g');
+            }
+            flag if flag.starts_with('-') => {}
+            other if changing.is_none() => {
+                if CHANGING.contains(&other) {
+                    changing = Some(true);
+                } else if OTHERS.contains(&other) {
+                    changing = Some(false);
+                }
+            }
+            _ => {}
+        }
+    }
+    global && changing == Some(true)
 }
 
 /// Whether `name` is the name of a Node command a shim can stand for.

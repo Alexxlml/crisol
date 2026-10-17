@@ -381,6 +381,14 @@ impl CrisolPaths {
             .join(validate_component(major)?))
     }
 
+    /// Where `npm install --global` puts programs for one Node version:
+    /// `data/node/<version>/global/`. A prefix per version keeps what is installed for Node 22
+    /// away from Node 24, and keeps it out of the `npm` folder of `%APPDATA%`. It is data (the
+    /// user installed it), so uninstalling a Node version leaves it.
+    pub fn node_global(&self, version: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.data_for("node", version)?.join("global"))
+    }
+
     /// Logs root: `logs/`.
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {

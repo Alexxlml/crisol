@@ -178,7 +178,7 @@ pub enum Command {
     /// Puts the commands `php`, `node`, `npm`, `composer`… in Crisol's shims folder, or takes
     /// them out. They do nothing in a terminal until the folder is in your PATH (`crisol path add`).
     Shims {
-        /// `install`, `remove` or `status` (the default).
+        /// `install`, `remove`, `sync` or `status` (the default).
         #[arg(value_enum, default_value = "status")]
         action: ShimsAction,
     },
@@ -205,6 +205,9 @@ pub enum ShimsAction {
     Install,
     /// Delete them.
     Remove,
+    /// Make the commands of the programs installed with `npm install --global` match what the
+    /// Node versions have (`npm` does it by itself when it installs or removes one).
+    Sync,
     /// Say which are there.
     Status,
 }
