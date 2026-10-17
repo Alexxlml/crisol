@@ -1,6 +1,6 @@
 # ADR-0016 — Servicios de datos (bases de datos y extras)
 
-- **Estado:** aceptada (F9.1 y F9.2 implementadas; las siguientes fases la extienden)
+- **Estado:** aceptada (F9.1, F9.2 y F9.4 implementadas)
 - **Fecha:** 2026-10-16
 
 ## Contexto
@@ -19,9 +19,10 @@ La Fase 9 añade MySQL, MariaDB, PostgreSQL y otros servicios que, a diferencia 
 8. **MySQL sin `skip-name-resolve`**: `--initialize-insecure` solo crea `root@localhost` y una conexión desde 127.0.0.1 es esa cuenta únicamente si el servidor asocia la dirección de loopback a `localhost` (hallazgo con el MySQL 8.4 real). MariaDB sí lo usa (crea `root@127.0.0.1` y `root@::1`). MySQL desactiva el protocolo X (`mysqlx = OFF`) para no abrir el 33060 sin necesidad.
 
 9. **PostgreSQL (F9.2)** sigue el mismo patrón con sus herramientas: `initdb -U postgres -A trust -E UTF8` en la carpeta `.init`; `postgresql.conf` generado en `etc/postgresql/<mayor>/` (`listen_addresses = '127.0.0.1'`, el puerto de `crisol.toml`, registro a `stderr` hacia `runtime.log`, `include_dir` hacia las configuraciones del usuario) y pasado con `-c config_file=`; el superusuario `postgres` **sin contraseña, por `trust`, solo desde este equipo**. La serie de los datos es solo la versión mayor (`data/postgresql/18/`, `17/`). La salud es `pg_isready` (el puerto se abre antes de que el servidor acepte conexiones) y la parada `pg_ctl stop -m fast`. **Certeza de la fuente:** EDB no publica hash ni firma y sus ejecutables no llevan Authenticode: solo hay integridad de la transferencia (hash idéntico en dos descargas), ver `analisis/fuentes-binarios.md`.
+10. **Servicios sencillos (F9.4): MongoDB, Mailpit y Meilisearch.** Mismo `DbService` y `DbStack`, sin inicializador (la carpeta de datos se crea vacía, sin `.init`), sin archivo de configuración nuestro (todo va en la línea de órdenes: `127.0.0.1`, el puerto de `crisol.toml`, los datos en `data/<servicio>/<serie>/`) y listos cuando escuchan todos sus puertos (Mailpit: web y SMTP). **No tienen orden de apagado utilizable**, así que la parada termina el grupo: MongoDB no ofrece `shutdown` fuera de un cliente (`mongosh` no viene en el archivo) y los tres recuperan sus datos desde su propio registro; la prueba real los detiene en 0,2 s y arrancan de nuevo sin problema, pero un cierre limpio de MongoDB mejoraría con un cliente. **Sin telemetría (ADR-0004):** Meilisearch con `--no-analytics`, Mailpit con `--disable-version-check`; MongoDB no envía nada por defecto. Series de los datos: Meilisearch `mayor.menor` (cambia de formato entre menores), MongoDB `mayor.menor`, Mailpit `mayor`. **Memcached queda fuera** (no hay build oficial para Windows; pregunta al propietario).
 
 ## Consecuencias
 
 - `Daemon` conoce a `DbStack`; `status` lista las bases instaladas (paradas) y las arrancadas.
-- Pruebas reales a pedido (`crisol-platform/tests/databases.rs`) con los binarios oficiales en los puertos 19306 a 19308 y 19432 a 19433: primer arranque con inicialización (1,7 s MariaDB, 4,5 s MySQL, 6,3 s PostgreSQL), consulta, datos persistentes, parada ordenada (0,25 s, 1,0 s y 0,25 s), segundo arranque sin reinicializar.
+- Pruebas reales a pedido (`crisol-platform/tests/databases.rs`) con los binarios oficiales en los puertos 19306 a 19308, 19432 a 19433, 19017, 19025/19026 y 19700: primer arranque con inicialización (1,7 s MariaDB, 4,5 s MySQL, 6,3 s PostgreSQL), consulta, datos persistentes, parada ordenada (0,25 s, 1,0 s y 0,25 s), segundo arranque sin reinicializar.
 - Los servicios siguientes (PostgreSQL, Redis, Mailpit…) reutilizan el patrón: plan, configuración generada, inicialización en `.init`, parada ordenada y estado propio.

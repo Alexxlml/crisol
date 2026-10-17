@@ -1,4 +1,9 @@
-//! MySQL, MariaDB and PostgreSQL as services (F9.1, F9.2, F9.5; ADR-0006, ADR-0007, ADR-0016).
+//! MySQL, MariaDB and PostgreSQL as services (F9.1, F9.2, F9.5; ADR-0006, ADR-0007, ADR-0016),
+//! and the simpler data services that follow the same pattern (F9.4): MongoDB, Mailpit and
+//! Meilisearch. They have no initializer (their data folder is made empty), no configuration file
+//! of ours (everything goes in the command line) and no graceful-stop command; they listen on
+//! `127.0.0.1` only and send nothing to anybody (ADR-0004: Meilisearch's analytics and Mailpit's
+//! update check are switched off).
 //!
 //! What a database service needs besides a [`Service`]:
 //!
@@ -45,11 +50,24 @@ pub enum DbKind {
     Mariadb,
     /// PostgreSQL.
     Postgres,
+    /// MongoDB.
+    Mongodb,
+    /// Mailpit: catches the mail the sites send, with a web page to read it.
+    Mailpit,
+    /// Meilisearch.
+    Meilisearch,
 }
 
 impl DbKind {
     /// All of them, MySQL first.
-    pub const ALL: [Self; 3] = [Self::Mysql, Self::Mariadb, Self::Postgres];
+    pub const ALL: [Self; 6] = [
+        Self::Mysql,
+        Self::Mariadb,
+        Self::Postgres,
+        Self::Mongodb,
+        Self::Mailpit,
+        Self::Meilisearch,
+    ];
 
     /// The name of the service (`mysql`, `mariadb`): in the catalog, in `crisol.toml` and in
     /// every folder.
@@ -59,6 +77,9 @@ impl DbKind {
             Self::Mysql => "mysql",
             Self::Mariadb => "mariadb",
             Self::Postgres => "postgresql",
+            Self::Mongodb => "mongodb",
+            Self::Mailpit => "mailpit",
+            Self::Meilisearch => "meilisearch",
         }
     }
 
@@ -68,27 +89,38 @@ impl DbKind {
         Self::ALL.into_iter().find(|k| k.service() == name)
     }
 
+    /// The server, relative to the install folder.
     fn server(self) -> &'static str {
         match self {
-            Self::Mysql => "mysqld.exe",
-            Self::Mariadb => "mariadbd.exe",
-            Self::Postgres => "postgres.exe",
+            Self::Mysql => "bin/mysqld.exe",
+            Self::Mariadb => "bin/mariadbd.exe",
+            Self::Postgres => "bin/postgres.exe",
+            Self::Mongodb => "bin/mongod.exe",
+            Self::Mailpit => "mailpit.exe",
+            Self::Meilisearch => "meilisearch-windows-amd64.exe",
         }
     }
 
-    /// The generated configuration file.
-    fn config_file(self) -> &'static str {
+    /// The configuration file Crisol generates, if the service reads one.
+    fn config_file(self) -> Option<&'static str> {
         match self {
-            Self::Mysql | Self::Mariadb => "my.ini",
-            Self::Postgres => "postgresql.conf",
+            Self::Mysql | Self::Mariadb => Some("my.ini"),
+            Self::Postgres => Some("postgresql.conf"),
+            Self::Mongodb | Self::Mailpit | Self::Meilisearch => None,
         }
+    }
+
+    /// Whether the data folder is made by a program (and so atomically, in a staging folder);
+    /// the others start from an empty folder.
+    fn has_initializer(self) -> bool {
+        matches!(self, Self::Mysql | Self::Mariadb | Self::Postgres)
     }
 
     /// The program that creates the data directory of MariaDB (MySQL initializes itself).
     fn installer(self) -> Option<&'static str> {
         match self {
-            Self::Mysql | Self::Postgres => None,
-            Self::Mariadb => Some("mariadb-install-db.exe"),
+            Self::Mariadb => Some("bin/mariadb-install-db.exe"),
+            _ => None,
         }
     }
 
@@ -99,6 +131,9 @@ impl DbKind {
             Self::Mysql => config.services.mysql.enabled,
             Self::Mariadb => config.services.mariadb.enabled,
             Self::Postgres => config.services.postgresql.enabled,
+            Self::Mongodb => config.services.mongodb.enabled,
+            Self::Mailpit => config.services.mailpit.enabled,
+            Self::Meilisearch => config.services.meilisearch.enabled,
         }
     }
 
@@ -109,7 +144,15 @@ impl DbKind {
             Self::Mysql => config.services.mysql.port,
             Self::Mariadb => config.services.mariadb.port,
             Self::Postgres => config.services.postgresql.port,
+            Self::Mongodb => config.services.mongodb.port,
+            Self::Mailpit => config.services.mailpit.port,
+            Self::Meilisearch => config.services.meilisearch.port,
         }
+    }
+
+    /// A second port the service listens on (Mailpit's SMTP).
+    fn extra_port(self, config: &Config) -> Option<u16> {
+        (self == Self::Mailpit).then_some(config.services.mailpit.smtp_port)
     }
 
     fn pinned(self, config: &Config) -> Option<&str> {
@@ -117,6 +160,9 @@ impl DbKind {
             Self::Mysql => config.services.mysql.version.as_deref(),
             Self::Mariadb => config.services.mariadb.version.as_deref(),
             Self::Postgres => config.services.postgresql.version.as_deref(),
+            Self::Mongodb => config.services.mongodb.version.as_deref(),
+            Self::Mailpit => config.services.mailpit.version.as_deref(),
+            Self::Meilisearch => config.services.meilisearch.version.as_deref(),
         }
     }
 
@@ -125,7 +171,11 @@ impl DbKind {
     /// (`17`, `18`). A new series is a new folder, never an upgrade in place.
     #[must_use]
     pub fn series(self, version: &str) -> String {
-        let parts = if self == Self::Postgres { 1 } else { 2 };
+        let parts = if matches!(self, Self::Postgres | Self::Mailpit) {
+            1
+        } else {
+            2
+        };
         version.split('.').take(parts).collect::<Vec<_>>().join(".")
     }
 }
@@ -158,6 +208,8 @@ pub struct DbPlan {
     pub series: String,
     /// Where it listens.
     pub port: u16,
+    /// A second port (Mailpit's SMTP).
+    pub extra_port: Option<u16>,
     /// `data/<service>/<series>/`.
     pub data: PathBuf,
     /// `data/<service>/<series>.init/`: where it is made first.
@@ -198,7 +250,8 @@ pub fn plan(paths: &CrisolPaths, config: &Config, kind: DbKind) -> Result<DbPlan
         port: kind.port(config),
         data: paths.data_for(service, &series)?,
         staging: paths.data_for(service, &format!("{series}.init"))?,
-        ini: etc.join(&series).join(kind.config_file()),
+        ini: etc.join(&series).join(kind.config_file().unwrap_or("none")),
+        extra_port: kind.extra_port(config),
         overrides: paths.overrides_for(service)?,
         error_log: paths.logs_for(service)?.join("error.log"),
         runtime_log: paths.runtime_log(service)?,
@@ -215,7 +268,7 @@ impl DbPlan {
     }
 
     fn program(&self, exe: &str) -> PathBuf {
-        self.version.path.join("bin").join(exe)
+        self.version.path.join(exe)
     }
 }
 
@@ -270,6 +323,9 @@ fn render_postgres(plan: &DbPlan) -> Result<String, DbError> {
 
 /// The text of `my.ini` (`postgresql.conf` for PostgreSQL).
 pub fn render_ini(plan: &DbPlan) -> Result<String, DbError> {
+    if plan.kind.config_file().is_none() {
+        return Ok(String::new());
+    }
     if plan.kind == DbKind::Postgres {
         return render_postgres(plan);
     }
@@ -308,6 +364,9 @@ pub fn render_ini(plan: &DbPlan) -> Result<String, DbError> {
 
 /// Writes `my.ini` (and the empty `overrides` folder it includes) if it changed.
 pub fn write_ini(plan: &DbPlan) -> Result<(), DbError> {
+    if plan.kind.config_file().is_none() {
+        return Ok(());
+    }
     let text = render_ini(plan)?;
     let io = |e: std::io::Error| DbError::Unusable(e.to_string());
     fs::create_dir_all(&plan.overrides).map_err(io)?;
@@ -328,7 +387,7 @@ pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
     if plan.kind == DbKind::Postgres {
         // The superuser is `postgres`, with no password, reachable from this computer only
         // (`trust` in a `pg_hba.conf` that listens nowhere else).
-        return ProcessSpec::new(plan.program("initdb.exe"))
+        return ProcessSpec::new(plan.program("bin/initdb.exe"))
             .arg("-D")
             .arg(&plan.staging)
             .args(["-U", "postgres", "-A", "trust", "-E", "UTF8"])
@@ -351,10 +410,12 @@ pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
 /// The long-running service.
 #[must_use]
 pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
-    if plan.kind == DbKind::Postgres {
-        return postgres_spec(plan);
+    match plan.kind {
+        DbKind::Postgres => return postgres_spec(plan),
+        DbKind::Mongodb | DbKind::Mailpit | DbKind::Meilisearch => return simple_spec(plan),
+        DbKind::Mysql | DbKind::Mariadb => {}
     }
-    let admin = ProcessSpec::new(plan.program("mysqladmin.exe"))
+    let admin = ProcessSpec::new(plan.program("bin/mysqladmin.exe"))
         .arg("--protocol=tcp")
         .arg("--host=127.0.0.1")
         .arg(format!("--port={}", plan.port))
@@ -380,13 +441,71 @@ pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
         })
 }
 
+/// MongoDB, Mailpit and Meilisearch: one process, everything in its command line, ready when
+/// its ports listen. They have no shutdown command Crisol can use (`mongod` has none on
+/// Windows), so a stop ends the group: all three recover their data from their own log or
+/// transaction file at the next start.
+fn simple_spec(plan: &DbPlan) -> ServiceSpec {
+    let data = &plan.data;
+    let mut process = ProcessSpec::new(plan.program(plan.kind.server()))
+        .cwd(data)
+        .log_file(&plan.runtime_log);
+    match plan.kind {
+        DbKind::Mongodb => {
+            process = process.arg("--dbpath").arg(data).args([
+                "--bind_ip",
+                "127.0.0.1",
+                "--port",
+                &plan.port.to_string(),
+            ]);
+        }
+        DbKind::Mailpit => {
+            process = process
+                .args(["--listen", &format!("127.0.0.1:{}", plan.port)])
+                .args([
+                    "--smtp",
+                    &format!("127.0.0.1:{}", plan.extra_port.unwrap_or(1025)),
+                ])
+                .arg("--database")
+                .arg(data.join("mailpit.db"))
+                // Nothing leaves this computer, not even a look for a newer version.
+                .arg("--disable-version-check");
+        }
+        DbKind::Meilisearch => {
+            process = process
+                .args(["--http-addr", &format!("127.0.0.1:{}", plan.port)])
+                .arg("--db-path")
+                .arg(data.join("db"))
+                .arg("--dump-dir")
+                .arg(data.join("dumps"))
+                .arg("--snapshot-dir")
+                .arg(data.join("snapshots"))
+                // ADR-0004: no telemetry.
+                .arg("--no-analytics");
+        }
+        DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres => {}
+    }
+    let ports: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
+    let mut spec = ServiceSpec::new(plan.name())
+        .process(process)
+        .health(HealthCheck::Ports(ports.clone()))
+        .policy(LifecyclePolicy {
+            startup_timeout: Duration::from_secs(60),
+            ..LifecyclePolicy::default()
+        });
+    for port in ports {
+        spec = spec.port(port);
+    }
+    spec
+}
+
 fn postgres_spec(plan: &DbPlan) -> ServiceSpec {
-    let stop = ProcessSpec::new(plan.program("pg_ctl.exe"))
+    let stop = ProcessSpec::new(plan.program("bin/pg_ctl.exe"))
         .arg("stop")
         .arg("-D")
         .arg(&plan.data)
         .args(["-m", "fast"]);
-    let ready = ProcessSpec::new(plan.program("pg_isready.exe")).args([
+    let ready = ProcessSpec::new(plan.program("bin/pg_isready.exe")).args([
         "-h",
         "127.0.0.1",
         "-p",
@@ -513,8 +632,15 @@ impl DbService {
         }
         if self.plan.data.is_dir() {
             self.launch(now, &mut events);
-        } else {
+        } else if self.plan.kind.has_initializer() {
             self.begin_init(now, &mut events);
+        } else if let Err(e) = fs::create_dir_all(&self.plan.data) {
+            self.fail(
+                format!("cannot make {}: {e}", self.plan.data.display()),
+                &mut events,
+            );
+        } else {
+            self.launch(now, &mut events);
         }
         events
     }

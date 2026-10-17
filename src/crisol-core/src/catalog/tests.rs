@@ -554,7 +554,7 @@ fn load_update_is_the_door_for_outside_catalogs_and_checks_signature_and_serial(
 // ---- the contents of the built-in catalog (F3.2) --------------------------------
 
 /// The only sites a built-in entry may download from.
-const OFFICIAL_HOSTS: [&str; 8] = [
+const OFFICIAL_HOSTS: [&str; 10] = [
     "windows.php.net",
     "nginx.org",
     "nodejs.org",
@@ -563,6 +563,8 @@ const OFFICIAL_HOSTS: [&str; 8] = [
     "archive.mariadb.org",
     "cdn.mysql.com",
     "get.enterprisedb.com",
+    "github.com",
+    "fastdl.mongodb.org",
 ];
 
 fn built_in() -> Catalog {
@@ -589,7 +591,10 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
         [
             "cacert",
             "composer",
+            "mailpit",
             "mariadb",
+            "meilisearch",
+            "mongodb",
             "mysql",
             "nginx",
             "node",
@@ -657,6 +662,13 @@ fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
                 ArchiveFormat::Zip,
                 "bin/mariadbd.exe",
                 Some(format!("mariadb-{version}-winx64")),
+            ),
+            "mailpit" => (ArchiveFormat::Zip, "mailpit.exe", None),
+            "meilisearch" => (ArchiveFormat::File, "meilisearch-windows-amd64.exe", None),
+            "mongodb" => (
+                ArchiveFormat::Zip,
+                "bin/mongod.exe",
+                Some(format!("mongodb-win32-x86_64-windows-{version}")),
             ),
             "postgresql" => (
                 ArchiveFormat::Zip,

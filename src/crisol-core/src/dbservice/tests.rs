@@ -487,3 +487,110 @@ fn postgresql_initializes_with_initdb_and_runs_postgres_directly() {
         "{args:?}"
     );
 }
+
+fn started_args(
+    rig: &Rig,
+    kind: DbKind,
+    version_dir: (&str, &str),
+) -> (Vec<String>, DbPlan, DbService) {
+    rig.install(version_dir.0, version_dir.1);
+    let plan = rig.plan(kind);
+    let mut db = rig.service(kind);
+    let before = rig.supervisor.spawned().len();
+    db.start(rig.at(0));
+    let spawned = rig.supervisor.spawned();
+    assert_eq!(
+        spawned.len(),
+        before + 1,
+        "no initializer: the server starts at once"
+    );
+    (words(&spawned[before].spec), plan, db)
+}
+
+#[test]
+fn mongodb_mailpit_and_meilisearch_start_straight_from_an_empty_folder_on_this_computer_only() {
+    let mut rig = Rig::new();
+    rig.config.services.mongodb.port = 19017;
+    rig.config.services.mailpit.port = 19025;
+    rig.config.services.mailpit.smtp_port = 19026;
+    rig.config.services.meilisearch.port = 19700;
+
+    let (mongo, plan, _db) = started_args(&rig, DbKind::Mongodb, ("mongodb", "8.0.34"));
+    assert_eq!(plan.series, "8.0");
+    assert!(plan.data.is_dir(), "the empty data folder was made");
+    assert!(!plan.ini.exists(), "no configuration file of ours");
+    assert!(
+        mongo.windows(2).any(|w| w == ["--bind_ip", "127.0.0.1"]),
+        "{mongo:?}"
+    );
+    assert!(
+        mongo.windows(2).any(|w| w == ["--port", "19017"]),
+        "{mongo:?}"
+    );
+    assert!(
+        mongo.contains(&plan.data.display().to_string()),
+        "{mongo:?}"
+    );
+
+    let (mail, plan, _db) = started_args(&rig, DbKind::Mailpit, ("mailpit", "1.31.6"));
+    assert_eq!(plan.series, "1");
+    assert!(
+        mail.windows(2)
+            .any(|w| w == ["--listen", "127.0.0.1:19025"]),
+        "{mail:?}"
+    );
+    assert!(
+        mail.windows(2).any(|w| w == ["--smtp", "127.0.0.1:19026"]),
+        "{mail:?}"
+    );
+    assert!(
+        mail.contains(&"--disable-version-check".to_owned()),
+        "no phoning home: {mail:?}"
+    );
+    assert!(mail.iter().any(|a| a.ends_with("mailpit.db")), "{mail:?}");
+
+    let (meili, plan, _db) = started_args(&rig, DbKind::Meilisearch, ("meilisearch", "1.55.0"));
+    assert_eq!(
+        plan.series, "1.55",
+        "Meilisearch changes its data format between minors"
+    );
+    assert!(
+        meili
+            .windows(2)
+            .any(|w| w == ["--http-addr", "127.0.0.1:19700"]),
+        "{meili:?}"
+    );
+    assert!(
+        meili.contains(&"--no-analytics".to_owned()),
+        "ADR-0004: {meili:?}"
+    );
+}
+
+#[test]
+fn a_simple_service_is_ready_when_all_its_ports_listen_and_stops_by_ending_its_group() {
+    let mut rig = Rig::new();
+    rig.config.services.mailpit.port = 19025;
+    rig.config.services.mailpit.smtp_port = 19026;
+    let (_, _, mut db) = started_args(&rig, DbKind::Mailpit, ("mailpit", "1.31.6"));
+    rig.listen(19025);
+    db.tick(rig.at(700));
+    assert_eq!(
+        *db.state(),
+        ServiceState::Starting,
+        "the SMTP port is not up yet"
+    );
+    rig.listen(19026);
+    db.tick(rig.at(1300));
+    assert_eq!(*db.state(), ServiceState::Running);
+    let processes = rig.supervisor.spawned().len();
+    db.stop(rig.at(2000));
+    assert_eq!(
+        rig.supervisor.spawned().len(),
+        processes,
+        "no shutdown command to run"
+    );
+    rig.ports.release(19025);
+    rig.ports.release(19026);
+    db.tick(rig.at(2200));
+    assert_eq!(*db.state(), ServiceState::Stopped);
+}

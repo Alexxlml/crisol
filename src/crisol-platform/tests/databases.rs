@@ -251,3 +251,173 @@ fn postgresql_18_initializes_once_runs_persists_and_stops_gracefully() {
 fn postgresql_17_does_the_same_in_its_own_data_series() {
     exercise(DbKind::Postgres, "17.11", 19433, "17");
 }
+
+// ---- the simple data services (F9.4) -------------------------------------------------------
+
+fn http(port: u16, method: &str, path: &str, body: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    answer
+}
+
+fn run_and_wait(world: &mut World, kind: DbKind) {
+    world.stack.start(kind, Instant::now()).unwrap();
+    world.tick_until("the service to run", 120, |w| {
+        matches!(
+            w.state(kind),
+            Some(ServiceState::Running | ServiceState::Failed(_))
+        )
+    });
+    assert_eq!(
+        world.state(kind),
+        Some(ServiceState::Running),
+        "{:?}",
+        world.stack.failure(kind)
+    );
+}
+
+fn stop_and_wait(world: &mut World, kind: DbKind) -> Duration {
+    let asked = Instant::now();
+    world.stack.stop(Some(kind), Instant::now());
+    world.tick_until("the service to stop", 60, |w| w.stack.is_stopped());
+    asked.elapsed()
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mailpit-windows-amd64.zip (Windows)"]
+fn mailpit_catches_a_message_on_its_smtp_port_and_shows_it_on_its_web_port() {
+    use std::io::{BufRead, BufReader, Write};
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.mailpit]\nenabled = true\nport = 19025\nsmtp_port = 19026\n");
+    install_from_downloads(&world.paths, "mailpit", "1.31.6");
+    run_and_wait(&mut world, DbKind::Mailpit);
+
+    // A message through SMTP, the way PHP's mail() or Laravel would send it.
+    let stream = std::net::TcpStream::connect(("127.0.0.1", 19026)).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("220"), "{line}");
+    for command in [
+        "HELO localhost\r\n",
+        "MAIL FROM:<a@crisol.test>\r\n",
+        "RCPT TO:<b@crisol.test>\r\n",
+        "DATA\r\n",
+    ] {
+        writer.write_all(command.as_bytes()).unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(
+            line.starts_with('2') || line.starts_with('3'),
+            "{command:?} -> {line}"
+        );
+    }
+    writer
+        .write_all(b"Subject: hola crisol\r\n\r\nbody\r\n.\r\nQUIT\r\n")
+        .unwrap();
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("250"), "{line}");
+
+    let listed = http(19025, "GET", "/api/v1/messages", "");
+    assert!(listed.contains("hola crisol"), "{listed}");
+    // The messages survive a restart (they are in `data/mailpit/1/`).
+    println!(
+        "mailpit: stop took {:?}",
+        stop_and_wait(&mut world, DbKind::Mailpit)
+    );
+    run_and_wait(&mut world, DbKind::Mailpit);
+    assert!(http(19025, "GET", "/api/v1/messages", "").contains("hola crisol"));
+    stop_and_wait(&mut world, DbKind::Mailpit);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with meilisearch-windows-amd64.exe (Windows); big"]
+fn meilisearch_indexes_a_document_and_keeps_it_across_a_restart() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.meilisearch]\nenabled = true\nport = 19700\n");
+    install_from_downloads(&world.paths, "meilisearch", "1.55.0");
+    run_and_wait(&mut world, DbKind::Meilisearch);
+    assert!(http(19700, "GET", "/health", "").contains("available"));
+    let created = http(
+        19700,
+        "POST",
+        "/indexes/films/documents",
+        r#"[{"id":1,"title":"Crisol"}]"#,
+    );
+    assert!(created.contains("taskUid"), "{created}");
+    // Indexing is asynchronous: wait for the task.
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        let found = http(19700, "POST", "/indexes/films/search", r#"{"q":"crisol"}"#);
+        if found.contains("\"title\":\"Crisol\"") {
+            break;
+        }
+        assert!(Instant::now() < end, "never indexed: {found}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    println!(
+        "meilisearch: stop took {:?}",
+        stop_and_wait(&mut world, DbKind::Meilisearch)
+    );
+    run_and_wait(&mut world, DbKind::Meilisearch);
+    assert!(
+        http(19700, "POST", "/indexes/films/search", r#"{"q":"crisol"}"#)
+            .contains("\"title\":\"Crisol\"")
+    );
+    stop_and_wait(&mut world, DbKind::Meilisearch);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mongodb-windows-x86_64-8.0.34.zip (Windows); very big"]
+fn mongodb_starts_on_the_loopback_makes_its_data_and_restarts_over_it() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.mongodb]\nenabled = true\nport = 19017\n");
+    install_from_downloads(&world.paths, "mongodb", "8.0.34");
+    run_and_wait(&mut world, DbKind::Mongodb);
+    // There is no client in the archive (`mongosh` is a separate download): the port, the log and
+    // the data say it is up.
+    std::net::TcpStream::connect(("127.0.0.1", 19017)).unwrap();
+    let data = world.paths.data_for("mongodb", "8.0").unwrap();
+    assert!(
+        data.join("WiredTiger").is_file(),
+        "{:?}",
+        fs::read_dir(&data).map(Iterator::count)
+    );
+    let netstat = Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .output()
+        .unwrap();
+    let netstat = String::from_utf8_lossy(&netstat.stdout).into_owned();
+    assert!(
+        netstat
+            .lines()
+            .filter(|l| l.contains(":19017 ") && l.contains("LISTENING"))
+            .all(|l| l.contains("127.0.0.1")),
+        "{netstat}"
+    );
+    println!(
+        "mongodb: stop took {:?}",
+        stop_and_wait(&mut world, DbKind::Mongodb)
+    );
+    run_and_wait(&mut world, DbKind::Mongodb);
+    stop_and_wait(&mut world, DbKind::Mongodb);
+}

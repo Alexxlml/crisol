@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 6
+serial = 7
 generated = "2026-10-14"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -225,3 +225,43 @@ format = "zip"
 root = "pgsql"
 executable = "bin/postgres.exe"
 size = 343808005
+
+# Data services (F9.4). Mailpit and Meilisearch publish their builds on the GitHub releases of
+# their own projects, where GitHub records a SHA-256 for every asset (`digest`); MongoDB publishes
+# the SHA-256 of each archive in its own download feed (downloads.mongodb.org/current.json). The
+# hashes here were computed on the downloaded files and match those. Memcached has no official
+# Windows build and is not offered (ESTADO.md, question to the owner).
+[[package]]
+service = "mailpit"
+version = "1.31.6"
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.6/mailpit-windows-amd64.zip"
+sha256 = "5d5ad094bfb3bac9004f9d1105d2335fea9f8952c09951df73ae0a280e34d3b1"
+format = "zip"
+executable = "mailpit.exe"
+size = 10640632
+
+[[package]]
+service = "meilisearch"
+version = "1.55.0"
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/meilisearch/meilisearch/releases/download/v1.55.0/meilisearch-windows-amd64.exe"
+sha256 = "948535579776ea8aeeffd166ac824f26624468b4f82d6e46a613230d8c91e62a"
+format = "file"
+executable = "meilisearch-windows-amd64.exe"
+size = 352880640
+
+[[package]]
+service = "mongodb"
+version = "8.0.34"
+os = "windows"
+arch = "x86_64"
+url = "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-8.0.34.zip"
+sha256 = "6b021a0864494e4decf278b36477a29eb36072432773e4e62c2f42c302630db0"
+format = "zip"
+root = "mongodb-win32-x86_64-windows-8.0.34"
+executable = "bin/mongod.exe"
+size = 807616685
+
