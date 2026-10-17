@@ -116,6 +116,7 @@ Leyenda: 🔒 requiere admin (operación aislada y opcional) · 🌐 requiere re
 - **F8.2** `crisold`: servidor IPC, estado en memoria, autoarranque opcional de servicios, apagado limpio (detiene todo lo que inició).
 - **F8.3** `crisol` CLI con `clap`: `start/stop/restart/status [servicio]`, `install/uninstall/list`, `use`, `park/link/unlink/sites`, `secure/unsecure`, `logs -f`, `doctor`. Salida legible y opción `--json` en todo.
   - *Aceptación:* cada comando tiene prueba de integración contra un daemon en un `CRISOL_HOME` temporal.
+  - Hecho además (2026-10-16): `crisol autostart on|off|status` (F8.4) y `crisol system install|uninstall` (F8.5, F8.6). Ver ADR-0015.
   - → `crisol stop` debe avisar que, con la regla NRPT instalada, los `.test` no resuelven (y esperan el tiempo de espera del DNS) mientras el daemon está parado (ADR-0014, revisión de la Fase 7, hallazgo 4).
 - **F8.4** Registro opcional del daemon al iniciar sesión (Programador de tareas o clave Run del usuario), sin servicio de Windows ni admin.
   - → nota: arranque al iniciar sesión con `Run` del usuario o una tarea sin nivel alto, nunca con privilegios de administrador.
