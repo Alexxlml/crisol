@@ -5,7 +5,7 @@ use clap::Parser;
 use crisol_core::config::Config;
 use crisol_core::dns::DEFAULT_DNS_ADDR;
 use crisol_core::ipc::pipe_name;
-use crisol_daemon::{run, DnsOptions, Options};
+use crisol_daemon::{run, DnsOptions, Options, Timing};
 use crisol_platform::{default_deps, resolve_paths, WindowsPrivateDirs};
 
 /// Crisol daemon: keeps services alive and serves the IPC.
@@ -40,6 +40,7 @@ fn start() -> Result<(), String> {
     let options = Options {
         pipe: pipe_name(paths.home()),
         deps,
+        timing: Timing::default(),
         dns: Some(DnsOptions {
             addr: SocketAddr::new(IpAddr::V4(DEFAULT_DNS_ADDR), 53),
             suffix,

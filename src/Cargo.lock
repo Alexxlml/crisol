@@ -285,9 +285,11 @@ dependencies = [
  "crisol-platform",
  "crisol-protocol",
  "serde",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
+ "zip",
 ]
 
 [[package]]

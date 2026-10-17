@@ -95,6 +95,26 @@ impl Daemon {
         self.shutting_down
     }
 
+    /// Kills every service at once. The binary uses it when a `shutdown` did not settle in time.
+    pub fn abort(&mut self) {
+        self.wanted = false;
+        self.restart_pending = false;
+        if let Some(stack) = &mut self.stack {
+            stack.abort();
+        }
+    }
+
+    /// Whether `call` can take long enough (a download, a scan of the system) to be run by a
+    /// worker thread instead of the one that owns the daemon. They are the only ones the binary
+    /// takes off the actor.
+    #[must_use]
+    pub fn is_long(call: &Call) -> bool {
+        matches!(
+            call,
+            Call::Install { .. } | Call::Uninstall { .. } | Call::Doctor
+        )
+    }
+
     /// Whether nothing is in transition: every service is running, stopped or failed, no
     /// reload is under way and no restart is waiting. With `shutdown`, it is also true only
     /// once everything is down.

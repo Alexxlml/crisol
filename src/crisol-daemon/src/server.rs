@@ -15,7 +15,7 @@ use crisol_platform::PipeSecurity;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::{broadcast, oneshot};
 
-use crate::actor;
+use crate::actor::{self, Input, Timing};
 use crate::connection::{serve, Shared};
 
 /// Where the DNS responder listens and for which suffix.
@@ -38,6 +38,8 @@ pub struct Options {
     pub pipe: String,
     /// The DNS responder, if it should run.
     pub dns: Option<DnsOptions>,
+    /// How long the actor waits for services and operations. `Timing::default()` in production.
+    pub timing: Timing,
 }
 
 /// Runs the daemon until `shutdown` is asked. Fails at once if another daemon already has the
@@ -48,6 +50,7 @@ pub fn run(options: Options) -> io::Result<()> {
         deps,
         pipe,
         dns,
+        timing,
     } = options;
     let mut log = DaemonLog::open(&paths);
     log.line(&format!(
@@ -60,7 +63,8 @@ pub fn run(options: Options) -> io::Result<()> {
         .enable_all()
         .build()?;
     let (events, _) = broadcast::channel(256);
-    let (to_actor, from_connections) = mpsc::channel();
+    let (to_actor, from_connections) = mpsc::channel::<Input>();
+    let worker_inbox = to_actor.clone();
     let (done_tx, mut done_rx) = oneshot::channel::<()>();
 
     // The pipe comes first: if another daemon has it, nothing else is started.
@@ -85,9 +89,14 @@ pub fn run(options: Options) -> io::Result<()> {
     let actor = std::thread::Builder::new()
         .name("crisold-actor".to_owned())
         .spawn(move || {
-            actor::run(daemon, &from_connections, &actor_events, &mut |line| {
-                actor_log.line(line);
-            });
+            actor::run(
+                daemon,
+                &from_connections,
+                worker_inbox,
+                &actor_events,
+                &mut |line| actor_log.line(line),
+                timing,
+            );
             let _ = done_tx.send(());
         })?;
 

@@ -18,13 +18,13 @@ use tokio::io::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::actor::Msg;
+use crate::actor::{Input, Msg};
 
 /// What every connection shares.
 #[derive(Debug, Clone)]
 pub struct Shared {
     /// To the actor.
-    pub actor: Sender<Msg>,
+    pub actor: Sender<Input>,
     /// Every event, for the connections that subscribed.
     pub events: broadcast::Sender<Event>,
 }
@@ -116,7 +116,7 @@ async fn ask(
         reply: reply_tx,
         events: events_tx,
     };
-    if shared.actor.send(msg).is_err() {
+    if shared.actor.send(Input::Request(msg)).is_err() {
         return Err(RpcError::new(
             ErrorCode::Internal,
             "the daemon is shutting down",

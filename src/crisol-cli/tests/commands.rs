@@ -35,7 +35,7 @@ use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
-use crisol_daemon::{run as run_daemon, Options};
+use crisol_daemon::{run as run_daemon, Options, Timing};
 use crisol_platform::connect_to_daemon;
 use crisol_protocol::{Check, CheckStatus};
 use sha2::{Digest, Sha256};
@@ -206,6 +206,7 @@ impl Env {
                     deps: daemon_deps.clone(),
                     pipe: pipe_for_daemon.clone(),
                     dns: None,
+                    timing: Timing::default(),
                 };
                 *daemon_slot.lock().unwrap() =
                     Some(std::thread::spawn(move || run_daemon(options)));

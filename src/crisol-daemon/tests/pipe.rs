@@ -21,7 +21,7 @@ use crisol_core::paths::CrisolPaths;
 use crisol_core::ports::fake::FakePortProbe;
 use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::project::TrustAllOwners;
-use crisol_daemon::{run, Options};
+use crisol_daemon::{run, Options, Timing};
 use crisol_platform::{connect_to_daemon, DaemonConnection};
 use crisol_protocol::{Call, ClientError, ErrorCode, Event, Reply, PROTOCOL_VERSION};
 use tempfile::TempDir;
@@ -61,6 +61,7 @@ fn start_daemon() -> Running {
         deps: deps(),
         pipe: pipe.clone(),
         dns: None,
+        timing: Timing::default(),
     };
     let thread = std::thread::spawn(move || run(options));
     // The pipe appears a moment after the thread starts.
@@ -173,6 +174,7 @@ fn a_second_daemon_for_the_same_home_does_not_start() {
         deps: deps(),
         pipe: daemon.pipe.clone(),
         dns: None,
+        timing: Timing::default(),
     };
     let error = run(options).unwrap_err();
     assert!(error.to_string().contains("already be running"), "{error}");

@@ -477,6 +477,14 @@ impl Service {
         std::mem::take(&mut self.events)
     }
 
+    /// Kills the service's whole group at once, with no graceful stop, and leaves it
+    /// `Stopped`. For a daemon that has run out of time to leave politely.
+    pub fn abort(&mut self) {
+        self.teardown();
+        self.restart_at = None;
+        self.set_state(ServiceState::Stopped);
+    }
+
     /// Moves the state machine forward. Call it every 150–500 ms.
     pub fn tick(&mut self, now: Instant) -> Vec<ServiceEvent> {
         match self.state {

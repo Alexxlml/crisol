@@ -762,6 +762,26 @@ impl WebStack {
         events
     }
 
+    /// Kills every process of the stack at once, without the graceful stops, and cancels a
+    /// reload under way. For a daemon that has to leave and cannot wait for a service.
+    pub fn abort(&mut self) {
+        self.running = false;
+        self.cancel_reload();
+        self.reload_again = false;
+        self.retire_at = None;
+        self.awaiting.clear();
+        if let Some(nginx) = &mut self.nginx {
+            nginx.abort();
+        }
+        for pool in self.pools.values_mut() {
+            pool.service.abort();
+        }
+        for service in &mut self.stopping {
+            service.abort();
+        }
+        self.stopping.clear();
+    }
+
     /// Every service of the stack with its state, `nginx` first and then the pools by version
     /// (`php-8.4.26`).
     #[must_use]

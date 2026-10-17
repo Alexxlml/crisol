@@ -16,5 +16,6 @@ mod actor;
 mod connection;
 mod server;
 
+pub use actor::Timing;
 pub use connection::{serve as serve_connection, Shared};
 pub use server::{run, DnsOptions, Options};
