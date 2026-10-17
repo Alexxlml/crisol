@@ -762,6 +762,38 @@ impl WebStack {
         events
     }
 
+    /// Every service of the stack with its state, `nginx` first and then the pools by version
+    /// (`php-8.4.26`).
+    #[must_use]
+    pub fn services(&self) -> Vec<(String, ServiceState)> {
+        let mut list = Vec::new();
+        if let Some(nginx) = &self.nginx {
+            list.push(("nginx".to_owned(), nginx.state().clone()));
+        }
+        for (version, pool) in &self.pools {
+            list.push((service_name(version), pool.service.state().clone()));
+        }
+        list
+    }
+
+    /// Whether nothing is in transition: no service is starting or stopping, and no
+    /// configuration is being tested, loaded or waiting its turn. A failed service is settled.
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        let steady = |s: &Service| {
+            matches!(
+                s.state(),
+                ServiceState::Running | ServiceState::Stopped | ServiceState::Failed(_)
+            )
+        };
+        self.reload.is_none()
+            && !self.reload_again
+            && self.awaiting.is_empty()
+            && self.nginx.as_ref().is_none_or(steady)
+            && self.pools.values().all(|p| steady(&p.service))
+            && self.stopping.iter().all(steady)
+    }
+
     /// Whether nothing is running any more (after [`stop`](Self::stop)).
     #[must_use]
     pub fn is_stopped(&self) -> bool {

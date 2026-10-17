@@ -45,6 +45,13 @@ use crate::sites::{
 pub trait SystemChecks: Send + Sync {
     /// The checks, in the order they should be shown. Read only: nothing is changed.
     fn checks(&self, paths: &CrisolPaths) -> Vec<Check>;
+
+    /// What to tell the user when the daemon is about to stop for good: the names of the local
+    /// sites stop resolving while the DNS responder of the daemon is not running, if the
+    /// system was set up to ask it (ADR-0014). Read only.
+    fn shutdown_warnings(&self, _paths: &CrisolPaths) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// No system checks.
