@@ -503,8 +503,20 @@ impl Engine {
             self.check_shims(),
             self.check_sites(),
         ];
+        checks.extend(self.check_memcached());
         checks.extend(self.deps.system.checks(&self.paths));
         Reply::Doctor { checks }
+    }
+
+    /// Memcached cannot have a login: when it is enabled, `doctor` says so.
+    fn check_memcached(&self) -> Option<Check> {
+        let loaded = Config::load_from(&self.paths).ok()?;
+        loaded.config.services.memcached.enabled.then(|| Check {
+            name: "memcached".to_owned(),
+            status: CheckStatus::Warning,
+            detail: crate::dbservice::MEMCACHED_NOTE.to_owned(),
+            fix: None,
+        })
     }
 
     fn check_home(&self) -> Check {

@@ -262,7 +262,11 @@ pub fn write_runtime_files(plan: &DbPlan, secret: Option<&Secret>) -> Result<(),
             };
             write_secret_file(&server_conf(plan), &text)
         }
-        DbKind::Postgres | DbKind::Mongodb | DbKind::Mailpit | DbKind::Meilisearch => Ok(()),
+        DbKind::Postgres
+        | DbKind::Mongodb
+        | DbKind::Mailpit
+        | DbKind::Meilisearch
+        | DbKind::Memcached => Ok(()),
     }
 }
 
@@ -433,7 +437,7 @@ fn postgres_spec(plan: &DbPlan) -> ServiceSpec {
         })
 }
 
-/// MongoDB, Mailpit, Meilisearch, Redis and Garnet: one process, ready when its ports listen.
+/// Mailpit, Meilisearch, Redis, Garnet and Memcached: one process, ready when its ports listen.
 /// Redis has a shutdown command; the others have none Crisol can use, so a stop ends the group
 /// (all of them recover their data from their own log or file at the next start).
 fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
@@ -492,6 +496,11 @@ fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
                 // Lua is off by default, and Laravel's queues use it.
                 .arg("--lua");
         }
+        DbKind::Memcached => {
+            // Only this computer, and no `-Y`: Memcached's login needs SASL, which this build
+            // does not have. Whatever is on this computer can read what is in it (ADR-0017).
+            process = process.args(["-l", "127.0.0.1", "-p", &plan.port.to_string()]);
+        }
         DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres | DbKind::Mongodb => {}
     }
     let ports: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
@@ -533,6 +542,9 @@ pub struct Credentials {
     /// Things to know (a database made before passwords existed, …).
     pub notes: Vec<String>,
 }
+
+/// What `doctor` and `crisol db credentials` say about Memcached: it cannot have a login.
+pub const MEMCACHED_NOTE: &str = "Memcached has no login (its authentication needs SASL, which this build does not have): it listens on 127.0.0.1 only, but any program on this computer can read and write what is in it. Do not keep anything in it that another account should not see.";
 
 /// The `.env` lines for connecting to `plan`'s service with `secret`.
 #[must_use]
@@ -585,6 +597,11 @@ pub fn credentials(plan: &DbPlan, secret: Option<&Secret>) -> Credentials {
                 "Mailpit has no password for SMTP. Read the mail at http://{}/ (Nginx serves it under that name; Mailpit answers to no other).",
                 plan.host.as_deref().unwrap_or("mail.test")
             ));
+        }
+        DbKind::Memcached => {
+            lines.push(pair("MEMCACHED_HOST", "127.0.0.1"));
+            lines.push(pair("MEMCACHED_PORT", &port));
+            notes.push(MEMCACHED_NOTE.to_owned());
         }
         DbKind::Mongodb => {
             let user = crate::mongowire::ADMIN_USER;

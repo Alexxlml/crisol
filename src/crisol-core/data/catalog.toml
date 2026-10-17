@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 8
+serial = 9
 generated = "2026-10-14"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -294,3 +294,20 @@ format = "zip"
 executable = "net10.0/GarnetServer.exe"
 size = 26078483
 
+# Memcached on Windows (F9 review, ADR-0017). The project publishes no Windows build. This is the
+# third-party build of `jefyt/memcached-windows` (memcached 1.6.8 of 2020, compiled with MinGW and
+# LibreSSL in 2026): old, no longer patched, hence `end_of_life`, and lower certainty than the other
+# services: the release carries a `hashes.txt` (SHA-256 and SHA-512) and GitHub records the same
+# SHA-256, but both come from the same account, so they only prove the transfer, not who built it.
+[[package]]
+service = "memcached"
+version = "1.6.8"
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/jefyt/memcached-windows/releases/download/1.6.8_mingw_libressl/memcached-1.6.8-win64-mingw.zip"
+sha256 = "48ec62cef718f0d73698414b783c0e4a69821013553ca00afe0eed324eb5994b"
+format = "zip"
+root = "memcached-1.6.8-win64-mingw"
+executable = "bin/memcached.exe"
+size = 3540169
+end_of_life = true

@@ -578,6 +578,62 @@ port = 19017
 }
 
 #[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with memcached-1.6.8-win64-mingw.zip (Windows)"]
+fn memcached_stores_and_returns_a_value_on_the_loopback_only() {
+    use std::io::{BufRead, BufReader, Write};
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world(
+        "[services.memcached]
+enabled = true
+port = 19211
+",
+    );
+    install_from_downloads(&world.paths, "memcached", "1.6.8");
+    run_and_wait(&mut world, DbKind::Memcached);
+
+    let stream = std::net::TcpStream::connect(("127.0.0.1", 19211)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut line = String::new();
+    write!(writer, "set crisol 0 0 5\r\nhello\r\n").unwrap();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "STORED");
+    write!(writer, "get crisol\r\n").unwrap();
+    let mut answer = String::new();
+    for _ in 0..3 {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        answer.push_str(&line);
+    }
+    assert!(
+        answer.contains("VALUE crisol 0 5") && answer.contains("hello"),
+        "{answer}"
+    );
+
+    let netstat = Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .output()
+        .unwrap();
+    let netstat = String::from_utf8_lossy(&netstat.stdout).into_owned();
+    assert!(
+        netstat
+            .lines()
+            .filter(|l| l.contains(":19211 ") && l.contains("LISTENING"))
+            .all(|l| l.contains("127.0.0.1")),
+        "{netstat}"
+    );
+    println!(
+        "memcached: stop took {:?}",
+        stop_and_wait(&mut world, DbKind::Memcached)
+    );
+}
+
+#[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with mariadb-10.11.19-winx64.zip and mariadb-11.8.9-winx64.zip (Windows)"]
 fn two_series_of_one_database_keep_their_data_apart_and_switching_loses_nothing() {
     let _ports = PORTS

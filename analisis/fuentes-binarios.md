@@ -78,8 +78,7 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 | MongoDB 8.0.34 (windows x86_64 zip, edición comunidad) | `fastdl.mongodb.org` | SHA-256 por archivo en su propio feed `downloads.mongodb.org/current.json` | Hash calculado = hash publicado (`6b021a08…630db0`); 12 entradas, raíz `mongodb-win32-x86_64-windows-8.0.34/`, `bin/mongod.exe`; una prueba real arranca, hace sus datos (`WiredTiger`) y reinicia. El archivo no trae cliente (`mongosh` es otra descarga) | ✅ coincide |
 | Redis 5.0.14.1 (tporadowski) | `github.com/tporadowski/redis/releases` | **Nada** (ni hash, ni `digest` de GitHub, ni firma). *Port* no oficial de Windows; no existe uno oficial | Hash `018ea18a…720ccf` **idéntico en dos descargas**; 16 archivos sin rutas peligrosas; `redis-server.exe` y `redis-cli.exe`; prueba real: arranca, guarda al apagar y recupera los datos. Marcado `end_of_life` | ⚠️ **certeza menor** (integridad de la transferencia, no autenticidad) |
 | Garnet 2.2.3 (win-x64-based-readytorun.zip) | `github.com/microsoft/garnet/releases` | `digest` de GitHub | Hash calculado = `digest` (`5cd13068…f9f16`); 93 entradas bajo `net10.0/` | ✅ coincide con GitHub (misma salvedad que Mailpit) |
-
-**Memcached no se ofrece:** el proyecto solo publica código fuente; los binarios de Windows son de terceros no oficiales (ver la pregunta al propietario en `claude/ESTADO.md`).
+| Memcached 1.6.8 (`memcached-1.6.8-win64-mingw.zip`, build de terceros `jefyt/memcached-windows`, publicada el 2026-02-28) | `github.com/jefyt/memcached-windows/releases` (el proyecto Memcached solo publica código fuente; no existe un build oficial para Windows) | `hashes.txt` en la misma publicación (SHA-256 y SHA-512) y el `digest` de GitHub | SHA-256 calculado = `hashes.txt` = `digest` de GitHub (`48ec62ce…5994b`); SHA-512 también coincide; tamaño 3 540 169 bytes; 7 entradas bajo `memcached-1.6.8-win64-mingw/` sin rutas peligrosas; `bin/memcached.exe`; prueba real: guarda y devuelve un valor, escucha solo en `127.0.0.1` y se detiene en 0,2 s. Marcado `end_of_life` | ⚠️ **certeza menor**: las tres cifras vienen de la misma cuenta que subió el archivo, así que prueban la transferencia, no quién lo compiló. Memcached 1.6.8 es de 2020 y ya no recibe parches |
 
 Solo se listan estas versiones: MySQL **8.4 LTS**, MariaDB **11.8 LTS** (la actual) y **10.11 LTS**, PostgreSQL **18** y **17** (para tener dos series con datos separados). Una prueba del repositorio exige que los hosts sean estos oficiales (`archive.mariadb.org`, `cdn.mysql.com`, `get.enterprisedb.com`).
 
@@ -109,4 +108,4 @@ Para PHP usar siempre la URL de `archives/`.
 ## Pendiente
 
 - Las entradas para Linux y macOS (Fase posterior).
-- MySQL, MariaDB, PostgreSQL, Redis, Mailpit, Meilisearch, Memcached y MongoDB entran en la Fase 9. **Redis** no tiene builds oficiales para Windows (F9.3).
+- MySQL, MariaDB, PostgreSQL, Redis, Mailpit, Meilisearch, Memcached y MongoDB entran en la Fase 9. **Redis** y **Memcached** no tienen builds oficiales para Windows (F9.3 y la revisión de la Fase 9); los dos son de terceros, con certeza menor.

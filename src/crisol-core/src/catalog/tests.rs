@@ -592,6 +592,7 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
             "mailpit",
             "mariadb",
             "meilisearch",
+            "memcached",
             "mongodb",
             "mysql",
             "nginx",
@@ -667,6 +668,12 @@ fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
             // under the folder of the runtime it was built for.
             "redis" => (ArchiveFormat::Zip, "redis-server.exe", None),
             "garnet" => (ArchiveFormat::Zip, "net10.0/GarnetServer.exe", None),
+            // The third-party build of Memcached (ADR-0017): one folder inside the zip.
+            "memcached" => (
+                ArchiveFormat::Zip,
+                "bin/memcached.exe",
+                Some("memcached-1.6.8-win64-mingw".to_owned()),
+            ),
             "meilisearch" => (ArchiveFormat::File, "meilisearch-windows-amd64.exe", None),
             "mongodb" => (
                 ArchiveFormat::Zip,
@@ -768,8 +775,11 @@ fn the_built_in_catalog_recommends_php_8_4_and_marks_7_4_as_unsupported() {
     assert!(old.end_of_life);
     assert!(catalog.is_end_of_life("php", &old.version));
     for package in catalog.packages().iter().filter(|p| {
-        // PHP 7.4 and the port of Redis 5 (ADR-0012, ADR-0017) are the unsupported ones.
-        !(p.service == "php" && p.version.to_string().starts_with("7.")) && p.service != "redis"
+        // PHP 7.4 and the old builds of Redis 5 and Memcached 1.6.8 (ADR-0012, ADR-0017) are the
+        // unsupported ones.
+        !(p.service == "php" && p.version.to_string().starts_with("7."))
+            && p.service != "redis"
+            && p.service != "memcached"
     }) {
         assert!(
             !package.end_of_life,

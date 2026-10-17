@@ -1114,3 +1114,36 @@ fn stopping_mongodb_asks_it_to_shut_down_logged_in_and_data_without_a_password_a
     }
     assert_eq!(*admin.shutdowns.lock().unwrap(), [(19017, None)]);
 }
+
+// ---- Memcached ---------------------------------------------------------------------------
+
+#[test]
+fn memcached_listens_on_this_computer_only_has_no_login_and_says_so() {
+    let mut rig = Rig::new();
+    rig.config.services.memcached.port = 19211;
+    let (args, plan, _db) = started_args(&rig, DbKind::Memcached, ("memcached", "1.6.8"));
+    assert_eq!(plan.series, "1.6");
+    assert!(
+        args.windows(2).any(|w| w == ["-l", "127.0.0.1"]),
+        "{args:?}"
+    );
+    assert!(args.windows(2).any(|w| w == ["-p", "19211"]), "{args:?}");
+    assert!(
+        !args.contains(&"-Y".to_owned()),
+        "no authentication file: this build has no SASL ({args:?})"
+    );
+    assert!(plan.secret_path("").parent().is_some_and(|d| !d.exists()));
+
+    let shown = credentials(&plan, None);
+    assert!(shown
+        .lines
+        .contains(&("MEMCACHED_HOST".to_owned(), "127.0.0.1".to_owned())));
+    assert!(shown
+        .lines
+        .contains(&("MEMCACHED_PORT".to_owned(), "19211".to_owned())));
+    assert!(
+        shown.notes.iter().any(|n| n.contains("no login")),
+        "{:?}",
+        shown.notes
+    );
+}

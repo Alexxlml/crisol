@@ -44,7 +44,9 @@ use crate::process::{
 use crate::secrets::{self, Secret, SecretsError};
 use crate::service::{FailureReason, Service, ServiceEvent, ServiceState};
 
-pub use specs::{credentials, init_spec, render_ini, service_spec, write_ini, Credentials};
+pub use specs::{
+    credentials, init_spec, render_ini, service_spec, write_ini, Credentials, MEMCACHED_NOTE,
+};
 
 /// How the data of a service is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +181,16 @@ static REDIS: Descriptor = descriptor!(
     Auth::Applied,
     None
 );
+static MEMCACHED: Descriptor = descriptor!(
+    memcached,
+    "memcached",
+    "bin/memcached.exe",
+    None,
+    2,
+    Initializer::None,
+    Auth::None,
+    None
+);
 static GARNET: Descriptor = descriptor!(
     garnet,
     "garnet",
@@ -209,11 +221,13 @@ pub enum DbKind {
     Redis,
     /// Garnet: Microsoft's server that speaks Redis's protocol. Not Redis (ADR-0017).
     Garnet,
+    /// Memcached: the third-party Windows build (ADR-0017). It has no login without SASL.
+    Memcached,
 }
 
 impl DbKind {
     /// All of them, MySQL first.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Mysql,
         Self::Mariadb,
         Self::Postgres,
@@ -222,6 +236,7 @@ impl DbKind {
         Self::Meilisearch,
         Self::Redis,
         Self::Garnet,
+        Self::Memcached,
     ];
 
     fn descriptor(self) -> &'static Descriptor {
@@ -234,6 +249,7 @@ impl DbKind {
             Self::Meilisearch => &MEILISEARCH,
             Self::Redis => &REDIS,
             Self::Garnet => &GARNET,
+            Self::Memcached => &MEMCACHED,
         }
     }
 

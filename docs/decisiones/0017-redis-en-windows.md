@@ -45,3 +45,12 @@ Redis 8 (2025) volvió a una licencia con *copyleft* fuerte (AGPLv3 como opción
 
 Se miró de nuevo porque Chocolatey publica `memurai-developer.portable` 4.1.8 (noviembre de 2025): un ZIP sin servicio, con `memurai.exe` firmado con Authenticode por Janea Systems y compatible con la API de Redis 7.0. **No se añade**: su EULA exige aceptación, prohíbe el uso en producción y «compartir o distribuir», incluye una cláusula de recopilación de datos (choca con ADR-0004) y de actualizaciones automáticas, y la edición Developer actual dice requerir un reinicio cada 10 días (no comprobado en la 4.1.8). No se ejecutó para no aceptar la licencia en nombre del propietario. Si se retoma, hace falta un paso de aceptación de licencia en el catálogo y una prueba aislada de lo que envía. Decisión del propietario: quedarse con `redis` y `garnet`.
 
+### Memcached (corrección del 2026-10-17, revisión de la Fase 9)
+
+Decidido por el propietario: Memcached se ofrece, con las mismas salvedades que Redis. **No existe un build oficial para Windows**; el proyecto solo publica código fuente. Se usa la publicación `1.6.8_mingw_libressl` (2026-02-28) de `jefyt/memcached-windows`: memcached **1.6.8 de 2020**, compilado en 2026 con MinGW y LibreSSL.
+
+- **Verificación:** `memcached-1.6.8-win64-mingw.zip` (3 540 169 bytes) tiene SHA-256 `48ec62cef718f0d73698414b783c0e4a69821013553ca00afe0eed324eb5994b`, igual en el `hashes.txt` de la publicación y en el `digest` de GitHub; el SHA-512 también coincide. Las tres cifras salen de la misma cuenta, así que prueban la transferencia y no quién lo compiló: **certeza menor** (`analisis/fuentes-binarios.md`).
+- **Marcado `end_of_life`** en el catálogo (sin parches desde 2020; `crisol install` lo avisa como a PHP 7.4 y Redis 5).
+- **Solo `127.0.0.1`** (`-l 127.0.0.1 -p <puerto>`) y **sin `-Y`**: la autenticación de Memcached necesita SASL y este build no lo trae. **Memcached no tiene contraseña**: cualquier programa de este equipo puede leer y escribir lo que haya en él. Por eso `crisol doctor` lo menciona (un aviso mientras esté habilitado) y `crisol db credentials memcached` lo repite junto a `MEMCACHED_HOST` y `MEMCACHED_PORT`. No guardes ahí nada que otra cuenta del equipo no deba ver.
+- Se detiene terminando el grupo (no hay orden de apagado; es una caché). Puerto por defecto 11211.
+- Prueba real a pedido (`databases.rs`): arranca, `set`/`get` por el protocolo de texto, escucha solo en loopback y se detiene en 0,2 s.

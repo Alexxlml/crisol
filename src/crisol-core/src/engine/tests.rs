@@ -771,6 +771,27 @@ fn doctor_names_the_open_folder_and_the_command_and_an_invalid_config() {
 }
 
 #[test]
+fn doctor_warns_that_an_enabled_memcached_has_no_login_and_says_nothing_otherwise() {
+    let rig = Rig::new(&[]);
+    let named = |rig: &Rig| {
+        checks(rig.call(&Call::Doctor).unwrap())
+            .into_iter()
+            .find(|c| c.name == "memcached")
+    };
+    assert_eq!(named(&rig), None);
+    fs::write(
+        rig.paths().config_file(),
+        "[services.memcached]
+enabled = true
+",
+    )
+    .unwrap();
+    let check = named(&rig).expect("an enabled Memcached is mentioned");
+    assert_eq!(check.status, CheckStatus::Warning);
+    assert!(check.detail.contains("no login"), "{}", check.detail);
+}
+
+#[test]
 fn every_message_has_no_stretch_of_spaces() {
     let rig = Rig::new(&[]);
     rig.dirs.expose(rig.paths().home());
