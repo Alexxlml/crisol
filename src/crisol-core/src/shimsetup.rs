@@ -144,30 +144,49 @@ pub fn path_status(
     })
 }
 
-/// One sentence per program that wins over the shims: what runs, why Crisol cannot change it,
-/// and the way out.
+/// One sentence per folder that wins over the shims: which commands run from it, why Crisol
+/// cannot change that, and the way out.
 #[must_use]
 pub fn describe_shadows(shadows: &[Shadow]) -> Vec<String> {
-    shadows
-        .iter()
-        .map(|s| {
-            let who = s
-                .suite
-                .map_or_else(String::new, |suite| format!(" ({suite})"));
-            if s.in_system_path {
+    let mut groups: Vec<(String, bool, Option<&'static str>, Vec<&str>)> = Vec::new();
+    for shadow in shadows {
+        let folder = shadow
+            .found
+            .parent()
+            .map_or_else(String::new, |p| p.display().to_string());
+        match groups
+            .iter_mut()
+            .find(|(f, machine, _, _)| *f == folder && *machine == shadow.in_system_path)
+        {
+            Some((_, _, _, programs)) => programs.push(shadow.program),
+            None => groups.push((
+                folder,
+                shadow.in_system_path,
+                shadow.suite,
+                vec![shadow.program],
+            )),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(folder, machine, suite, programs)| {
+            let quoted: Vec<String> = programs.iter().map(|p| format!("`{p}`")).collect();
+            let (names, verb, which) = match quoted.as_slice() {
+                [one] => (one.clone(), "runs", "the one"),
+                [init @ .., last] => (format!("{} and {last}", init.join(", ")), "run", "the ones"),
+                [] => (String::new(), "run", "the ones"),
+            };
+            let who = suite.map_or_else(String::new, |suite| format!(" ({suite})"));
+            if machine {
                 format!(
-                    "`{}` in a terminal runs {}{who}, not Crisol's: that folder is in the machine PATH, which Windows searches before your \
-                     user PATH, and Crisol never changes the machine PATH. A terminal where Crisol's shims come first: `crisol env` \
-                     (PowerShell: `crisol env | Invoke-Expression`)",
-                    s.program,
-                    s.found.display()
+                    "{names} in a terminal {verb} {which} in {folder}{who}, not Crisol's: that folder is in the machine PATH, which \
+                     Windows searches before your user PATH, and Crisol never changes the machine PATH. A terminal where Crisol's \
+                     shims come first: `crisol env` (PowerShell: `crisol env | Invoke-Expression`)"
                 )
             } else {
                 format!(
-                    "`{}` in a terminal runs {}{who}, not Crisol's: it comes earlier in your user PATH. `crisol path add` puts Crisol's \
-                     shims first",
-                    s.program,
-                    s.found.display()
+                    "{names} in a terminal {verb} {which} in {folder}{who}, not Crisol's: it comes earlier in your user PATH. \
+                     `crisol path add` puts Crisol's shims first"
                 )
             }
         })

@@ -93,7 +93,10 @@ fn the_machine_node_is_reported_as_winning_and_the_way_out_is_named() {
     assert!(status.shadows[0].in_system_path);
 
     let text = describe_shadows(&status.shadows).join("\n");
-    assert!(text.contains(r"C:\Program Files\nodejs\node.exe"), "{text}");
+    assert!(
+        text.contains("`node` in a terminal runs the one in C:\\Program Files\\nodejs"),
+        "{text}"
+    );
     assert!(
         text.contains("machine PATH") && text.contains("never changes"),
         "{text}"

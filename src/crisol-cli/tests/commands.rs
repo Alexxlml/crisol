@@ -1049,7 +1049,10 @@ fn path_says_what_wins_over_the_shims_and_how_to_get_around_it() {
     env.user_path.set_system(&machine.display().to_string());
 
     let out = env.ok(&["path", "add"]);
-    assert!(out.contains("`node` in a terminal runs"), "{out}");
+    assert!(
+        out.contains("`node` in a terminal runs the one in"),
+        "{out}"
+    );
     assert!(
         out.contains("machine PATH") && out.contains("crisol env"),
         "{out}"
