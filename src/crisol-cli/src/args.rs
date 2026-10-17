@@ -147,6 +147,16 @@ pub enum Command {
     },
     /// Checks the installation and says what to fix.
     Doctor,
+    /// Turns a data service on in `crisol.toml` (`enabled = true`); `crisol start` brings it up.
+    Enable {
+        /// `mysql`, `postgresql`, `redis`, …
+        service: String,
+    },
+    /// Turns a data service off in `crisol.toml`; a running one keeps running until it is stopped.
+    Disable {
+        /// `mysql`, `postgresql`, `redis`, …
+        service: String,
+    },
     /// The databases and other services: what a project needs to connect to them.
     Db {
         /// `credentials <service>`.
@@ -332,6 +342,8 @@ impl Command {
                 }
             }
             Self::Doctor => Call::Doctor,
+            Self::Enable { service } => Call::Enable { service },
+            Self::Disable { service } => Call::Disable { service },
             Self::Db {
                 action: DbAction::Credentials { service },
             } => Call::Credentials { service },

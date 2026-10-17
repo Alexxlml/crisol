@@ -799,3 +799,129 @@ fn every_message_has_no_stretch_of_spaces() {
         assert!(!check.detail.contains("  "), "{check:?}");
     }
 }
+
+// ---- enable and disable ------------------------------------------------------------------
+
+fn done_info(reply: Reply) -> DoneInfo {
+    match reply {
+        Reply::Done(info) => info,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn enable_and_disable_change_one_value_and_keep_the_rest_of_the_file() {
+    let rig = Rig::new(&[]);
+    let original = "# my setup
+[sites]
+tld = \"test\" # keep me
+
+[services.redis]
+port = 6380 # mine
+";
+    fs::write(rig.paths().config_file(), original).unwrap();
+
+    let on = done_info(
+        rig.call(&Call::Enable {
+            service: "redis".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(on.changed && on.warnings.is_empty(), "{on:?}");
+    let text = fs::read_to_string(rig.paths().config_file()).unwrap();
+    assert!(text.contains("# my setup") && text.contains("tld = \"test\" # keep me"));
+    assert!(text.contains("port = 6380 # mine"), "{text}");
+    assert!(text.contains("enabled = true"), "{text}");
+
+    let again = done_info(
+        rig.call(&Call::Enable {
+            service: "redis".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(!again.changed, "{again:?}");
+    assert_eq!(fs::read_to_string(rig.paths().config_file()).unwrap(), text);
+
+    let off = done_info(
+        rig.call(&Call::Disable {
+            service: "redis".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(
+        off.changed && off.message.contains("crisol stop redis"),
+        "{off:?}"
+    );
+    let text = fs::read_to_string(rig.paths().config_file()).unwrap();
+    assert!(
+        text.contains("enabled = false") && text.contains("# mine"),
+        "{text}"
+    );
+
+    // Disabling what was never enabled writes nothing, not even the file.
+    let fresh = Rig::new(&[]);
+    let none = done_info(
+        fresh
+            .call(&Call::Disable {
+                service: "mysql".to_owned(),
+            })
+            .unwrap(),
+    );
+    assert!(!none.changed);
+    assert!(!fresh.paths().config_file().exists());
+}
+
+#[test]
+fn enabling_an_alternative_or_a_service_on_a_taken_port_warns_and_still_writes() {
+    let rig = Rig::new(&[]);
+    fs::write(
+        rig.paths().config_file(),
+        "[services.mysql]
+enabled = true
+[services.redis]
+enabled = true
+",
+    )
+    .unwrap();
+    let mariadb = done_info(
+        rig.call(&Call::Enable {
+            service: "mariadb".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(mariadb.changed);
+    assert!(
+        mariadb.warnings.iter().any(|w| w.contains("alternatives")),
+        "{mariadb:?}"
+    );
+    let garnet = done_info(
+        rig.call(&Call::Enable {
+            service: "garnet".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(
+        garnet.warnings.iter().any(|w| w.contains("alternatives")),
+        "{garnet:?}"
+    );
+    // Something that has nothing to do with them says nothing about them.
+    let mail = done_info(
+        rig.call(&Call::Enable {
+            service: "mailpit".to_owned(),
+        })
+        .unwrap(),
+    );
+    assert!(mail.warnings.is_empty(), "{mail:?}");
+}
+
+#[test]
+fn enabling_something_that_is_not_a_data_service_is_refused_and_writes_nothing() {
+    let rig = Rig::new(&[]);
+    let error = rig
+        .call(&Call::Enable {
+            service: "nginx".to_owned(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams);
+    assert!(!rig.paths().config_file().exists());
+}

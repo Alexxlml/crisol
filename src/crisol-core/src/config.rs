@@ -268,6 +268,18 @@ pub enum ConfigWarning {
     },
 }
 
+impl ConfigWarning {
+    /// Whether the warning is about `service`.
+    #[must_use]
+    pub fn involves(&self, service: &str) -> bool {
+        match self {
+            Self::PortConflict { services, .. } => services.iter().any(|s| s == service),
+            Self::ExclusiveServices { first, second } => first == service || second == service,
+            Self::UnknownField(_) | Self::PublicTld(_) => false,
+        }
+    }
+}
+
 impl fmt::Display for ConfigWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

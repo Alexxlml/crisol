@@ -266,6 +266,12 @@ impl DbKind {
         Self::ALL.into_iter().find(|k| k.service() == name)
     }
 
+    /// Whether `crisol.toml` has it enabled.
+    #[must_use]
+    pub fn is_enabled(self, config: &Config) -> bool {
+        (self.descriptor().enabled)(config)
+    }
+
     /// Where its password lives.
     #[must_use]
     pub fn auth(self) -> Auth {

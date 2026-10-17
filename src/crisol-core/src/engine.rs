@@ -24,6 +24,7 @@ use crisol_protocol::{
 
 use crate::catalog::{Catalog, Target};
 use crate::config::Config;
+use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
 use crate::install::{InstallError, InstallOptions, Progress};
 use crate::manage::{
@@ -180,6 +181,8 @@ impl Engine {
             } => self.logs(service, *lines, *from),
             Call::Doctor => Ok(self.doctor()),
             Call::Credentials { service } => self.credentials(service),
+            Call::Enable { service } => self.set_enabled(service, true),
+            Call::Disable { service } => self.set_enabled(service, false),
             Call::Hello { .. }
             | Call::Status { .. }
             | Call::Start { .. }
@@ -246,6 +249,61 @@ impl Engine {
                 .map(|(key, value)| EnvLine { key, value })
                 .collect(),
             notes: details.notes,
+        }))
+    }
+
+    /// Writes `enabled` of a data service in `crisol.toml`, and nothing else: comments, order and
+    /// the other keys stay. Enabling one that is an alternative to another enabled service (or
+    /// that wants a port another enabled one wants) says so; it still writes, because the file
+    /// is the user's and the warning is also what `doctor` and `start` say.
+    fn set_enabled(&self, service: &str, enabled: bool) -> Result<Reply, RpcError> {
+        let kind = crate::dbservice::DbKind::from_service(service).ok_or_else(|| {
+            RpcError::new(
+                ErrorCode::InvalidParams,
+                format!("`{service}` cannot be enabled or disabled; it is for mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit and memcached"),
+            )
+        })?;
+        let service = kind.service();
+        let before = self.load_config()?;
+        let was = kind.is_enabled(&before);
+        let mut warnings = Vec::new();
+        if was != enabled {
+            let mut editor = TomlEditor::open_config(&self.paths)
+                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            editor
+                .set(&["services", service, "enabled"], enabled)
+                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            editor
+                .save()
+                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            if enabled {
+                if let Ok(after) = Config::load_from(&self.paths) {
+                    warnings.extend(
+                        after
+                            .warnings
+                            .iter()
+                            .filter(|w| w.involves(service))
+                            .map(ToString::to_string),
+                    );
+                }
+            }
+        }
+        let message = match (was == enabled, enabled) {
+            (true, true) => format!("{service} was already enabled"),
+            (true, false) => format!("{service} was already disabled"),
+            (false, true) => format!(
+                "{service} is enabled in {}: `crisol start` brings it up (or `crisol start {service}` now)",
+                self.paths.config_file().display()
+            ),
+            (false, false) => format!(
+                "{service} is disabled in {}; if it is running it keeps running until `crisol stop {service}`",
+                self.paths.config_file().display()
+            ),
+        };
+        Ok(Reply::Done(DoneInfo {
+            message,
+            changed: was != enabled,
+            warnings,
         }))
     }
 

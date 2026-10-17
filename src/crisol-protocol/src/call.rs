@@ -140,6 +140,17 @@ pub enum Call {
         /// `mysql`, `postgresql`, `redis`, …
         service: String,
     },
+    /// Turns a data service on in `crisol.toml` (`enabled = true`): `crisol start` brings it up.
+    Enable {
+        /// `mysql`, `redis`, …
+        service: String,
+    },
+    /// Turns a data service off in `crisol.toml` (`enabled = false`). A running one keeps
+    /// running until it is stopped.
+    Disable {
+        /// `mysql`, `redis`, …
+        service: String,
+    },
     /// Asks the daemon to push [`crate::Event`]s on this connection.
     Subscribe,
 }
@@ -173,6 +184,8 @@ impl Call {
             Self::Logs { .. } => "logs",
             Self::Doctor => "doctor",
             Self::Credentials { .. } => "credentials",
+            Self::Enable { .. } => "enable",
+            Self::Disable { .. } => "disable",
             Self::Subscribe => "subscribe",
         }
     }
@@ -192,6 +205,8 @@ impl Call {
                 | Self::Unlink { .. }
                 | Self::Secure { .. }
                 | Self::Unsecure { .. }
+                | Self::Enable { .. }
+                | Self::Disable { .. }
                 | Self::Start { .. }
                 | Self::Restart { .. }
         )

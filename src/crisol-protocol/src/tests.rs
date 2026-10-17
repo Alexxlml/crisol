@@ -105,6 +105,12 @@ fn every_call_survives_a_round_trip_and_names_itself() {
         Call::Credentials {
             service: "mysql".to_owned(),
         },
+        Call::Enable {
+            service: "redis".to_owned(),
+        },
+        Call::Disable {
+            service: "redis".to_owned(),
+        },
         Call::Subscribe,
     ];
     let mut names = std::collections::BTreeSet::new();
@@ -117,7 +123,7 @@ fn every_call_survives_a_round_trip_and_names_itself() {
     }
     assert_eq!(
         names.len(),
-        21,
+        23,
         "every operation has its own name: {names:?}"
     );
 }

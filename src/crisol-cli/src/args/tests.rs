@@ -75,6 +75,18 @@ fn each_command_is_one_call() {
         }
     );
     assert_eq!(call(&["doctor"]), Call::Doctor);
+    assert_eq!(
+        call(&["enable", "redis"]),
+        Call::Enable {
+            service: "redis".to_owned()
+        }
+    );
+    assert_eq!(
+        call(&["disable", "redis"]),
+        Call::Disable {
+            service: "redis".to_owned()
+        }
+    );
 }
 
 #[test]

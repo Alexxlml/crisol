@@ -693,6 +693,29 @@ fn db_credentials_shows_the_env_lines_of_a_service_and_says_what_is_missing() {
         .contains("has no credentials"));
 }
 
+#[test]
+fn enable_and_disable_edit_crisol_toml_and_nothing_else() {
+    let env = Env::new(&[]);
+    fs::write(
+        env.paths.config_file(),
+        "# mine
+[services.mysql]
+port = 3307 # mine too
+",
+    )
+    .unwrap();
+    let said = env.ok(&["enable", "mysql"]);
+    assert!(said.contains("mysql is enabled"), "{said}");
+    let text = fs::read_to_string(env.paths.config_file()).unwrap();
+    assert!(text.contains("# mine") && text.contains("port = 3307 # mine too"));
+    assert!(text.contains("enabled = true"), "{text}");
+    assert!(env.ok(&["enable", "mysql"]).contains("already enabled"));
+    assert!(env.ok(&["disable", "mysql"]).contains("disabled"));
+    assert!(env
+        .failing(&["enable", "nginx"])
+        .contains("cannot be enabled"));
+}
+
 // ---- logs and doctor ------------------------------------------------------------------------
 
 #[test]
