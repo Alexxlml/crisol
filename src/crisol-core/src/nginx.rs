@@ -178,6 +178,20 @@ pub struct NginxInput<'a> {
     pub pools: &'a PhpPools,
     /// The certificate for the secured sites; `None` serves everything over HTTP.
     pub tls: Option<NginxTls<'a>>,
+    /// Mailpit's page and API as a name of their own, when Mailpit is enabled.
+    pub mail: Option<&'a MailRoute>,
+}
+
+/// Mailpit behind Nginx (review of phase 9, finding 2): `mail.<tld>` is served by Nginx, which
+/// forwards to the port Mailpit listens on. Nginx answers only the names it knows, and Mailpit
+/// itself is told to answer only to this one (`--allowed-hosts`), so a page that makes the
+/// browser go to `127.0.0.1:8025` under another name gets nothing (DNS rebinding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailRoute {
+    /// `mail.test`.
+    pub domain: String,
+    /// The port of Mailpit's web server.
+    pub port: u16,
 }
 
 /// The generated files, by path relative to `etc/nginx/`, and what was left out.
@@ -290,6 +304,15 @@ fn render_in(input: &NginxInput<'_>, etc: &Path) -> RenderedNginx {
         }
     }
 
+    if let Some(mail) = input.mail {
+        match render_mail(input, mail) {
+            Ok(text) => {
+                files.insert("sites/_mail.conf".to_owned(), text);
+            }
+            Err(why) => warnings.push(format!("{} is not served: {why}", mail.domain)),
+        }
+    }
+
     match (
         render_upstreams(input.pools, &used_pools),
         render_main(input, etc, any_secure),
@@ -301,6 +324,38 @@ fn render_in(input: &NginxInput<'_>, etc: &Path) -> RenderedNginx {
         (_, Err(why)) => warnings.push(format!("nginx.conf could not be generated: {why}")),
     }
     RenderedNginx { files, warnings }
+}
+
+/// The server block of `mail.<tld>`: plain HTTP, forwarding everything (the live updates of the
+/// page are a WebSocket) to Mailpit with the name the browser used.
+fn render_mail(input: &NginxInput<'_>, mail: &MailRoute) -> Result<String, String> {
+    if !mail
+        .domain
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    {
+        return Err(format!("`{}` is not a plain host name", mail.domain));
+    }
+    Ok(format!(
+        "{HEADER}
+         # {domain}: Mailpit, the page and the API.
+         server {{
+         {listen}             server_name {domain};
+
+             location / {{
+                 proxy_pass http://127.0.0.1:{port};
+                 proxy_http_version 1.1;
+                 proxy_set_header Host $host;
+                 proxy_set_header Upgrade $http_upgrade;
+                 proxy_set_header Connection \"upgrade\";
+                 proxy_read_timeout 1h;
+             }}
+         }}
+",
+        domain = mail.domain,
+        port = mail.port,
+        listen = listen_loopbacks("    ", input.http_port, ""),
+    ))
 }
 
 fn render_upstreams(pools: &PhpPools, used: &BTreeSet<&str>) -> String {

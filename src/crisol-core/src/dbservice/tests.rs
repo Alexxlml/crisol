@@ -547,6 +547,11 @@ fn mongodb_mailpit_and_meilisearch_start_straight_from_an_empty_folder_on_this_c
         "{mail:?}"
     );
     assert!(
+        mail.windows(2)
+            .any(|w| w == ["--allowed-hosts", "mail.test"]),
+        "Mailpit answers to the name Nginx serves it under and no other: {mail:?}"
+    );
+    assert!(
         mail.contains(&"--disable-version-check".to_owned()),
         "no phoning home: {mail:?}"
     );

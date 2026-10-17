@@ -49,6 +49,7 @@ fn render_for(paths: &CrisolPaths, sites: &[NginxSite<'_>], pools: &PhpPools) ->
         tls: None,
         sites,
         pools,
+        mail: None,
     })
 }
 
@@ -233,6 +234,7 @@ fn the_port_is_in_the_files_that_listen_and_nowhere_else_is_it_decided() {
         tls: None,
         sites: &sites,
         pools: &pools,
+        mail: None,
     });
     for name in ["nginx.conf", "sites/shop.conf"] {
         assert!(
@@ -347,6 +349,7 @@ fn written(paths: &CrisolPaths, names: &[&str]) -> WrittenNginx {
             tls: None,
             sites: &entries,
             pools: &pools,
+            mail: None,
         },
         &crate::paths::fake::FakePrivateDirs::new(),
     )
@@ -528,6 +531,7 @@ fn real_nginx_accepts_the_generated_configuration_and_serves_from_it() {
             tls: None,
             sites: &sites,
             pools: &pools,
+            mail: None,
         },
         &crate::paths::fake::FakePrivateDirs::new(),
     )
@@ -668,6 +672,7 @@ fn staged_input<'a>(
         tls: None,
         sites,
         pools,
+        mail: None,
     }
 }
 
@@ -848,6 +853,7 @@ fn render_tls(sites: &[NginxSite<'_>], tls: Option<(u16, &(PathBuf, PathBuf))>) 
         }),
         sites,
         pools: &pools,
+        mail: None,
     })
 }
 
@@ -1092,4 +1098,60 @@ fn every_listen_is_duplicated_on_ipv6_loopback_including_the_default_servers_and
         );
         assert!(conf.contains("listen [::1]:80;"), "{conf}");
     }
+}
+
+#[test]
+fn mailpit_is_a_name_of_nginx_that_forwards_with_the_name_the_browser_used() {
+    let paths = home();
+    let dir = nginx_dir();
+    let pools = PhpPools::allocate([] as [&str; 0], 9100, 2);
+    let route = MailRoute {
+        domain: "mail.test".to_owned(),
+        port: 8025,
+    };
+    let rendered = render(&NginxInput {
+        paths: &paths,
+        nginx_dir: &dir,
+        http_port: 8080,
+        tls: None,
+        sites: &[],
+        pools: &pools,
+        mail: Some(&route),
+    });
+    let text = normalised(&rendered.files["sites/_mail.conf"]);
+    assert!(text.contains("server_name mail.test;"), "{text}");
+    assert!(text.contains("listen 127.0.0.1:8080;"), "{text}");
+    assert!(text.contains("proxy_pass http://127.0.0.1:8025;"), "{text}");
+    // The name is passed on (Mailpit answers only to it) and the live page (a WebSocket) works.
+    assert!(text.contains("proxy_set_header Host $host;"), "{text}");
+    assert!(
+        text.contains("proxy_set_header Upgrade $http_upgrade;"),
+        "{text}"
+    );
+    assert_eq!(rendered.warnings, Vec::<String>::new());
+    assert!(
+        rendered.files["nginx.conf"].contains("include "),
+        "the main file includes sites/*.conf"
+    );
+
+    // Without Mailpit there is no such name: Nginx closes the connection for it.
+    let without = render_for(&paths, &[], &pools);
+    assert!(!without.files.contains_key("sites/_mail.conf"));
+
+    // A name that is not a plain host name is not written.
+    let odd = MailRoute {
+        domain: "mail.test; evil".to_owned(),
+        port: 8025,
+    };
+    let refused = render(&NginxInput {
+        paths: &paths,
+        nginx_dir: &dir,
+        http_port: 80,
+        tls: None,
+        sites: &[],
+        pools: &pools,
+        mail: Some(&odd),
+    });
+    assert!(!refused.files.contains_key("sites/_mail.conf"));
+    assert_eq!(refused.warnings.len(), 1, "{:?}", refused.warnings);
 }

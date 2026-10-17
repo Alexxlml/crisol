@@ -160,6 +160,7 @@ fn generating_the_nginx_configuration_is_blocked_by_an_open_home() {
         tls: None,
         sites: &[],
         pools: &pools,
+        mail: None,
     };
     let dirs = open_home(&paths);
     let before = tree(paths.home());

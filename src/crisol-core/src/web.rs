@@ -36,8 +36,8 @@ use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
 use crate::manage::InstalledVersion;
 use crate::nginx::{
-    config_differs, render, stage_nginx_config, write_nginx_config, NginxError, NginxInput,
-    NginxSite, NginxTls, PhpPools,
+    config_differs, render, stage_nginx_config, write_nginx_config, MailRoute, NginxError,
+    NginxInput, NginxSite, NginxTls, PhpPools,
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
@@ -80,6 +80,8 @@ pub struct WebPlan {
     pub sites: Vec<PlannedSite>,
     /// Problems worth showing: sites left out, a PHP that is not installed.
     pub warnings: Vec<String>,
+    /// Mailpit as `mail.<tld>`, when it is enabled.
+    pub mail: Option<MailRoute>,
 }
 
 impl WebPlan {
@@ -112,6 +114,7 @@ pub fn plan_from(
     WebPlan {
         sites: planned,
         warnings,
+        mail: None,
     }
 }
 
@@ -163,6 +166,13 @@ pub fn plan_web(
         }
     };
     let mut plan = plan_from(found.sites, found.warnings, &mut php_for);
+    // Mailpit's page is a name of Nginx's, not a port to remember (and to be rebound to).
+    if config.services.mailpit.enabled {
+        plan.mail = Some(MailRoute {
+            domain: format!("mail.{}", config.sites.tld),
+            port: config.services.mailpit.port,
+        });
+    }
     for warning in resolution_warnings {
         if !plan.warnings.contains(&warning) {
             plan.warnings.push(warning);
@@ -246,6 +256,8 @@ struct Desired {
     pools: PhpPools,
     /// The certificate of the secured sites, if there is one for them.
     tls: Option<TlsDesired>,
+    /// Mailpit as `mail.<tld>`.
+    mail: Option<MailRoute>,
     /// The certificate changed but the text of the configuration did not: Nginx still has to
     /// reload to pick the new one up.
     force_reload: bool,
@@ -472,6 +484,7 @@ impl WebStack {
                 })
                 .collect(),
             pools: self.ports.clone(),
+            mail: plan.mail.clone(),
             tls,
             force_reload: certificate.is_some(),
         };
@@ -576,6 +589,7 @@ impl WebStack {
             http_port: self.http_port,
             sites: entries,
             pools: &desired.pools,
+            mail: desired.mail.as_ref(),
             tls: desired.tls.as_ref().map(|tls| NginxTls {
                 cert: &tls.cert,
                 key: &tls.key,

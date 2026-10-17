@@ -132,6 +132,7 @@ fn real_workers_are_recycled_behind_nginx_and_the_pool_stays_running() {
             tls: None,
             sites: &sites,
             pools: &pools,
+            mail: None,
         },
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )

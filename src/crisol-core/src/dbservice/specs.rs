@@ -423,6 +423,12 @@ fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
                 ])
                 .arg("--database")
                 .arg(data.join("mailpit.db"))
+                // Only the name Nginx serves it under: a page that makes the browser reach
+                // `127.0.0.1:<port>` under another name (DNS rebinding) gets nothing.
+                .args([
+                    "--allowed-hosts",
+                    plan.host.as_deref().unwrap_or("mail.test"),
+                ])
                 // Nothing leaves this computer, not even a look for a newer version.
                 .arg("--disable-version-check");
         }
@@ -547,9 +553,10 @@ pub fn credentials(plan: &DbPlan, secret: Option<&Secret>) -> Credentials {
             ));
             lines.push(pair("MAIL_USERNAME", "null"));
             lines.push(pair("MAIL_PASSWORD", "null"));
-            notes.push(
-                "Mailpit has no password for SMTP; read the mail at its web address.".to_owned(),
-            );
+            notes.push(format!(
+                "Mailpit has no password for SMTP. Read the mail at http://{}/ (Nginx serves it under that name; Mailpit answers to no other).",
+                plan.host.as_deref().unwrap_or("mail.test")
+            ));
         }
         DbKind::Mongodb => {
             lines.push(pair("MONGODB_HOST", "127.0.0.1"));

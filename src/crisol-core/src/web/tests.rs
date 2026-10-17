@@ -1430,3 +1430,15 @@ fn a_rejected_first_configuration_names_the_program_that_holds_the_port() {
     );
     assert!(!reason.contains("  "), "{reason}");
 }
+
+#[test]
+fn the_plan_has_a_mail_name_only_when_mailpit_is_enabled() {
+    let mut rig = Rig::new(&[]);
+    assert_eq!(rig.plan().mail, None);
+    rig.config.services.mailpit.enabled = true;
+    rig.config.services.mailpit.port = 19025;
+    let plan = rig.plan();
+    let mail = plan.mail.expect("Mailpit is enabled");
+    assert_eq!(mail.domain, format!("mail.{}", rig.config.sites.tld));
+    assert_eq!(mail.port, 19025);
+}

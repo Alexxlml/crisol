@@ -311,6 +311,9 @@ pub struct DbPlan {
     pub port: u16,
     /// A second port (Mailpit's SMTP).
     pub extra_port: Option<u16>,
+    /// The name Nginx serves the service under (`mail.test` for Mailpit); the service itself
+    /// answers to no other.
+    pub host: Option<String>,
     /// `data/<service>/<series>/`.
     pub data: PathBuf,
     /// `data/<service>/<series>.init/`: where it is made first.
@@ -361,6 +364,7 @@ pub fn plan(paths: &CrisolPaths, config: &Config, kind: DbKind) -> Result<DbPlan
             .join(&series)
             .join(kind.descriptor().config_file.unwrap_or("none")),
         extra_port: kind.descriptor().extra_port.map(|port| port(config)),
+        host: (kind == DbKind::Mailpit).then(|| format!("mail.{}", config.sites.tld)),
         overrides: paths.overrides_for(service)?,
         secrets: paths.secrets_dir(),
         error_log: paths.logs_for(service)?.join("error.log"),
