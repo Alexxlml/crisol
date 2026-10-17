@@ -802,6 +802,15 @@ enabled = true
 }
 
 #[test]
+fn doctor_says_nothing_of_the_ca_bundle_when_nothing_was_left_out() {
+    let rig = Rig::new(&[]);
+    let found = checks(rig.call(&Call::Doctor).unwrap())
+        .into_iter()
+        .any(|c| c.name == "php ca bundle");
+    assert!(!found);
+}
+
+#[test]
 fn doctor_lists_a_service_with_data_in_two_series() {
     let rig = Rig::new(&[]);
     let named = |rig: &Rig| {

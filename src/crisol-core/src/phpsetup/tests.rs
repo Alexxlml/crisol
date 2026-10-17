@@ -124,3 +124,36 @@ fn the_installed_versions_are_listed() {
     found.sort();
     assert_eq!(found, ["8.3.35", "8.4.26"]);
 }
+
+struct CodeSigningOnly;
+
+impl crate::cacert::RootCertificates for CodeSigningOnly {
+    fn trusted_roots(&self) -> std::io::Result<Vec<crate::cacert::SystemRoot>> {
+        Ok(vec![crate::cacert::SystemRoot {
+            der: vec![1, 2, 3],
+            usages: Some(vec!["1.3.6.1.5.5.7.3.3".to_owned()]),
+            partially_distrusted: false,
+        }])
+    }
+
+    fn disallowed_roots(&self) -> std::io::Result<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn roots_left_out_of_the_bundle_are_a_note_not_a_warning() {
+    // W1 of the review of phase 9: `crisol start` shows the warnings, and this is not
+    // something the user can act on.
+    let (_tmp, paths) = home(&["8.4.26"], true);
+    let result = refresh_php(
+        &paths,
+        &PhpConfig::default(),
+        &versions(&["8.4.26"]),
+        &CodeSigningOnly,
+        &FakePrivateDirs::new(),
+    );
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.notes.len(), 1, "{:?}", result.notes);
+    assert!(result.notes[0].starts_with("1 system root(s) were left out"));
+}

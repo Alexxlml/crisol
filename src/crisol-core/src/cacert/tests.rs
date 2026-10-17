@@ -273,10 +273,11 @@ fn invalid_system_certificates_are_reported_not_fatal() {
         .unwrap();
     assert_eq!(written.added, 1);
     assert!(
-        written.warnings[0].contains("1 system certificate"),
+        written.notes[0].contains("1 system certificate"),
         "{:?}",
-        written.warnings
+        written.notes
     );
+    assert!(written.warnings.is_empty(), "{:?}", written.warnings);
 }
 
 #[test]
@@ -329,10 +330,12 @@ fn a_root_limited_to_code_signing_or_mail_is_not_added() {
         .unwrap();
     assert_eq!((written.added, written.omitted), (0, 3));
     assert!(
-        written.warnings[0].contains("3 system root"),
+        written.notes[0].contains("3 system root"),
         "{:?}",
-        written.warnings
+        written.notes
     );
+    // Nothing the user can act on: `crisol start` must not repeat it.
+    assert!(written.warnings.is_empty(), "{:?}", written.warnings);
     let text = fs::read_to_string(&written.path).unwrap();
     assert_eq!(
         pem_certificates(&text).len(),
@@ -539,12 +542,13 @@ fn the_written_file_leaves_out_a_distrusted_mozilla_root_names_it_and_says_it_is
     // One warning that counts them and names them.
     assert!(
         written
-            .warnings
+            .notes
             .iter()
             .any(|w| w.contains("1 certificate(s) of Mozilla's bundle") && w.contains(&first)),
         "{:?}",
-        written.warnings
+        written.notes
     );
+    assert!(written.warnings.is_empty(), "{:?}", written.warnings);
     // The comment at the top: not verbatim, which version, and who was left out.
     assert!(text.starts_with(
         "##

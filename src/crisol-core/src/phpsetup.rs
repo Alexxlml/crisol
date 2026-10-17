@@ -26,8 +26,10 @@ pub struct PhpRefresh {
     pub changed: Vec<String>,
     /// Versions whose `php.ini` is in place, changed or not.
     pub ready: Vec<String>,
-    /// Things worth telling the user.
+    /// Things the user may want to act on.
     pub warnings: Vec<String>,
+    /// Facts that need no action; for the daemon's log and `doctor`, not for `start`.
+    pub notes: Vec<String>,
 }
 
 /// The settings of the `php.ini` that come from `[php]` in `crisol.toml`.
@@ -78,7 +80,10 @@ pub fn refresh_php(
         }
     };
     match write_php_cacert_with(paths, roots, local_ca.as_ref(), dirs) {
-        Ok(Some(written)) => result.warnings.extend(written.warnings),
+        Ok(Some(written)) => {
+            result.warnings.extend(written.warnings);
+            result.notes.extend(written.notes);
+        }
         Ok(None) => result.warnings.push(
             "the CA bundle is not installed (`crisol install cacert`): PHP's cURL will not trust any HTTPS site"
                 .to_owned(),

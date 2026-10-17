@@ -306,9 +306,22 @@ pub struct WrittenCacert {
     /// System roots left out because their use is restricted to something other than TLS
     /// servers, or because the system partially distrusts them.
     pub omitted: usize,
-    /// Things worth telling the user (the system store could not be read, certificates
-    /// skipped).
+    /// Things the user may want to act on (the system store could not be read).
     pub warnings: Vec<String>,
+    /// Facts that need no action (certificates left out of the bundle and why). They go to the
+    /// daemon's log and to `crisol doctor`, not to `crisol start` (review of phase 9, W1).
+    pub notes: Vec<String>,
+}
+
+/// The bundle as it would be written, before anything touches the disk.
+struct Built {
+    text: String,
+    bundle_version: String,
+    excluded: Vec<String>,
+    added: usize,
+    omitted: usize,
+    warnings: Vec<String>,
+    notes: Vec<String>,
 }
 
 /// Builds `etc/php/cacert.pem` from the installed `cacert` package plus the system roots.
@@ -338,6 +351,40 @@ pub fn write_php_cacert_with(
     local_ca: Option<&LocalCa>,
     dirs: &dyn PrivateDirs,
 ) -> Result<Option<WrittenCacert>, PhpIniError> {
+    let Some(built) = build_php_cacert(paths, system, local_ca, dirs)? else {
+        return Ok(None);
+    };
+    let path = paths.php_cacert();
+    let changed = write_if_changed(&path, built.text.as_bytes())?;
+    Ok(Some(WrittenCacert {
+        path,
+        changed,
+        bundle_version: built.bundle_version,
+        excluded: built.excluded,
+        added: built.added,
+        omitted: built.omitted,
+        warnings: built.warnings,
+        notes: built.notes,
+    }))
+}
+
+/// The facts about the bundle that [`write_php_cacert_with`] would write, without writing it
+/// (what `crisol doctor` shows). `None` when no bundle is installed.
+pub fn php_cacert_notes(
+    paths: &CrisolPaths,
+    system: &dyn RootCertificates,
+    local_ca: Option<&LocalCa>,
+    dirs: &dyn PrivateDirs,
+) -> Result<Option<Vec<String>>, PhpIniError> {
+    Ok(build_php_cacert(paths, system, local_ca, dirs)?.map(|built| built.notes))
+}
+
+fn build_php_cacert(
+    paths: &CrisolPaths,
+    system: &dyn RootCertificates,
+    local_ca: Option<&LocalCa>,
+    dirs: &dyn PrivateDirs,
+) -> Result<Option<Built>, PhpIniError> {
     require_private_home(paths, dirs)?;
     let Some(bundle) = list_installed(paths)
         .map_err(|e| PhpIniError::Io {
@@ -358,6 +405,7 @@ pub fn write_php_cacert_with(
     })?;
 
     let mut warnings = Vec::new();
+    let mut notes = Vec::new();
     let roots = match system.trusted_roots() {
         Ok(roots) => roots,
         Err(error) => {
@@ -381,7 +429,7 @@ pub fn write_php_cacert_with(
     let (text, excluded_ders) = exclude_certificates(&text, &disallowed);
     let excluded: Vec<String> = excluded_ders.iter().map(|d| certificate_name(d)).collect();
     if !excluded.is_empty() {
-        warnings.push(format!(
+        notes.push(format!(
             "{} certificate(s) of Mozilla's bundle were left out because the system distrusts them: {}",
             excluded.len(),
             excluded.join(", ")
@@ -402,28 +450,26 @@ pub fn write_php_cacert_with(
         merged.text
     );
     if merged.skipped > 0 {
-        warnings.push(format!(
+        notes.push(format!(
             "{} system certificate(s) were not valid and were left out",
             merged.skipped
         ));
     }
 
     if omitted > 0 {
-        warnings.push(format!(
-            "{omitted} system root(s) were left out because of their use or a partial distrust"
+        notes.push(format!(
+            "{omitted} system root(s) were left out of PHP's CA bundle: their use is restricted to something other than TLS servers, or the system distrusts them in part"
         ));
     }
 
-    let path = paths.php_cacert();
-    let changed = write_if_changed(&path, merged.text.as_bytes())?;
-    Ok(Some(WrittenCacert {
-        path,
-        changed,
+    Ok(Some(Built {
+        text: merged.text,
         bundle_version: bundle.version.to_string(),
         excluded,
         added: merged.added,
         omitted,
         warnings,
+        notes,
     }))
 }
 

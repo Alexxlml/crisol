@@ -141,6 +141,9 @@ pub fn run(
             log_event(&event);
             let _ = events.send(event);
         }
+        for note in daemon.take_notes() {
+            info!("{note}");
+        }
         release(&mut daemon, &mut waiters, timing.settle);
         if !daemon.shutdown_requested() {
             continue;

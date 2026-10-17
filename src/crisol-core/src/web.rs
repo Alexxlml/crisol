@@ -301,6 +301,9 @@ pub struct Applied {
     pub certificate: Option<Renewal>,
     /// Sites left out of the configuration and other things worth saying.
     pub warnings: Vec<String>,
+    /// Facts that need no action (system roots left out of PHP's CA bundle): for the daemon's
+    /// log, not for the user's terminal.
+    pub notes: Vec<String>,
 }
 
 /// The configuration the stack wants: what [`WebStack::apply`] was last given, owned so that
@@ -567,6 +570,7 @@ impl WebStack {
         };
         let refreshed = self.refresh_php_files(&versions);
         tls_warnings.extend(refreshed.warnings);
+        let notes = refreshed.notes;
         let desired = Desired {
             sites: plan
                 .sites
@@ -630,6 +634,7 @@ impl WebStack {
             ca_created,
             certificate,
             warnings,
+            notes,
         })
     }
 

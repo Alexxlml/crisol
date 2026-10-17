@@ -619,6 +619,7 @@ impl Engine {
             self.check_shims(),
             self.check_sites(),
         ];
+        checks.extend(self.check_ca_bundle());
         checks.extend(self.check_memcached());
         checks.extend(self.check_data_series());
         checks.extend(self.deps.system.checks(&self.paths));
@@ -652,6 +653,31 @@ impl Engine {
                 "{}; the series are kept apart and nothing is migrated, so the one in use is the one the version pinned in crisol.toml (or the newest installed) selects",
                 lines.join("; ")
             ),
+            fix: None,
+        })
+    }
+
+    /// What was left out of PHP's CA bundle and why: information, with nothing to fix, so it
+    /// is here and in the daemon's log but not in `crisol start` (W1 of the review of phase 9).
+    fn check_ca_bundle(&self) -> Option<Check> {
+        let local_ca = crate::ca::load_ca(
+            &self.paths,
+            self.deps.dirs.as_ref(),
+            std::time::SystemTime::now(),
+        )
+        .ok()
+        .flatten();
+        let notes = crate::cacert::php_cacert_notes(
+            &self.paths,
+            self.deps.roots.as_ref(),
+            local_ca.as_ref(),
+            self.deps.dirs.as_ref(),
+        )
+        .ok()??;
+        (!notes.is_empty()).then(|| Check {
+            name: "php ca bundle".to_owned(),
+            status: CheckStatus::Ok,
+            detail: notes.join("; "),
             fix: None,
         })
     }

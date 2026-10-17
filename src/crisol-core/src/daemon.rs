@@ -56,6 +56,11 @@ pub struct Daemon {
     last_db_watch: Option<Instant>,
     /// The port changes already reported, so each is said once.
     reported_db_ports: Vec<String>,
+    /// Facts without an action for the user, from the last time the web stack was applied
+    /// (see [`Daemon::take_notes`]).
+    notes: Vec<String>,
+    /// The notes already handed out, so a reload does not repeat them.
+    reported_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +107,20 @@ impl Daemon {
             last_watch: None,
             last_db_watch: None,
             reported_db_ports: Vec::new(),
+            notes: Vec::new(),
+            reported_notes: Vec::new(),
         }
+    }
+
+    /// The notes that have not been handed out yet. They are for the daemon's log (W1 of the
+    /// review of phase 9): they need no action, so `start` does not show them; `doctor` does.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        let fresh: Vec<String> = std::mem::take(&mut self.notes)
+            .into_iter()
+            .filter(|n| !self.reported_notes.contains(n))
+            .collect();
+        self.reported_notes.extend(fresh.iter().cloned());
+        fresh
     }
 
     /// The engine, for operations that do not need the services.
@@ -554,6 +572,7 @@ impl Daemon {
             warnings: plan.warnings,
         };
         reply.warnings.extend(applied.warnings);
+        self.notes.extend(applied.notes);
         reply.warnings.extend(self.config_warnings());
         Ok(Reply::Done(reply))
     }
@@ -695,8 +714,12 @@ impl Daemon {
             // restart.
             stack.set_php_config(config.php.clone());
             match stack.apply(&plan, now) {
-                Ok(applied) if applied.reload_requested => events(Event::ReloadStarted),
-                Ok(_) => {}
+                Ok(applied) => {
+                    self.notes.extend(applied.notes);
+                    if applied.reload_requested {
+                        events(Event::ReloadStarted);
+                    }
+                }
                 Err(WebError::Home(error)) => events(Event::Blocked {
                     reason: format!("{} ({})", home_error(&error).message, home_fix(&error)),
                 }),
