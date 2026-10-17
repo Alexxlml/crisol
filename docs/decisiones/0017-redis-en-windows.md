@@ -40,3 +40,8 @@ Redis 8 (2025) volvió a una licencia con *copyleft* fuerte (AGPLv3 como opción
 - **Garnet:** **Lua está desactivado por defecto**; se enciende con `--lua` (las colas de Laravel lo usan). Es un `.exe` de 34 MB junto a su carpeta `net10.0/`, sin `.dll` ni `runtimeconfig` de él: parece autocontenido, pero esta máquina tiene .NET 10 instalado, así que **no se pudo comprobar** que no lo necesite. **Guarda los datos en memoria** salvo que se configure persistencia (no se configura): sirve de caché, no de almacén. Se detiene terminando el grupo (0,2 s).
 - **Diferencia de comportamiento medida:** un script `EVAL "return redis.call('set', KEYS[1], 'x')"` responde `+OK` (estado) en Redis y la cadena `$2 OK` en Garnet. Los clientes suelen tratarlos igual, pero es la clase de diferencia que justifica ofrecer las dos.
 - Una prueba real más amplia (Laravel/Horizon contra Garnet) sigue pendiente.
+
+### Memurai, reconsiderado (2026-10-16)
+
+Se miró de nuevo porque Chocolatey publica `memurai-developer.portable` 4.1.8 (noviembre de 2025): un ZIP sin servicio, con `memurai.exe` firmado con Authenticode por Janea Systems y compatible con la API de Redis 7.0. **No se añade**: su EULA exige aceptación, prohíbe el uso en producción y «compartir o distribuir», incluye una cláusula de recopilación de datos (choca con ADR-0004) y de actualizaciones automáticas, y la edición Developer actual dice requerir un reinicio cada 10 días (no comprobado en la 4.1.8). No se ejecutó para no aceptar la licencia en nombre del propietario. Si se retoma, hace falta un paso de aceptación de licencia en el catálogo y una prueba aislada de lo que envía. Decisión del propietario: quedarse con `redis` y `garnet`.
+
