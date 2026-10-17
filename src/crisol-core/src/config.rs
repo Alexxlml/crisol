@@ -172,6 +172,12 @@ single_port_service!(
     port: 6379
 );
 single_port_service!(
+    /// Garnet, Microsoft's server that speaks Redis's protocol. An alternative to `redis`: they
+    /// share port 6379 and only one of the two may be active (ADR-0017).
+    GarnetConfig,
+    port: 6379
+);
+single_port_service!(
     /// MongoDB.
     MongodbConfig,
     port: 27017
@@ -226,6 +232,8 @@ pub struct Services {
     pub postgresql: PostgresqlConfig,
     /// Redis.
     pub redis: RedisConfig,
+    /// Garnet (alternative to Redis).
+    pub garnet: GarnetConfig,
     /// MongoDB.
     pub mongodb: MongodbConfig,
     /// Memcached.
@@ -250,7 +258,8 @@ pub enum ConfigWarning {
     },
     /// `sites.tld` is not a name reserved for local use: it can be a real public domain.
     PublicTld(String),
-    /// MySQL and MariaDB are alternatives and cannot be enabled together (ADR-0007).
+    /// Two services that are alternatives cannot be enabled together: MySQL and MariaDB
+    /// (ADR-0007), Redis and Garnet (ADR-0017).
     ExclusiveServices {
         /// First service.
         first: String,
@@ -411,6 +420,7 @@ impl Config {
             ("services.mariadb.version", &s.mariadb.version),
             ("services.postgresql.version", &s.postgresql.version),
             ("services.redis.version", &s.redis.version),
+            ("services.garnet.version", &s.garnet.version),
             ("services.mongodb.version", &s.mongodb.version),
             ("services.memcached.version", &s.memcached.version),
             ("services.meilisearch.version", &s.meilisearch.version),
@@ -443,6 +453,7 @@ impl Config {
             ("services.mariadb.port", s.mariadb.port),
             ("services.postgresql.port", s.postgresql.port),
             ("services.redis.port", s.redis.port),
+            ("services.garnet.port", s.garnet.port),
             ("services.mongodb.port", s.mongodb.port),
             ("services.memcached.port", s.memcached.port),
             ("services.meilisearch.port", s.meilisearch.port),
@@ -468,6 +479,7 @@ impl Config {
             ("mariadb", s.mariadb.enabled, s.mariadb.port),
             ("postgresql", s.postgresql.enabled, s.postgresql.port),
             ("redis", s.redis.enabled, s.redis.port),
+            ("garnet", s.garnet.enabled, s.garnet.port),
             ("mongodb", s.mongodb.enabled, s.mongodb.port),
             ("memcached", s.memcached.enabled, s.memcached.port),
             ("meilisearch", s.meilisearch.enabled, s.meilisearch.port),
@@ -488,11 +500,17 @@ impl Config {
         if !crate::ca::is_special_use(&self.sites.tld) {
             warnings.push(ConfigWarning::PublicTld(self.sites.tld.clone()));
         }
-        if self.services.mysql.enabled && self.services.mariadb.enabled {
-            warnings.push(ConfigWarning::ExclusiveServices {
-                first: "mysql".to_owned(),
-                second: "mariadb".to_owned(),
-            });
+        let s = &self.services;
+        for (first, second, both) in [
+            ("mysql", "mariadb", s.mysql.enabled && s.mariadb.enabled),
+            ("redis", "garnet", s.redis.enabled && s.garnet.enabled),
+        ] {
+            if both {
+                warnings.push(ConfigWarning::ExclusiveServices {
+                    first: first.to_owned(),
+                    second: second.to_owned(),
+                });
+            }
         }
         let mut by_port: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
         for (port, name) in self.enabled_ports() {
@@ -502,8 +520,10 @@ impl Config {
             }
         }
         for (port, owners) in by_port {
-            let only_the_exclusive_pair =
-                owners.len() == 2 && owners.contains(&"mysql") && owners.contains(&"mariadb");
+            let only_the_exclusive_pair = owners.len() == 2
+                && [("mysql", "mariadb"), ("redis", "garnet")]
+                    .iter()
+                    .any(|(a, b)| owners.contains(a) && owners.contains(b));
             if owners.len() > 1 && !only_the_exclusive_pair {
                 warnings.push(ConfigWarning::PortConflict {
                     port,
@@ -768,6 +788,45 @@ mod tests {
             load("[sites]\ntld = \"dev.test\"\n").config.sites.tld,
             "dev.test"
         );
+    }
+
+    #[test]
+    fn redis_and_garnet_together_warn_as_exclusive_not_as_a_port_clash() {
+        let loaded = load(
+            "[services.redis]
+enabled = true
+[services.garnet]
+enabled = true
+",
+        );
+        assert_eq!(
+            loaded.warnings,
+            vec![ConfigWarning::ExclusiveServices {
+                first: "redis".to_owned(),
+                second: "garnet".to_owned()
+            }]
+        );
+        // Each one alone is fine, and on different ports they do not even clash.
+        let alone = load(
+            "[services.garnet]
+enabled = true
+",
+        );
+        assert_eq!(alone.warnings, Vec::<ConfigWarning>::new());
+        assert_eq!(Config::default().services.garnet.port, 6379);
+        // And Garnet against something that is not its alternative is a real clash.
+        let clash = load(
+            "[services.garnet]
+enabled = true
+[services.memcached]
+enabled = true
+port = 6379
+",
+        );
+        assert!(matches!(
+            clash.warnings.as_slice(),
+            [ConfigWarning::PortConflict { port: 6379, .. }]
+        ));
     }
 
     #[test]

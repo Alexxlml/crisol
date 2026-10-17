@@ -476,3 +476,113 @@ fn two_series_of_one_database_keep_their_data_apart_and_switching_loses_nothing(
     assert!(world.paths.data_for("mariadb", "10.11").unwrap().is_dir());
     assert!(world.paths.data_for("mariadb", "11.8").unwrap().is_dir());
 }
+
+// ---- Redis and Garnet (F9.3, ADR-0017) ----------------------------------------------------
+
+/// One command of the Redis protocol over a plain socket, answer as text.
+fn resp(port: u16, args: &[&str]) -> String {
+    use std::fmt::Write as _;
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut command = format!("*{}\r\n", args.len());
+    for arg in args {
+        let _ = write!(
+            command,
+            "${}
+{arg}
+",
+            arg.len()
+        );
+    }
+    stream.write_all(command.as_bytes()).unwrap();
+    let mut buffer = [0_u8; 256];
+    let read = stream.read(&mut buffer).unwrap_or(0);
+    String::from_utf8_lossy(&buffer[..read]).into_owned()
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with Redis-x64-5.0.14.1.zip (Windows)"]
+fn redis_5_runs_saves_on_shutdown_and_has_its_data_back() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.redis]\nenabled = true\nport = 19379\n");
+    install_from_downloads(&world.paths, "redis", "5.0.14.1");
+    run_and_wait(&mut world, DbKind::Redis);
+    assert!(resp(19379, &["PING"]).starts_with("+PONG"));
+    assert!(resp(19379, &["SET", "crisol", "42"]).starts_with("+OK"));
+    let stopped = stop_and_wait(&mut world, DbKind::Redis);
+    println!("redis: stop took {stopped:?}");
+    assert!(
+        stopped < Duration::from_secs(10),
+        "the graceful stop fell back to the kill"
+    );
+    // `SHUTDOWN` saved the data, and the second start reads it.
+    let data = world.paths.data_for("redis", "5.0").unwrap();
+    assert!(
+        data.join("dump.rdb").is_file(),
+        "{:?}",
+        fs::read_dir(&data).map(Iterator::count)
+    );
+    run_and_wait(&mut world, DbKind::Redis);
+    assert!(resp(19379, &["GET", "crisol"]).contains("42"));
+    stop_and_wait(&mut world, DbKind::Redis);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with win-x64-based-readytorun.zip of Garnet (Windows)"]
+fn garnet_answers_the_redis_protocol_on_the_loopback() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.garnet]\nenabled = true\nport = 19380\n");
+    install_from_downloads(&world.paths, "garnet", "2.2.3");
+    run_and_wait(&mut world, DbKind::Garnet);
+    assert!(resp(19380, &["PING"]).starts_with("+PONG"));
+    assert!(resp(19380, &["SET", "crisol", "42"]).starts_with("+OK"));
+    assert!(resp(19380, &["GET", "crisol"]).contains("42"));
+    // What Laravel\'s queues need: Lua, lists and expiry.
+    let lua = resp(
+        19380,
+        &["EVAL", "return redis.call('set', KEYS[1], 'x')", "1", "k"],
+    );
+    println!("garnet EVAL answered: {lua:?}");
+    // A difference with Redis, found here: a script that returns the status reply of `SET`
+    // gets `+OK` from Redis and the bulk string `$2 OK` from Garnet (ADR-0017).
+    assert!(lua.contains("OK"), "{lua}");
+    assert!(resp(19380, &["RPUSH", "q", "a"]).starts_with(":1"));
+    assert!(resp(19380, &["EXPIRE", "q", "100"]).starts_with(":1"));
+    println!(
+        "garnet: stop took {:?}",
+        stop_and_wait(&mut world, DbKind::Garnet)
+    );
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with both Redis and Garnet archives (Windows)"]
+fn redis_and_garnet_cannot_run_together_on_6379_and_the_second_is_told_who_has_it() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.redis]\nport = 19381\n[services.garnet]\nport = 19381\n");
+    install_from_downloads(&world.paths, "redis", "5.0.14.1");
+    install_from_downloads(&world.paths, "garnet", "2.2.3");
+    run_and_wait(&mut world, DbKind::Redis);
+    let error = world
+        .stack
+        .start(DbKind::Garnet, Instant::now())
+        .unwrap_err();
+    assert!(
+        error.message.contains("redis is running on port 19381"),
+        "{}",
+        error.message
+    );
+    stop_and_wait(&mut world, DbKind::Redis);
+    // Once Redis is down, Garnet may take the port.
+    run_and_wait(&mut world, DbKind::Garnet);
+    assert!(resp(19381, &["PING"]).starts_with("+PONG"));
+    stop_and_wait(&mut world, DbKind::Garnet);
+}

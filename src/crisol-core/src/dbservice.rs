@@ -56,17 +56,23 @@ pub enum DbKind {
     Mailpit,
     /// Meilisearch.
     Meilisearch,
+    /// Redis (the port for Windows of tporadowski, 5.0.x).
+    Redis,
+    /// Garnet: Microsoft's server that speaks Redis's protocol. Not Redis (ADR-0017).
+    Garnet,
 }
 
 impl DbKind {
     /// All of them, MySQL first.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Mysql,
         Self::Mariadb,
         Self::Postgres,
         Self::Mongodb,
         Self::Mailpit,
         Self::Meilisearch,
+        Self::Redis,
+        Self::Garnet,
     ];
 
     /// The name of the service (`mysql`, `mariadb`): in the catalog, in `crisol.toml` and in
@@ -80,6 +86,8 @@ impl DbKind {
             Self::Mongodb => "mongodb",
             Self::Mailpit => "mailpit",
             Self::Meilisearch => "meilisearch",
+            Self::Redis => "redis",
+            Self::Garnet => "garnet",
         }
     }
 
@@ -98,6 +106,8 @@ impl DbKind {
             Self::Mongodb => "bin/mongod.exe",
             Self::Mailpit => "mailpit.exe",
             Self::Meilisearch => "meilisearch-windows-amd64.exe",
+            Self::Redis => "redis-server.exe",
+            Self::Garnet => "net10.0/GarnetServer.exe",
         }
     }
 
@@ -106,7 +116,7 @@ impl DbKind {
         match self {
             Self::Mysql | Self::Mariadb => Some("my.ini"),
             Self::Postgres => Some("postgresql.conf"),
-            Self::Mongodb | Self::Mailpit | Self::Meilisearch => None,
+            Self::Mongodb | Self::Mailpit | Self::Meilisearch | Self::Redis | Self::Garnet => None,
         }
     }
 
@@ -134,6 +144,8 @@ impl DbKind {
             Self::Mongodb => config.services.mongodb.enabled,
             Self::Mailpit => config.services.mailpit.enabled,
             Self::Meilisearch => config.services.meilisearch.enabled,
+            Self::Redis => config.services.redis.enabled,
+            Self::Garnet => config.services.garnet.enabled,
         }
     }
 
@@ -147,6 +159,8 @@ impl DbKind {
             Self::Mongodb => config.services.mongodb.port,
             Self::Mailpit => config.services.mailpit.port,
             Self::Meilisearch => config.services.meilisearch.port,
+            Self::Redis => config.services.redis.port,
+            Self::Garnet => config.services.garnet.port,
         }
     }
 
@@ -163,6 +177,8 @@ impl DbKind {
             Self::Mongodb => config.services.mongodb.version.as_deref(),
             Self::Mailpit => config.services.mailpit.version.as_deref(),
             Self::Meilisearch => config.services.meilisearch.version.as_deref(),
+            Self::Redis => config.services.redis.version.as_deref(),
+            Self::Garnet => config.services.garnet.version.as_deref(),
         }
     }
 
@@ -412,7 +428,11 @@ pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
 pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
     match plan.kind {
         DbKind::Postgres => return postgres_spec(plan),
-        DbKind::Mongodb | DbKind::Mailpit | DbKind::Meilisearch => return simple_spec(plan),
+        DbKind::Mongodb
+        | DbKind::Mailpit
+        | DbKind::Meilisearch
+        | DbKind::Redis
+        | DbKind::Garnet => return simple_spec(plan),
         DbKind::Mysql | DbKind::Mariadb => {}
     }
     let admin = ProcessSpec::new(plan.program("bin/mysqladmin.exe"))
@@ -483,6 +503,31 @@ fn simple_spec(plan: &DbPlan) -> ServiceSpec {
                 // ADR-0004: no telemetry.
                 .arg("--no-analytics");
         }
+        DbKind::Redis => {
+            // Loopback only, with the protection Redis has for that; the data (the RDB file) in
+            // its own folder. `--maxmemory` is what the port for Windows needs to size the heap
+            // it uses to save in the background.
+            process = process
+                .args(["--bind", "127.0.0.1", "--port", &plan.port.to_string()])
+                .args(["--protected-mode", "yes", "--maxmemory", "512mb"])
+                // Started without a configuration file the Windows port saves nothing, not even
+                // on `SHUTDOWN`: the usual save points are asked for (found with the real one).
+                .args([
+                    "--save", "900", "1", "--save", "300", "100", "--save", "60", "10000",
+                ])
+                .arg("--dir")
+                .arg(data);
+        }
+        DbKind::Garnet => {
+            // Garnet keeps its keys in memory unless it is told to persist (checkpoints/AOF):
+            // a cache is what it is used for here. It sends no telemetry.
+            process = process
+                .args(["--bind", "127.0.0.1", "--port", &plan.port.to_string()])
+                .arg("--checkpointdir")
+                .arg(data.join("checkpoints"))
+                // Lua is off by default, and Laravel's queues use it.
+                .arg("--lua");
+        }
         DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres => {}
     }
     let ports: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
@@ -495,6 +540,16 @@ fn simple_spec(plan: &DbPlan) -> ServiceSpec {
         });
     for port in ports {
         spec = spec.port(port);
+    }
+    if plan.kind == DbKind::Redis {
+        // `SHUTDOWN` saves the data if there are save points, then leaves.
+        spec = spec.graceful_stop(ProcessSpec::new(plan.program("redis-cli.exe")).args([
+            "-h",
+            "127.0.0.1",
+            "-p",
+            &plan.port.to_string(),
+            "shutdown",
+        ]));
     }
     spec
 }

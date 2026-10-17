@@ -537,11 +537,8 @@ fn load_update_is_the_door_for_outside_catalogs_and_checks_signature_and_serial(
         )
     );
 
-    // And the signed fixture is newer than the built-in catalog.
-    let embedded = Catalog::embedded().unwrap().serial();
-    assert!(
-        Catalog::load_update_with(SIGNED_CATALOG, SIGNATURE, Some(PUBLIC_KEY), embedded).is_ok()
-    );
+    // (The fixture's serial is fixed and signed; the built-in catalog moves past it with every
+    // new entry, so it is not compared with it.)
 
     let tampered = SIGNED_CATALOG.replace("serial", "serial ");
     let forged = Catalog::load_update_with(&tampered, SIGNATURE, Some(PUBLIC_KEY), 0);
@@ -591,6 +588,7 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
         [
             "cacert",
             "composer",
+            "garnet",
             "mailpit",
             "mariadb",
             "meilisearch",
@@ -599,7 +597,8 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
             "nginx",
             "node",
             "php",
-            "postgresql"
+            "postgresql",
+            "redis"
         ]
     );
     assert!(catalog.packages().iter().all(|p| p.target == WINDOWS));
@@ -664,6 +663,10 @@ fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
                 Some(format!("mariadb-{version}-winx64")),
             ),
             "mailpit" => (ArchiveFormat::Zip, "mailpit.exe", None),
+            // Redis for Windows (tporadowski) and Garnet: the files at the top of the zip, or
+            // under the folder of the runtime it was built for.
+            "redis" => (ArchiveFormat::Zip, "redis-server.exe", None),
+            "garnet" => (ArchiveFormat::Zip, "net10.0/GarnetServer.exe", None),
             "meilisearch" => (ArchiveFormat::File, "meilisearch-windows-amd64.exe", None),
             "mongodb" => (
                 ArchiveFormat::Zip,
@@ -764,11 +767,10 @@ fn the_built_in_catalog_recommends_php_8_4_and_marks_7_4_as_unsupported() {
     assert_eq!(old.version.to_string(), "7.4.33");
     assert!(old.end_of_life);
     assert!(catalog.is_end_of_life("php", &old.version));
-    for package in catalog
-        .packages()
-        .iter()
-        .filter(|p| p.service != "php" || !p.version.to_string().starts_with("7."))
-    {
+    for package in catalog.packages().iter().filter(|p| {
+        // PHP 7.4 and the port of Redis 5 (ADR-0012, ADR-0017) are the unsupported ones.
+        !(p.service == "php" && p.version.to_string().starts_with("7.")) && p.service != "redis"
+    }) {
         assert!(
             !package.end_of_life,
             "{} is not end of life",

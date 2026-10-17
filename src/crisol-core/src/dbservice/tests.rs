@@ -594,3 +594,60 @@ fn a_simple_service_is_ready_when_all_its_ports_listen_and_stops_by_ending_its_g
     db.tick(rig.at(2200));
     assert_eq!(*db.state(), ServiceState::Stopped);
 }
+
+#[test]
+fn redis_and_garnet_listen_on_this_computer_only_and_redis_is_stopped_with_shutdown() {
+    let mut rig = Rig::new();
+    rig.config.services.redis.port = 19379;
+    rig.config.services.garnet.port = 19380;
+
+    let (redis, plan, mut db) = started_args(&rig, DbKind::Redis, ("redis", "5.0.14.1"));
+    assert_eq!(plan.series, "5.0");
+    assert!(
+        redis.windows(2).any(|w| w == ["--bind", "127.0.0.1"]),
+        "{redis:?}"
+    );
+    assert!(
+        redis.windows(2).any(|w| w == ["--port", "19379"]),
+        "{redis:?}"
+    );
+    assert!(
+        redis.windows(2).any(|w| w == ["--protected-mode", "yes"]),
+        "{redis:?}"
+    );
+    assert!(
+        redis.contains(&plan.data.display().to_string()),
+        "{redis:?}"
+    );
+    rig.listen(19379);
+    db.tick(rig.at(700));
+    assert_eq!(*db.state(), ServiceState::Running);
+    db.stop(rig.at(1000));
+    let helper = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(helper.spec.program.ends_with("redis-cli.exe"));
+    assert!(words(&helper.spec).contains(&"shutdown".to_owned()));
+
+    let (garnet, plan, _db) = started_args(&rig, DbKind::Garnet, ("garnet", "2.2.3"));
+    assert_eq!(plan.series, "2.2");
+    assert!(
+        garnet.windows(2).any(|w| w == ["--bind", "127.0.0.1"]),
+        "{garnet:?}"
+    );
+    assert!(
+        garnet.windows(2).any(|w| w == ["--port", "19380"]),
+        "{garnet:?}"
+    );
+    let program = rig
+        .supervisor
+        .spawned()
+        .last()
+        .unwrap()
+        .spec
+        .program
+        .clone();
+    assert!(
+        program.ends_with("net10.0/GarnetServer.exe")
+            || program.ends_with(r"net10.0\GarnetServer.exe"),
+        "{program:?}"
+    );
+}

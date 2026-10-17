@@ -1,6 +1,6 @@
 # ADR-0017 — Redis en Windows
 
-- **Estado:** **propuesta, a la espera del propietario** (F9.3 no se implementa hasta que se decida)
+- **Estado:** aceptada (el propietario eligió la opción 3, 2026-10-16) e implementada
 - **Fecha:** 2026-10-16
 
 ## Contexto
@@ -27,4 +27,16 @@ Redis 8 (2025) volvió a una licencia con *copyleft* fuerte (AGPLv3 como opción
 
 ## Decisión
 
-**Pendiente** (pregunta al propietario en `claude/ESTADO.md`). No se ha tocado el catálogo ni el código para Redis. Si se elige 1 o 3, la implementación sigue el patrón de ADR-0016 (plan, configuración generada, datos por serie, salud por puerto con `PING`, parada ordenada con `SHUTDOWN NOSAVE`/`SAVE`), tras la comprobación de compatibilidad indicada.
+**Opción 3: se ofrecen las dos, con nombres distintos y como alternativas excluyentes.** El propietario prefirió ofrecer opciones a casarse con una; lo único que Crisol hace es evitar que corran las dos a la vez.
+
+- **`redis`** = el *port* de tporadowski, 5.0.14.1, marcado `end_of_life` en el catálogo (el que suelen traer las suites locales para Windows). Es Redis de verdad, pero sin parches.
+- **`garnet`** = Garnet 2.2.3 de Microsoft: mantenido y MIT, pero **no es Redis**.
+- Comparten el puerto 6379 y son **excluyentes**: arrancar la segunda con la primera activa se rechaza con `Conflict` (quién tiene el puerto y `crisol stop <la otra>`); `crisol.toml` con las dos `enabled = true` da el aviso de «alternativas» (como MySQL y MariaDB, ADR-0007). Con puertos distintos, pueden convivir.
+- Implementado con el patrón de ADR-0016 (F9.3).
+
+### Lo que se encontró con los binarios reales
+
+- **Redis 5 (tporadowski):** arrancado solo con argumentos, **no guarda nada, ni con `SHUTDOWN`** (`config get save` vacío); por eso se piden los puntos de guardado habituales (`--save 900 1 …`). Se fija `--maxmemory 512mb` (el *port* lo usa para dimensionar el montón del guardado en segundo plano) y `--protected-mode yes` con `--bind 127.0.0.1`. Se detiene con `redis-cli shutdown` (0,3 s) y los datos vuelven tras reiniciar (`dump.rdb`).
+- **Garnet:** **Lua está desactivado por defecto**; se enciende con `--lua` (las colas de Laravel lo usan). Es un `.exe` de 34 MB junto a su carpeta `net10.0/`, sin `.dll` ni `runtimeconfig` de él: parece autocontenido, pero esta máquina tiene .NET 10 instalado, así que **no se pudo comprobar** que no lo necesite. **Guarda los datos en memoria** salvo que se configure persistencia (no se configura): sirve de caché, no de almacén. Se detiene terminando el grupo (0,2 s).
+- **Diferencia de comportamiento medida:** un script `EVAL "return redis.call('set', KEYS[1], 'x')"` responde `+OK` (estado) en Redis y la cadena `$2 OK` en Garnet. Los clientes suelen tratarlos igual, pero es la clase de diferencia que justifica ofrecer las dos.
+- Una prueba real más amplia (Laravel/Horizon contra Garnet) sigue pendiente.

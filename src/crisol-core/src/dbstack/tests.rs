@@ -209,3 +209,38 @@ fn abort_leaves_nothing_running() {
     rig.stack.abort();
     assert!(rig.stack.is_stopped());
 }
+
+#[test]
+fn redis_and_garnet_share_6379_so_only_one_runs_and_the_second_is_told_why() {
+    let mut rig = Rig::new(
+        "[services.redis]
+port = 19379
+[services.garnet]
+port = 19379
+",
+    );
+    for (service, version) in [("redis", "5.0.14.1"), ("garnet", "2.2.3")] {
+        let dir = rig.paths.bin_for(service, version).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+    }
+    rig.stack.start(DbKind::Redis, rig.at(0)).unwrap();
+    let error = rig.stack.start(DbKind::Garnet, rig.at(10)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(
+        error.message.contains("redis is running on port 19379")
+            && error.message.contains("crisol stop redis"),
+        "{}",
+        error.message
+    );
+    // With another port for Garnet they live together.
+    fs::write(
+        rig.paths.config_file(),
+        "[services.redis]
+port = 19379
+[services.garnet]
+port = 19380
+",
+    )
+    .unwrap();
+    rig.stack.start(DbKind::Garnet, rig.at(20)).unwrap();
+}

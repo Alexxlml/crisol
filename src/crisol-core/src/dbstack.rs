@@ -107,7 +107,7 @@ impl DbStack {
                 return Err(RpcError::new(
                     ErrorCode::Conflict,
                     format!(
-                        "{} is running on port {}, which {} would use too (MySQL and MariaDB are \
+                        "{} is running on port {}, which {} would use too (they are \
                          alternatives, only one at a time). Stop it first with `crisol stop {}`, \
                          or give one of them another port in crisol.toml",
                         other.service(),

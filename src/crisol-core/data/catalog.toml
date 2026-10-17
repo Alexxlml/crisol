@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 7
+serial = 8
 generated = "2026-10-14"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -264,4 +264,33 @@ format = "zip"
 root = "mongodb-win32-x86_64-windows-8.0.34"
 executable = "bin/mongod.exe"
 size = 807616685
+
+# Redis on Windows (F9.3, ADR-0017). There is no official build. Two alternatives that share port
+# 6379 (only one runs at a time): `redis`, the unofficial port of the original Redis by
+# tporadowski (5.0.14.1, February 2022, no longer patched, so `end_of_life`), whose releases carry
+# no hash or signature (the SHA-256 is identical on two downloads: lower certainty), and `garnet`,
+# Microsoft's server that speaks Redis's protocol (not Redis), whose release assets carry the
+# SHA-256 GitHub records.
+[[package]]
+service = "redis"
+version = "5.0.14.1"
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip"
+sha256 = "018ea18a35876383cbb5f4cd0258adfc87747cf9d619bce1cf73a2e36f720ccf"
+format = "zip"
+executable = "redis-server.exe"
+size = 12617669
+end_of_life = true
+
+[[package]]
+service = "garnet"
+version = "2.2.3"
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/microsoft/garnet/releases/download/v2.2.3/win-x64-based-readytorun.zip"
+sha256 = "5cd130686ab415b13c59d36d048a6faded81e707ffe6da5953f98beeb79f9f16"
+format = "zip"
+executable = "net10.0/GarnetServer.exe"
+size = 26078483
 
