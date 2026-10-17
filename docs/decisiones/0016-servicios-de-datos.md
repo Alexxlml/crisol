@@ -26,3 +26,16 @@ La Fase 9 añade MySQL, MariaDB, PostgreSQL y otros servicios que, a diferencia 
 - `Daemon` conoce a `DbStack`; `status` lista las bases instaladas (paradas) y las arrancadas.
 - Pruebas reales a pedido (`crisol-platform/tests/databases.rs`) con los binarios oficiales en los puertos 19306 a 19308, 19432 a 19433, 19017, 19025/19026 y 19700: primer arranque con inicialización (1,7 s MariaDB, 4,5 s MySQL, 6,3 s PostgreSQL), consulta, datos persistentes, parada ordenada (0,25 s, 1,0 s y 0,25 s), segundo arranque sin reinicializar.
 - Los servicios siguientes (PostgreSQL, Redis, Mailpit…) reutilizan el patrón: plan, configuración generada, inicialización en `.init`, parada ordenada y estado propio.
+
+## Corrección (2026-10-17, revisión de la Fase 9)
+
+Decidida por el propietario a partir de `claude/revisiones/2026-10-17-opus-fase9.md`. Sustituye a «root sin contraseña» de los puntos 5 y 9. Pendiente de implementar.
+
+- **Contraseñas generadas.** `127.0.0.1` protege de la red, pero no de otras cuentas del equipo: con un superusuario sin contraseña, otra cuenta puede ejecutar código con tu usuario (PostgreSQL `COPY … TO PROGRAM`, MySQL/MariaDB `INTO OUTFILE`, Redis `CONFIG SET dir` + `SAVE`), justo lo que el ADR-0008 cierra en el disco.
+  - Cada base inicializa su superusuario con una contraseña aleatoria, guardada en un archivo privado fuera de `crisol.toml` (ADR-0006).
+  - Un comando la muestra para el `.env` del proyecto.
+  - MySQL y MariaDB fijan además `secure_file_priv` en una carpeta propia.
+- **Mailpit detrás de Nginx** como `mail.<tld>`. El `default_server` rechaza los demás nombres, lo que corta el *DNS rebinding* contra sus correos.
+- **MongoDB se detiene con su comando `shutdown` nativo** (`OP_MSG`), sin `mongosh`. Matar el grupo queda como último recurso.
+- **Memcached** se incluye con el build de terceros `jefyt/memcached-windows` (memcached 1.6.8 de 2020, compilado en 2026), marcado `end_of_life` y con certeza menor.
+- **`crisol enable|disable <servicio>`** edita `enabled` en `crisol.toml` desde esta fase.
