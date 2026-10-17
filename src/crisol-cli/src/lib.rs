@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::{Deps, Engine};
 use crisol_core::paths::CrisolPaths;
@@ -21,7 +22,7 @@ use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
-use crate::args::{Args, Plan};
+use crate::args::{Args, AutostartAction, Plan};
 
 /// Exit code: it worked.
 pub const EXIT_OK: u8 = 0;
@@ -84,6 +85,10 @@ pub struct Context {
     pub connect: Box<dyn Fn() -> std::io::Result<Box<dyn Link>>>,
     /// Starts the daemon without waiting for it.
     pub spawn_daemon: Box<dyn Fn() -> std::io::Result<()>>,
+    /// The sign-in entry that starts the daemon.
+    pub autostart: Box<dyn Autostart>,
+    /// The `crisold` that entry would start (the one next to this program).
+    pub daemon_exe: Option<PathBuf>,
     /// How long to wait for a daemon that was just started.
     pub daemon_wait: Duration,
     /// Time between asking again for the log of `logs -f`.
@@ -154,7 +159,44 @@ impl Session<'_> {
                 self.one(&call)
             }
             Plan::Follow { service, lines } => self.follow(&service, lines),
+            Plan::Autostart(action) => self.autostart(action),
         }
+    }
+
+    fn autostart(&mut self, action: AutostartAction) -> u8 {
+        let Some(daemon) = self.context.daemon_exe.clone() else {
+            return self.fail(&RpcError::new(
+                ErrorCode::NotAvailable,
+                "crisold.exe was not found next to this program",
+            ));
+        };
+        let store = self.context.autostart.as_ref();
+        let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
+        let (word, message) = match action {
+            AutostartAction::On => match crisol_core::autostart::enable(store, &daemon) {
+                Ok(AutostartChange::Enabled) => ("on", "Crisol will start when you sign in".to_owned()),
+                Ok(AutostartChange::Replaced) => ("on", "Crisol will start when you sign in (the entry of another crisold was replaced)".to_owned()),
+                Ok(AutostartChange::Unchanged) => ("on", "Crisol already starts when you sign in".to_owned()),
+                Err(e) => return self.fail(&io_error(e)),
+            },
+            AutostartAction::Off => match crisol_core::autostart::disable(store) {
+                Ok(true) => ("off", "Crisol will not start when you sign in".to_owned()),
+                Ok(false) => ("off", "Crisol did not start when you signed in".to_owned()),
+                Err(e) => return self.fail(&io_error(e)),
+            },
+            AutostartAction::Status => match crisol_core::autostart::state(store, &daemon) {
+                Ok(AutostartState::On) => ("on", "Crisol starts when you sign in".to_owned()),
+                Ok(AutostartState::Off) => ("off", "Crisol does not start when you sign in; `crisol autostart on` makes it".to_owned()),
+                Ok(AutostartState::Other(other)) => ("other", format!("Crisol starts when you sign in, but with another crisold: {other}")),
+                Err(e) => return self.fail(&io_error(e)),
+            },
+        };
+        if self.json {
+            let _ = writeln!(self.out, "{{\"autostart\":\"{word}\"}}");
+        } else {
+            let _ = writeln!(self.out, "{message}");
+        }
+        EXIT_OK
     }
 
     /// Connects to the daemon, starting it if the call is one that should.

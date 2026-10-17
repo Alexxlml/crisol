@@ -75,11 +75,11 @@ impl RegistryUserPath {
     }
 }
 
-fn wide(text: &str) -> Vec<u16> {
+pub(crate) fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn check(code: WIN32_ERROR) -> io::Result<()> {
+pub(crate) fn check(code: WIN32_ERROR) -> io::Result<()> {
     if code == ERROR_SUCCESS {
         Ok(())
     } else {
@@ -90,7 +90,7 @@ fn check(code: WIN32_ERROR) -> io::Result<()> {
 }
 
 /// An open registry key, closed on drop.
-struct Key(HKEY);
+pub(crate) struct Key(pub(crate) HKEY);
 
 impl Drop for Key {
     fn drop(&mut self) {
@@ -100,7 +100,7 @@ impl Drop for Key {
 }
 
 /// Opens `subkey` of `root` with `access`. `Ok(None)` if it does not exist.
-fn open(root: HKEY, subkey: &str, access: u32) -> io::Result<Option<Key>> {
+pub(crate) fn open(root: HKEY, subkey: &str, access: u32) -> io::Result<Option<Key>> {
     let name = wide(subkey);
     let mut handle = HKEY::default();
     // SAFETY: `name` is NUL-terminated and outlives the call; `handle` is a valid out-parameter.
@@ -121,7 +121,7 @@ fn open(root: HKEY, subkey: &str, access: u32) -> io::Result<Option<Key>> {
 }
 
 /// Reads the string value `name` of `subkey`. `Ok(None)` if the key or the value is missing.
-fn read_value(root: HKEY, subkey: &str, name: &str) -> io::Result<Option<PathValue>> {
+pub(crate) fn read_value(root: HKEY, subkey: &str, name: &str) -> io::Result<Option<PathValue>> {
     let Some(key) = open(root, subkey, KEY_QUERY_VALUE.0)? else {
         return Ok(None);
     };

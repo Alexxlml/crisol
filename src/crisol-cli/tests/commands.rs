@@ -22,6 +22,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crisol_cli::{run, Context, Link, Remote};
+use crisol_core::autostart::{Autostart, FakeAutostart};
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::fake::FakeFetcher;
@@ -76,6 +77,23 @@ fn world(builds: &[(&str, &str)]) -> (Catalog, FakeFetcher) {
     (Catalog::parse_for_tests(&text).unwrap(), fetcher)
 }
 
+/// One sign-in entry shared by every command of a test (each `run` builds a new context).
+struct SharedAutostart(Arc<FakeAutostart>);
+
+impl Autostart for SharedAutostart {
+    fn current(&self) -> std::io::Result<Option<String>> {
+        self.0.current()
+    }
+
+    fn set(&self, command: &str) -> std::io::Result<()> {
+        self.0.set(command)
+    }
+
+    fn remove(&self) -> std::io::Result<bool> {
+        self.0.remove()
+    }
+}
+
 struct Marked(Vec<Check>);
 
 impl SystemChecks for Marked {
@@ -95,6 +113,8 @@ struct Env {
     pipe: String,
     dirs: Arc<FakePrivateDirs>,
     daemon: Arc<Mutex<Option<JoinHandle<std::io::Result<()>>>>>,
+    daemon_exe: std::path::PathBuf,
+    autostart: Arc<FakeAutostart>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -132,6 +152,8 @@ impl Env {
                 arch: Arch::X86_64,
             },
         };
+        let daemon_exe = tmp.path().join("crisold.exe");
+        fs::write(&daemon_exe, b"MZ").unwrap();
         let driver_stop = Arc::new(AtomicBool::new(false));
         let driver = Some(play_nginx(supervisor, probe, Arc::clone(&driver_stop)));
         Self {
@@ -141,6 +163,8 @@ impl Env {
             deps,
             dirs,
             daemon: Arc::new(Mutex::new(None)),
+            daemon_exe,
+            autostart: Arc::new(FakeAutostart::new()),
             driver_stop,
             driver,
         }
@@ -171,6 +195,8 @@ impl Env {
                     Some(std::thread::spawn(move || run_daemon(options)));
                 Ok(())
             }),
+            autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
+            daemon_exe: Some(self.daemon_exe.clone()),
             daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(50),
             follow_rounds: Some(3),
@@ -643,4 +669,42 @@ fn bad_arguments_exit_with_2_and_help_and_version_exit_with_0() {
     let (code, out, _) = env.run(&["--version"]);
     assert_eq!(code, 0);
     assert!(out.starts_with("crisol "), "{out}");
+}
+
+// ---- starting at sign-in -------------------------------------------------------------------
+
+#[test]
+fn autostart_is_a_setting_of_the_user_that_can_be_turned_on_and_off() {
+    let env = Env::new(&[]);
+    assert!(env
+        .ok(&["autostart"])
+        .contains("does not start when you sign in"));
+    assert!(env
+        .ok(&["autostart", "on"])
+        .contains("will start when you sign in"));
+    assert!(env.ok(&["autostart", "on"]).contains("already starts"));
+    assert!(env
+        .ok(&["autostart", "status"])
+        .contains("starts when you sign in"));
+    // The entry is the quoted path of crisold and nothing else.
+    let entry = env.autostart.current().unwrap().unwrap();
+    assert_eq!(entry, format!("\"{}\"", env.daemon_exe.display()));
+    assert_eq!(
+        env.ok(&["--json", "autostart"]).trim(),
+        r#"{"autostart":"on"}"#
+    );
+    assert!(env.ok(&["autostart", "off"]).contains("will not start"));
+    assert!(env.ok(&["autostart", "off"]).contains("did not start"));
+    assert_eq!(
+        env.ok(&["--json", "autostart", "status"]).trim(),
+        r#"{"autostart":"off"}"#
+    );
+    // An entry that points elsewhere is shown as such, and replaced by `on`.
+    env.autostart.set(r#""D:\old\crisold.exe""#).unwrap();
+    assert!(env.ok(&["autostart"]).contains("another crisold"));
+    assert!(env.ok(&["autostart", "on"]).contains("replaced"));
+    assert!(
+        !env.daemon_running(),
+        "this setting never starts anything now"
+    );
 }

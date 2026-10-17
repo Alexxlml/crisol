@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use crisol_cli::{run, Context, Link, Remote};
 use crisol_core::ipc::pipe_name;
-use crisol_platform::{connect_to_daemon, default_deps, resolve_paths, spawn_daemon};
+use crisol_platform::{
+    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart,
+};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().collect();
@@ -28,6 +30,8 @@ fn main() -> ExitCode {
             let client = connect_to_daemon(&pipe)?;
             Ok(Box::new(Remote(client)) as Box<dyn Link>)
         }),
+        autostart: Box::new(RegistryAutostart::new()),
+        daemon_exe: daemon.clone(),
         spawn_daemon: Box::new(move || match &daemon {
             Some(path) if path.is_file() => spawn_daemon(path),
             _ => Err(std::io::Error::new(

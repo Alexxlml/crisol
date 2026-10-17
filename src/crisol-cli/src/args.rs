@@ -144,6 +144,23 @@ pub enum Command {
     },
     /// Checks the installation and says what to fix.
     Doctor,
+    /// Starts the daemon when you sign in to Windows (or stops doing it).
+    Autostart {
+        /// `on`, `off` or `status` (the default).
+        #[arg(value_enum, default_value = "status")]
+        action: AutostartAction,
+    },
+}
+
+/// What to do with the sign-in entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AutostartAction {
+    /// Make the daemon start at sign-in.
+    On,
+    /// Stop it from doing so.
+    Off,
+    /// Say whether it does.
+    Status,
 }
 
 /// What a command comes to: one call, or following a log.
@@ -158,6 +175,8 @@ pub enum Plan {
         /// Lines from the end to start with.
         lines: usize,
     },
+    /// `autostart`: a setting of the user, not something the daemon does.
+    Autostart(AutostartAction),
     /// `stop`: shut down, or stop the services only.
     Stop {
         /// Leave the daemon running.
@@ -280,6 +299,7 @@ impl Command {
                 }
             }
             Self::Doctor => Call::Doctor,
+            Self::Autostart { action } => return Plan::Autostart(action),
         };
         Plan::Call(call)
     }

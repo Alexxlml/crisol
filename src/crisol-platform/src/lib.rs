@@ -1,6 +1,8 @@
 //! crisol-platform: per-OS implementations behind the traits defined in `crisol-core`.
 
 #[cfg(windows)]
+mod autostart;
+#[cfg(windows)]
 mod console;
 #[cfg(windows)]
 mod file_owner;
@@ -29,6 +31,8 @@ mod trust_store;
 #[cfg(windows)]
 mod user_path;
 
+#[cfg(windows)]
+pub use autostart::RegistryAutostart;
 #[cfg(windows)]
 pub use console::survive_ctrl_c;
 #[cfg(windows)]
