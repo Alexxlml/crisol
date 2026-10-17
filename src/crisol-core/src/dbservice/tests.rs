@@ -1216,7 +1216,10 @@ fn memcached_listens_on_this_computer_only_has_no_login_and_says_so() {
         .lines
         .contains(&("MEMCACHED_PORT".to_owned(), "19211".to_owned())));
     assert!(
-        shown.notes.iter().any(|n| n.contains("no login")),
+        shown
+            .notes
+            .iter()
+            .any(|n| n.contains("no password") && n.contains("PHP sessions")),
         "{:?}",
         shown.notes
     );

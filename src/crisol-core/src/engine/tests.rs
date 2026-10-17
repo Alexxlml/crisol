@@ -794,7 +794,11 @@ enabled = true
     .unwrap();
     let check = named(&rig).expect("an enabled Memcached is mentioned");
     assert_eq!(check.status, CheckStatus::Warning);
-    assert!(check.detail.contains("no login"), "{}", check.detail);
+    assert!(
+        check.detail.contains("no password") && check.detail.contains("PHP sessions"),
+        "{}",
+        check.detail
+    );
 }
 
 #[test]

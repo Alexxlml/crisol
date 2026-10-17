@@ -54,3 +54,7 @@ Decidido por el propietario: Memcached se ofrece, con las mismas salvedades que 
 - **Solo `127.0.0.1`** (`-l 127.0.0.1 -p <puerto>`) y **sin `-Y`**: la autenticación de Memcached necesita SASL y este build no lo trae. **Memcached no tiene contraseña**: cualquier programa de este equipo puede leer y escribir lo que haya en él. Por eso `crisol doctor` lo menciona (un aviso mientras esté habilitado) y `crisol db credentials memcached` lo repite junto a `MEMCACHED_HOST` y `MEMCACHED_PORT`. No guardes ahí nada que otra cuenta del equipo no deba ver.
 - Se detiene terminando el grupo (no hay orden de apagado; es una caché). Puerto por defecto 11211.
 - Prueba real a pedido (`databases.rs`): arranca, `set`/`get` por el protocolo de texto, escucha solo en loopback y se detiene en 0,2 s.
+
+### Memcached y las sesiones de PHP (2026-10-17, Y2)
+
+`crisol db credentials memcached` y el aviso de `doctor` dicen con claridad que Memcached **no tiene contraseña** y que no conviene guardar ahí sesiones de PHP (`SESSION_DRIVER=memcached`, `session.save_handler=memcached`) si el equipo tiene otras cuentas: quien pueda leer las sesiones puede suplantar a los usuarios de tus aplicaciones locales. Las alternativas con contraseña son archivos, la base de datos o Redis.

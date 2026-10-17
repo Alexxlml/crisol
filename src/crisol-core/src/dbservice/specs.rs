@@ -551,8 +551,9 @@ pub struct Credentials {
     pub notes: Vec<String>,
 }
 
-/// What `doctor` and `crisol db credentials` say about Memcached: it cannot have a login.
-pub const MEMCACHED_NOTE: &str = "Memcached has no login (its authentication needs SASL, which this build does not have): it listens on 127.0.0.1 only, but any program on this computer can read and write what is in it. Do not keep anything in it that another account should not see.";
+/// What `doctor` and `crisol db credentials` say about Memcached: it cannot have a password, and
+/// what that means for PHP sessions (Y2 of the review of phase 9).
+pub const MEMCACHED_NOTE: &str = "Memcached has no password (its login needs SASL, which this build does not have): it listens on 127.0.0.1 only, but any program or account of this computer can read and write everything in it. Do not keep PHP sessions in Memcached (SESSION_DRIVER=memcached, session.save_handler=memcached) if this computer has other accounts: anyone who can read the sessions can impersonate the users of your local applications. Use files, the database or Redis, which have a password.";
 
 /// The `.env` lines for connecting to `plan`'s service with `secret`.
 #[must_use]
