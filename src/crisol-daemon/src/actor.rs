@@ -347,14 +347,18 @@ fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration) {
 /// come up.
 fn finish(daemon: &mut Daemon, call: &Call, first: Reply) -> Result<Reply, RpcError> {
     match call {
-        Call::Start { .. } | Call::Restart { .. } => {
-            if let Some(failure) = daemon.failure() {
+        Call::Start { service } | Call::Restart { service } => {
+            if let Some(failure) = daemon.failure_of(service.as_deref()) {
                 return Err(RpcError::new(ErrorCode::Conflict, failure));
             }
-            let warnings = match &first {
+            let mut warnings = match &first {
                 Reply::Done(info) => info.warnings.clone(),
                 _ => Vec::new(),
             };
+            // A database that failed is a warning on the start of everything, not its failure.
+            if service.is_none() {
+                warnings.extend(daemon.database_warnings());
+            }
             let status =
                 daemon.handle(&Call::Status { service: None }, Instant::now(), &mut |_| {})?;
             // The warnings of the start go with the final answer.
@@ -368,10 +372,12 @@ fn finish(daemon: &mut Daemon, call: &Call, first: Reply) -> Result<Reply, RpcEr
         }
         Call::Stop { .. } | Call::Shutdown => Ok(match first {
             Reply::Done(info) => Reply::Done(DoneInfo {
-                message: if matches!(call, Call::Shutdown) {
-                    "Everything is stopped and the daemon is leaving".to_owned()
-                } else {
-                    "Everything is stopped".to_owned()
+                message: match call {
+                    Call::Shutdown => "Everything is stopped and the daemon is leaving".to_owned(),
+                    Call::Stop {
+                        service: Some(name),
+                    } => format!("{name} is stopped"),
+                    _ => "Everything is stopped".to_owned(),
                 },
                 ..info
             }),

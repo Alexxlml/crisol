@@ -7,6 +7,8 @@ pub mod catalog;
 pub mod config;
 pub mod constraint;
 pub mod daemon;
+pub mod dbservice;
+pub mod dbstack;
 pub mod dns;
 pub mod edit;
 pub mod engine;

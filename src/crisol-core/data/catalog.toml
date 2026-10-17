@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 4
+serial = 5
 generated = "2026-10-14"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -155,3 +155,43 @@ sha256 = "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505"
 format = "file"
 executable = "cacert.pem"
 size = 188900
+
+# Databases (F9.1, ADR-0006/0007). MariaDB publishes a SHA-256 for each file; MySQL publishes an
+# MD5 and a GPG signature, so its SHA-256 here was computed on a file whose MD5 matched and whose
+# signature verified (see analisis/fuentes-binarios.md). `mysql` and `mariadb` are alternatives
+# that share port 3306: only one is started at a time.
+[[package]]
+service = "mariadb"
+version = "10.11.19"
+os = "windows"
+arch = "x86_64"
+url = "https://archive.mariadb.org/mariadb-10.11.19/winx64-packages/mariadb-10.11.19-winx64.zip"
+sha256 = "398ea30e5036010bbebe01d2b1804280424dcc2626e36d8e95155c04d25a0490"
+format = "zip"
+root = "mariadb-10.11.19-winx64"
+executable = "bin/mariadbd.exe"
+size = 93557290
+
+[[package]]
+service = "mariadb"
+version = "11.8.9"
+os = "windows"
+arch = "x86_64"
+url = "https://archive.mariadb.org/mariadb-11.8.9/winx64-packages/mariadb-11.8.9-winx64.zip"
+sha256 = "830c46727d9278eae212ae3eca44eeb9e71b2a68704e95f344a64fba7b1963f5"
+format = "zip"
+root = "mariadb-11.8.9-winx64"
+executable = "bin/mariadbd.exe"
+size = 97016251
+
+[[package]]
+service = "mysql"
+version = "8.4.11"
+os = "windows"
+arch = "x86_64"
+url = "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip"
+sha256 = "a492371d687d2bab088b0062581144a0044b8964baefdf4faa579292b423d25c"
+format = "zip"
+root = "mysql-8.4.11-winx64"
+executable = "bin/mysqld.exe"
+size = 281191914

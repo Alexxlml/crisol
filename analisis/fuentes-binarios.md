@@ -66,6 +66,15 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 - **Comprobación hecha (2026-10-14):** el hash calculado sobre la descarga coincide con el publicado, y es el mismo que el de `cacert.pem` en ese momento; 188 900 bytes, 121 certificados, fin de línea LF.
 - **Cómo renovar:** cada vez que se publique un catálogo nuevo (Mozilla lo actualiza cada pocas semanas): buscar el último `cacert-AAAA-MM-DD.pem` en `https://curl.se/docs/caextract.html`, descargarlo, comparar con su `.sha256`, y cambiar `version`, `url`, `sha256` y `size` de la entrada `cacert`. Las versiones anteriores quedan instaladas hasta que se desinstalen; Crisol usa la más reciente.
 
+## Bases de datos (F9.1, 2026-10-16)
+
+| Herramienta | Sitio oficial | Qué publica el proveedor | Comprobación hecha | Resultado |
+|---|---|---|---|---|
+| MariaDB 11.8.9 y 10.11.19 (winx64.zip) | `archive.mariadb.org` | SHA-256 por archivo (API `downloads.mariadb.org/rest-api/mariadb/<versión>/`), también MD5, SHA-1 y SHA-512 | Hash calculado = hash publicado en los dos; nombres del ZIP sin rutas absolutas ni `..`; carpeta raíz `mariadb-<versión>-winx64`; servidor `bin/mariadbd.exe` | ✅ coincide |
+| MySQL 8.4.11 (winx64.zip) | `cdn.mysql.com` (el CDN al que enlaza `dev.mysql.com/downloads`) | **MD5** (`.md5`) y firma GPG (`.asc`); sin SHA-256 | MD5 calculado = MD5 publicado (`2e833921…bd811bc`); firma verificada con `gpg` y un llavero temporal con la clave de `repo.mysql.com/RPM-GPG-KEY-mysql-2023` (huella `BCA4 3417 C3B4 85DD 128E C6D4 B7B3 B788 A8D3 785C`): `Good signature from "MySQL Release Engineering"`. El SHA-256 del catálogo (`a492371d…3d25c`) se calculó sobre ese archivo ya verificado | ✅ firma válida y MD5 coincide. **Certeza algo menor:** gpg avisa de que **la clave está caducada** (la firma es buena, pero una clave caducada no prueba por sí sola que el archivo sea de hoy), y la clave viene de `repo.mysql.com`, el mismo proveedor; no encontré una segunda fuente independiente de la huella. `dev.mysql.com` no responde a clientes sin navegador (página «Technical Difficulties»), por eso el CDN |
+
+Solo se listan estas versiones: MySQL **8.4 LTS**, MariaDB **11.8 LTS** (la actual) y **10.11 LTS** (para tener dos series con datos separados). Una prueba del repositorio exige que los hosts sean estos oficiales (`archive.mariadb.org`, `cdn.mysql.com`).
+
 ## Cómo actualizar el catálogo
 
 Para añadir una versión nueva o actualizar una existente:

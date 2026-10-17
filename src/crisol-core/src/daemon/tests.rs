@@ -306,16 +306,31 @@ fn a_service_cannot_be_started_alone_and_an_unknown_one_is_not_found() {
         .unwrap_err();
     assert_eq!(alone.code, ErrorCode::Conflict);
     assert!(alone.message.contains("without a service name"), "{alone}");
-    for call in [
-        Call::Start {
-            service: Some("mysql".to_owned()),
-        },
-        Call::Status {
-            service: Some("mysql".to_owned()),
-        },
-    ] {
-        assert_eq!(rig.call(&call, 0).unwrap_err().code, ErrorCode::NotFound);
-    }
+    // MySQL is a service (F9.1) that is not installed here: it says what to install.
+    let missing = rig
+        .call(
+            &Call::Start {
+                service: Some("mysql".to_owned()),
+            },
+            0,
+        )
+        .unwrap_err();
+    assert_eq!(missing.code, ErrorCode::NotAvailable);
+    assert!(
+        missing.message.contains("crisol install mysql"),
+        "{missing}"
+    );
+    assert_eq!(
+        rig.call(
+            &Call::Status {
+                service: Some("mysql".to_owned())
+            },
+            0
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::NotFound
+    );
     assert!(rig
         .call(
             &Call::Status {
@@ -518,4 +533,187 @@ version = \"8.4\"
     );
     // Generous: the decision threshold is a few tens of milliseconds, every two seconds.
     assert!(times[times.len() / 2] < Duration::from_millis(200));
+}
+
+// ---- databases (F9.1) ---------------------------------------------------------------------
+
+const MYSQL_PORT: u16 = 19306;
+
+impl Rig {
+    /// MySQL 8.4.11 installed, with its data already made, on a port of the tests.
+    fn with_mysql(&self) {
+        let bin = self.paths.bin_for("mysql", "8.4.11").unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("mysqld.exe"), "MZ").unwrap();
+        fs::create_dir_all(self.paths.data_for("mysql", "8.4").unwrap().join("mysql")).unwrap();
+        let mut config = fs::read_to_string(self.paths.config_file()).unwrap();
+        config.push_str("\n[services.mysql]\nenabled = true\nport = 19306\n");
+        fs::write(self.paths.config_file(), config).unwrap();
+    }
+
+    fn listen_mysql(&self) {
+        self.probe.occupy(
+            MYSQL_PORT,
+            PortOwner {
+                pid: 2,
+                name: Some("mysqld.exe".to_owned()),
+                address: SocketAddr::from((Ipv4Addr::LOCALHOST, MYSQL_PORT)),
+            },
+        );
+    }
+
+    /// The MySQL server leaves after the shutdown command, as the real one does.
+    fn mysql_leaves(&self) {
+        for record in self.supervisor.spawned() {
+            if record.spec.program.ends_with("mysqld.exe") {
+                let _ = self.supervisor.exit(record.process, 0);
+            }
+        }
+        self.probe.release(MYSQL_PORT);
+    }
+
+    fn service_state(&mut self, name: &str) -> Option<String> {
+        self.state()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, s)| s)
+    }
+}
+
+#[test]
+fn a_database_is_started_and_stopped_by_name_without_touching_the_web_stack() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    assert_eq!(
+        rig.service_state("mysql").as_deref(),
+        Some("stopped"),
+        "installed, not started"
+    );
+    let reply = done(
+        rig.call(
+            &Call::Start {
+                service: Some("mysql".to_owned()),
+            },
+            0,
+        )
+        .unwrap(),
+    );
+    assert!(
+        reply.changed && reply.message.contains("mysql"),
+        "{reply:?}"
+    );
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("starting"));
+    assert_eq!(
+        rig.service_state("nginx").as_deref(),
+        Some("stopped"),
+        "the web stack was not asked"
+    );
+    assert!(!rig.daemon.settled());
+    rig.listen_mysql();
+    rig.tick(700);
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("running"));
+    assert!(rig.daemon.settled());
+    // Asking again changes nothing.
+    assert!(
+        !done(
+            rig.call(
+                &Call::Start {
+                    service: Some("mysql".to_owned())
+                },
+                800
+            )
+            .unwrap()
+        )
+        .changed
+    );
+
+    let stop = done(
+        rig.call(
+            &Call::Stop {
+                service: Some("mysql".to_owned()),
+            },
+            1000,
+        )
+        .unwrap(),
+    );
+    assert!(stop.changed);
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("stopping"));
+    rig.mysql_leaves();
+    rig.tick(1500);
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("stopped"));
+}
+
+#[test]
+fn a_plain_start_runs_the_web_stack_and_the_enabled_databases_and_a_failed_database_is_a_warning() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    // Somebody else has MySQL's port.
+    rig.probe.occupy(
+        MYSQL_PORT,
+        PortOwner {
+            pid: 9,
+            name: Some("herd-mysql.exe".to_owned()),
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, MYSQL_PORT)),
+        },
+    );
+    let reply = done(rig.call(&Call::Start { service: None }, 0).unwrap());
+    assert!(reply.changed);
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(100);
+    rig.listen(HTTP);
+    rig.tick(600);
+    // The web stack is up; MySQL failed and says why; the daemon is settled and fine.
+    assert_eq!(rig.service_state("nginx").as_deref(), Some("running"));
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("failed"));
+    assert!(rig.daemon.settled());
+    assert_eq!(rig.daemon.failure(), None, "the web stack did not fail");
+    let why = rig.daemon.database_warnings();
+    assert!(
+        why.len() == 1 && why[0].contains("19306") && why[0].contains("herd-mysql.exe"),
+        "{why:?}"
+    );
+    assert_eq!(rig.daemon.failure_of(Some("mysql")), Some(why[0].clone()));
+    // Stopping everything takes the failed entry to rest too.
+    rig.call(&Call::Stop { service: None }, 1000).unwrap();
+    rig.probe.release(HTTP);
+    rig.finish_stopping(1000);
+    assert!(rig.daemon.settled());
+}
+
+#[test]
+fn without_nginx_a_plain_start_still_starts_the_databases_and_says_so() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    fs::remove_dir_all(rig.paths.bin_dir().join("nginx")).unwrap();
+    let reply = done(rig.call(&Call::Start { service: None }, 0).unwrap());
+    assert!(reply.message.contains("databases"), "{reply:?}");
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|w| w.contains("web stack was not started") && w.contains("crisol install nginx")),
+        "{reply:?}"
+    );
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("starting"));
+}
+
+#[test]
+fn shutdown_waits_for_the_databases_too() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    rig.call(
+        &Call::Start {
+            service: Some("mysql".to_owned()),
+        },
+        0,
+    )
+    .unwrap();
+    rig.listen_mysql();
+    rig.tick(700);
+    rig.call(&Call::Shutdown, 1000).unwrap();
+    assert!(!rig.daemon.settled(), "mysql is still shutting down");
+    rig.mysql_leaves();
+    rig.tick(1500);
+    assert!(rig.daemon.settled());
 }

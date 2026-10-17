@@ -25,6 +25,8 @@ use crisol_protocol::{
 };
 
 use crate::config::Config;
+use crate::dbservice::DbKind;
+use crate::dbstack::{DbEvents, DbStack};
 use crate::engine::{home_error, Engine};
 use crate::manage::list_installed;
 use crate::service::ServiceState;
@@ -39,6 +41,8 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 pub struct Daemon {
     engine: Engine,
     stack: Option<WebStack>,
+    /// MySQL and MariaDB (F9.1): each one on its own, so one that cannot start harms no other.
+    dbs: DbStack,
     /// The ports and suffix the stack was built with, to notice a change that needs a restart.
     built_with: Option<Built>,
     /// `start` was asked and `stop` was not.
@@ -71,9 +75,16 @@ impl Daemon {
     /// A daemon with nothing running.
     #[must_use]
     pub fn new(engine: Engine) -> Self {
+        let dbs = DbStack::new(
+            engine.paths().clone(),
+            engine.deps().supervisor.clone(),
+            engine.deps().probe.clone(),
+            engine.deps().dirs.clone(),
+        );
         Self {
             engine,
             stack: None,
+            dbs,
             built_with: None,
             wanted: false,
             restart_pending: false,
@@ -102,6 +113,7 @@ impl Daemon {
         if let Some(stack) = &mut self.stack {
             stack.abort();
         }
+        self.dbs.abort();
     }
 
     /// Whether `call` can take long enough (a download, a scan of the system) to be run by a
@@ -120,14 +132,15 @@ impl Daemon {
     /// once everything is down.
     #[must_use]
     pub fn settled(&self) -> bool {
-        if self.restart_pending {
+        if self.restart_pending || !self.dbs.is_settled() {
             return false;
         }
-        match &self.stack {
+        let stack = match &self.stack {
             None => true,
             Some(stack) if self.shutting_down => stack.is_stopped() && stack.is_settled(),
             Some(stack) => stack.is_settled(),
-        }
+        };
+        stack && (!self.shutting_down || self.dbs.is_stopped())
     }
 
     /// Whether any service ended up failed (the message says which).
@@ -141,6 +154,26 @@ impl Daemon {
                 ServiceState::Failed(reason) => Some(format!("{name} failed: {reason}")),
                 _ => None,
             })
+    }
+
+    /// Why the service a command named (or, with none, the web stack) failed, if it did. A
+    /// database that failed is not the web stack's failure.
+    #[must_use]
+    pub fn failure_of(&self, service: Option<&str>) -> Option<String> {
+        match service.and_then(DbKind::from_service) {
+            Some(kind) => self.dbs.failure(kind),
+            None => self.failure(),
+        }
+    }
+
+    /// The databases that failed, as warnings for the answer to a plain `start`: they do not
+    /// make it an error.
+    #[must_use]
+    pub fn database_warnings(&self) -> Vec<String> {
+        DbKind::ALL
+            .into_iter()
+            .filter_map(|kind| self.dbs.failure(kind))
+            .collect()
     }
 
     /// Answers a request. `events` receives what happens as a result (progress of a download,
@@ -158,6 +191,9 @@ impl Daemon {
             }
             return answer;
         }
+        if let Some(answer) = self.database_call(call, now, events) {
+            return answer;
+        }
         match call {
             Call::Hello { protocol, .. } => self.hello(*protocol),
             Call::Status { .. } if !self.engine.paths().home().exists() => Err(RpcError::new(
@@ -167,7 +203,7 @@ impl Daemon {
             Call::Status { service } => self.status(service.as_deref()),
             Call::Start { service } => {
                 self.require_whole_stack(service.as_deref())?;
-                self.start(now, events)
+                self.start_everything(now, events)
             }
             Call::Stop { service } => {
                 self.require_whole_stack(service.as_deref())?;
@@ -217,6 +253,8 @@ impl Daemon {
                 });
             }
         }
+        let databases = self.dbs.tick(now);
+        emit_databases(&mut |e| out.push(e), databases);
         if self.wanted && self.watch_due(now) {
             self.refresh(now, &mut |e| out.push(e));
         }
@@ -262,7 +300,7 @@ impl Daemon {
     /// The services as the user sees them. Before the first start, `nginx` is listed as
     /// stopped if it is installed.
     fn service_list(&self) -> Vec<ServiceInfo> {
-        let from_stack: Vec<ServiceInfo> = self
+        let mut list: Vec<ServiceInfo> = self
             .stack
             .as_ref()
             .map(|stack| {
@@ -273,20 +311,35 @@ impl Daemon {
                     .collect()
             })
             .unwrap_or_default();
-        if !from_stack.is_empty() {
-            return from_stack;
-        }
-        let nginx_installed = list_installed(self.engine.paths())
-            .is_ok_and(|list| list.iter().any(|i| i.service == "nginx"));
-        if nginx_installed {
-            vec![ServiceInfo {
+        let installed = list_installed(self.engine.paths()).unwrap_or_default();
+        if list.is_empty() && installed.iter().any(|i| i.service == "nginx") {
+            list.push(ServiceInfo {
                 name: "nginx".to_owned(),
                 state: "stopped".to_owned(),
                 detail: None,
-            }]
-        } else {
-            Vec::new()
+            });
         }
+        // The databases that were started show their state; the installed ones that were not
+        // are stopped.
+        let started = self.dbs.states();
+        list.extend(
+            started
+                .iter()
+                .map(|(name, state)| service_info(name.clone(), state)),
+        );
+        for kind in DbKind::ALL {
+            let name = kind.service();
+            if installed.iter().any(|i| i.service == name)
+                && !started.iter().any(|(n, _)| n == name)
+            {
+                list.push(ServiceInfo {
+                    name: name.to_owned(),
+                    state: "stopped".to_owned(),
+                    detail: None,
+                });
+            }
+        }
+        list
     }
 
     /// Nginx and the pools start and stop together for now; a service named on its own is
@@ -307,6 +360,101 @@ impl Daemon {
                  use the command without a service name"
             ),
         ))
+    }
+
+    /// A plain `start`: the web stack and the databases `crisol.toml` enables. A database that
+    /// cannot start is a warning; so is a missing Nginx when there is a database to run.
+    fn start_everything(
+        &mut self,
+        now: Instant,
+        events: &mut dyn FnMut(Event),
+    ) -> Result<Reply, RpcError> {
+        let web = self.start(now, events);
+        if self.shutting_down {
+            return web;
+        }
+        let (started, mut warnings) = self.dbs.start_enabled(now);
+        let any_database = !started.is_empty();
+        emit_databases(events, started);
+        match web {
+            Ok(Reply::Done(mut info)) => {
+                info.warnings.extend(warnings);
+                Ok(Reply::Done(info))
+            }
+            Err(error) if error.code == ErrorCode::NotAvailable && any_database => {
+                warnings.insert(
+                    0,
+                    format!("the web stack was not started: {}", error.message),
+                );
+                Ok(Reply::Done(DoneInfo {
+                    message: "Starting the databases".to_owned(),
+                    changed: true,
+                    warnings,
+                }))
+            }
+            other => other,
+        }
+    }
+
+    /// `start`, `stop` and `restart` of a database named in the call; `None` for the rest.
+    fn database_call(
+        &mut self,
+        call: &Call,
+        now: Instant,
+        events: &mut dyn FnMut(Event),
+    ) -> Option<Result<Reply, RpcError>> {
+        let kind = |service: &Option<String>| service.as_deref().and_then(DbKind::from_service);
+        match call {
+            Call::Start { service } => {
+                kind(service).map(|kind| self.start_database(kind, now, events))
+            }
+            Call::Stop { service } => {
+                kind(service).map(|kind| Ok(self.stop_database(kind, now, events)))
+            }
+            Call::Restart { service } => kind(service).map(|kind| {
+                let started = self.dbs.restart(kind, now)?;
+                emit_databases(events, started);
+                Ok(done(&format!("Restarting {}", kind.service()), true))
+            }),
+            _ => None,
+        }
+    }
+
+    fn start_database(
+        &mut self,
+        kind: DbKind,
+        now: Instant,
+        events: &mut dyn FnMut(Event),
+    ) -> Result<Reply, RpcError> {
+        if self.shutting_down {
+            return Err(RpcError::new(
+                ErrorCode::Conflict,
+                "the daemon is shutting down",
+            ));
+        }
+        let started = self.dbs.start(kind, now)?;
+        if started.is_empty() {
+            return Ok(done(
+                &format!("{} is already running", kind.service()),
+                false,
+            ));
+        }
+        emit_databases(events, started);
+        Ok(done(&format!("Starting {}", kind.service()), true))
+    }
+
+    fn stop_database(
+        &mut self,
+        kind: DbKind,
+        now: Instant,
+        events: &mut dyn FnMut(Event),
+    ) -> Reply {
+        let stopped = self.dbs.stop(Some(kind), now);
+        if stopped.is_empty() {
+            return done(&format!("{} was not running", kind.service()), false);
+        }
+        emit_databases(events, stopped);
+        done(&format!("Stopping {}", kind.service()), true)
     }
 
     fn start(&mut self, now: Instant, events: &mut dyn FnMut(Event)) -> Result<Reply, RpcError> {
@@ -352,16 +500,23 @@ impl Daemon {
     fn stop(&mut self, now: Instant, events: &mut dyn FnMut(Event), shutdown: bool) -> Reply {
         self.wanted = false;
         self.restart_pending = false;
+        let databases_running = !self.dbs.is_stopped();
+        let stopped = self.dbs.stop(None, now);
+        emit_databases(events, stopped);
         let Some(stack) = &mut self.stack else {
-            return done("Nothing was running", false);
+            return if databases_running {
+                done("Stopping the databases", true)
+            } else {
+                done("Nothing was running", false)
+            };
         };
-        if stack.is_stopped() && !shutdown {
+        if stack.is_stopped() && !shutdown && !databases_running {
             return done("Nothing was running", false);
         }
         for event in stack.stop(now).into_iter().filter_map(map_event) {
             events(event);
         }
-        done("Stopping the web stack", true)
+        done("Stopping the services", true)
     }
 
     fn restart(&mut self, now: Instant, events: &mut dyn FnMut(Event)) -> Reply {
@@ -523,6 +678,14 @@ impl Daemon {
             }
         }
         hasher.finish()
+    }
+}
+
+fn emit_databases(events: &mut dyn FnMut(Event), list: DbEvents) {
+    for (name, event) in list {
+        if let Some(mapped) = map_event(WebEvent::Service { name, event }) {
+            events(mapped);
+        }
     }
 }
 
