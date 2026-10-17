@@ -27,6 +27,7 @@
 //! data directory is new) to a running [`Service`]; like `Service`, it never blocks and is
 //! advanced with [`tick`](DbService::tick).
 
+mod admin;
 mod specs;
 
 use std::fs;
@@ -44,6 +45,7 @@ use crate::process::{
 use crate::secrets::{self, Secret, SecretsError};
 use crate::service::{FailureReason, Service, ServiceEvent, ServiceState};
 
+pub use admin::{client_call, redis_set_password, ClientCall, DbAdmin, NoAdmin, WireAdmin};
 pub use specs::{
     credentials, init_spec, render_ini, service_spec, write_ini, Credentials, MEMCACHED_NOTE,
 };
@@ -707,18 +709,30 @@ impl DbService {
         if let Ok(started) = service.start(now) {
             events.extend(started);
         }
-        self.state = ServiceState::Starting;
         self.mirror(&service, events);
         self.phase = Phase::Running(Box::new(service));
     }
 
-    /// Takes over the state of the inner service, if it changed.
+    /// Takes over the state of the inner service. The inner service reports its own changes
+    /// among `events`, so a change is added only when they do not account for it: adding it
+    /// always said every state twice in the log (V3 of the manual verification of phase 9).
     fn mirror(&mut self, service: &Service, events: &mut Vec<ServiceEvent>) {
-        let inner = service.state().clone();
-        if inner != self.state {
-            let from = std::mem::replace(&mut self.state, inner.clone());
-            events.push(ServiceEvent::StateChanged { from, to: inner });
+        Self::sync(&mut self.state, service.state().clone(), events);
+    }
+
+    fn sync(state: &mut ServiceState, inner: ServiceState, events: &mut Vec<ServiceEvent>) {
+        let reported = events.iter().rev().find_map(|event| match event {
+            ServiceEvent::StateChanged { to, .. } => Some(to.clone()),
+            _ => None,
+        });
+        let known = reported.unwrap_or_else(|| state.clone());
+        if inner != known {
+            events.push(ServiceEvent::StateChanged {
+                from: known,
+                to: inner.clone(),
+            });
         }
+        *state = inner;
     }
 
     fn begin_init(&mut self, now: Instant, events: &mut Vec<ServiceEvent>) {
@@ -775,14 +789,66 @@ impl DbService {
             }
             Phase::Running(service) => {
                 events.extend(service.stop(now));
-                let inner = service.state().clone();
-                if inner != self.state {
-                    let from = std::mem::replace(&mut self.state, inner.clone());
-                    events.push(ServiceEvent::StateChanged { from, to: inner });
-                }
+                Self::sync(&mut self.state, service.state().clone(), &mut events);
             }
         }
         events
+    }
+
+    /// Gives the running server a new password without touching its data: the server is asked
+    /// to change it (with the old one) and only then the file in `secrets/` is replaced, so a
+    /// refusal leaves everything as it was. The new password waits in `<name>.next` while the
+    /// server is being asked, so a crash in between does not lose it. Returns what to tell the
+    /// user.
+    pub fn reset_password(&mut self, admin: &dyn DbAdmin) -> Result<String, String> {
+        let kind = self.plan.kind;
+        let name = kind.service();
+        if kind.auth() == Auth::None {
+            return Err(format!("{name} has no password to reset"));
+        }
+        if self.state != ServiceState::Running {
+            return Err(format!(
+                "{name} is not running yet; wait until it is, or start it"
+            ));
+        }
+        if kind.auth() == Auth::Applied && kind != DbKind::Redis {
+            return Err(format!(
+                "{name} reads its password only when it starts, so it cannot be changed while it runs: stop it (`crisol stop {name}`), run this again, then start it"
+            ));
+        }
+        if self.secret.is_none() && matches!(kind, DbKind::Postgres | DbKind::Mongodb) {
+            return Err(format!(
+                "this {name} was made without a password (it lets every program of this computer in), so there is nothing to change: stop it, delete {} and start it again to make it new (its data is lost)",
+                self.plan.data.display()
+            ));
+        }
+        let new = secrets::generate_password().map_err(|e| e.to_string())?;
+        let file = self.plan.secret_path("");
+        let pending = self.plan.secret_path(".next");
+        secrets::write_file(&pending, new.expose()).map_err(|e| e.to_string())?;
+        if let Err(why) = admin.change_password(&self.plan, self.secret.as_ref(), &new) {
+            secrets::remove_file(&pending);
+            return Err(format!(
+                "{name} did not accept the change ({why}); the password is the same as before"
+            ));
+        }
+        secrets::write_file(&file, new.expose()).map_err(|e| {
+            format!(
+                "{name} has the new password but it could not be saved in {} ({e}); it is in {}",
+                file.display(),
+                pending.display()
+            )
+        })?;
+        secrets::remove_file(&pending);
+        self.secret = Some(new);
+        // What a graceful stop logs in with (and Redis's configuration) carries the new one.
+        specs::write_runtime_files(&self.plan, self.secret.as_ref()).map_err(|e| e.to_string())?;
+        if kind == DbKind::Redis {
+            if let Phase::Running(service) = &mut self.phase {
+                service.set_graceful_stop(specs::redis_stop(&self.plan, self.secret.as_ref()));
+            }
+        }
+        Ok(format!("{name}: new password kept in {}", file.display()))
     }
 
     /// Kills everything now.
@@ -813,11 +879,7 @@ impl DbService {
             Phase::Idle => {}
             Phase::Running(service) => {
                 events.extend(service.tick(now));
-                let inner = service.state().clone();
-                if inner != self.state {
-                    let from = std::mem::replace(&mut self.state, inner.clone());
-                    events.push(ServiceEvent::StateChanged { from, to: inner });
-                }
+                Self::sync(&mut self.state, service.state().clone(), &mut events);
                 match self.state {
                     ServiceState::Stopped => self.phase = Phase::Idle,
                     // MariaDB has taken its password: the file that carried it is not needed.

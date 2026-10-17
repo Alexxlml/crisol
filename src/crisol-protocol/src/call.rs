@@ -151,6 +151,14 @@ pub enum Call {
         /// `mysql`, `redis`, …
         service: String,
     },
+    /// Makes a new password for a data service without losing its data, with the service
+    /// running: the server is told to change it (`ALTER USER`, `ALTER ROLE`, `CONFIG SET`…) and
+    /// then the file in `secrets/` is replaced. A service that only reads its password when it
+    /// starts (Garnet, Meilisearch) has to be stopped first.
+    ResetPassword {
+        /// `mysql`, `postgresql`, `redis`, …
+        service: String,
+    },
     /// Asks the daemon to push [`crate::Event`]s on this connection.
     Subscribe,
 }
@@ -186,6 +194,7 @@ impl Call {
             Self::Credentials { .. } => "credentials",
             Self::Enable { .. } => "enable",
             Self::Disable { .. } => "disable",
+            Self::ResetPassword { .. } => "reset_password",
             Self::Subscribe => "subscribe",
         }
     }
@@ -207,6 +216,7 @@ impl Call {
                 | Self::Unsecure { .. }
                 | Self::Enable { .. }
                 | Self::Disable { .. }
+                | Self::ResetPassword { .. }
                 | Self::Start { .. }
                 | Self::Restart { .. }
         )
@@ -224,6 +234,7 @@ impl Call {
                 | Self::Stop { .. }
                 | Self::Restart { .. }
                 | Self::Shutdown
+                | Self::ResetPassword { .. }
                 | Self::Subscribe
         )
     }

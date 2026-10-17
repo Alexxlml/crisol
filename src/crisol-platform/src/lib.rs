@@ -5,6 +5,8 @@ mod autostart;
 #[cfg(windows)]
 mod console;
 #[cfg(windows)]
+mod db_admin;
+#[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
 mod helper_install;
@@ -37,6 +39,8 @@ mod user_path;
 pub use autostart::RegistryAutostart;
 #[cfg(windows)]
 pub use console::survive_ctrl_c;
+#[cfg(windows)]
+pub use db_admin::WindowsDbAdmin;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]

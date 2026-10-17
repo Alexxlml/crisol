@@ -15,7 +15,7 @@ use std::time::Instant;
 use crisol_protocol::{ErrorCode, RpcError};
 
 use crate::config::Config;
-use crate::dbservice::{plan, Auth, DbError, DbKind, DbService};
+use crate::dbservice::{plan, Auth, DbAdmin, DbError, DbKind, DbService, NoAdmin};
 use crate::engine::home_error;
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::ports::PortProbe;
@@ -32,6 +32,7 @@ pub struct DbStack {
     supervisor: Arc<dyn ProcessSupervisor>,
     ports: Arc<dyn PortProbe>,
     dirs: Arc<dyn PrivateDirs>,
+    admin: Arc<dyn DbAdmin>,
     services: BTreeMap<DbKind, DbService>,
     /// Restarts waiting for the old process to be gone.
     restarting: BTreeSet<DbKind>,
@@ -72,10 +73,71 @@ impl DbStack {
             supervisor,
             ports,
             dirs,
+            admin: Arc::new(NoAdmin),
             services: BTreeMap::new(),
             restarting: BTreeSet::new(),
             notices: Vec::new(),
         }
+    }
+
+    /// How passwords are changed on running servers (`reset-password`).
+    #[must_use]
+    pub fn with_admin(mut self, admin: Arc<dyn DbAdmin>) -> Self {
+        self.admin = admin;
+        self
+    }
+
+    /// Gives `kind` a new password without losing its data. A running server is asked to change
+    /// it; one that is stopped and only reads its password when it starts (Redis, Garnet,
+    /// Meilisearch) gets the new one at its next start. The others need the server running, to
+    /// be asked. Returns what to tell the user.
+    pub fn reset_password(&mut self, kind: DbKind) -> Result<String, RpcError> {
+        require_private_home(&self.paths, self.dirs.as_ref()).map_err(|e| home_error(&e))?;
+        let name = kind.service();
+        if kind.auth() == Auth::None {
+            return Err(RpcError::new(
+                ErrorCode::InvalidParams,
+                format!("{name} has no password to reset"),
+            ));
+        }
+        secrets::ensure_dir(&self.paths, self.dirs.as_ref())
+            .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+        if let Some(service) = self.services.get_mut(&kind) {
+            if *service.state() == ServiceState::Running {
+                let admin = Arc::clone(&self.admin);
+                return service
+                    .reset_password(admin.as_ref())
+                    .map_err(|why| RpcError::new(ErrorCode::Conflict, why));
+            }
+            if active(service.state()) {
+                return Err(RpcError::new(
+                    ErrorCode::Conflict,
+                    format!("{name} is starting or stopping; try again in a moment"),
+                ));
+            }
+        }
+        let config = self.load_config()?;
+        let plan = plan(&self.paths, &config, kind).map_err(|e| match e {
+            DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
+            other => RpcError::new(ErrorCode::Io, other.to_string()),
+        })?;
+        if kind.auth() == Auth::Applied {
+            let new = secrets::generate_password()
+                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            let file = plan.secret_path("");
+            secrets::write_file(&file, new.expose())
+                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            return Ok(format!(
+                "{name}: new password kept in {}; it takes effect when {name} starts",
+                file.display()
+            ));
+        }
+        Err(RpcError::new(
+            ErrorCode::NotAvailable,
+            format!(
+                "{name} is not running, and its server has to be asked to change the password: start it with `crisol start {name}` and run this again"
+            ),
+        ))
     }
 
     /// What the starts since the last call have to say (and forgets it).

@@ -8,6 +8,7 @@ use zip::write::SimpleFileOptions;
 use super::*;
 use crate::cacert::NoRoots;
 use crate::catalog::{Arch, Os};
+use crate::dbservice::NoAdmin;
 use crate::fetch::fake::FakeFetcher;
 use crate::paths::fake::FakePrivateDirs;
 use crate::ports::fake::FakePortProbe;
@@ -91,6 +92,7 @@ impl Rig {
             system,
             roots: Arc::new(NoRoots),
             config_probe: Arc::new(AlwaysEffective),
+            db_admin: Arc::new(NoAdmin),
             catalog,
             target: WINDOWS,
         };

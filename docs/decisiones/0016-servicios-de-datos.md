@@ -54,3 +54,18 @@ Decidida por el propietario a partir de `claude/revisiones/2026-10-17-opus-fase9
   - **Cambio de puerto con la base en marcha:** el daemon compara cada 2 s el puerto de lo que corre con `crisol.toml` y avisa **una vez**: «`mysql` is still on port 3306; `crisol restart mysql` to use 3307». No reinicia por su cuenta: cortaría las conexiones de las aplicaciones.
   - **Serie nueva junto a otra con datos:** al arrancar una serie que empieza vacía mientras otra del mismo servicio tiene datos, `crisol start` avisa dónde están (`data/mariadb/11.8`) y que no se migra nada, con la herramienta de exportación (`mysqldump`, `pg_dump`, `mongodump`). `crisol doctor` lista los servicios con datos en más de una serie (`data series`).
 - **`crisol enable|disable <servicio>` (implementado)** edita solo `enabled` en `crisol.toml` con `TomlEditor` (comentarios, orden y demás claves quedan; si ya estaba así no escribe nada). Al habilitar avisa si el servicio es alternativa de otro habilitado (MySQL/MariaDB, Redis/Garnet) o si comparte puerto con uno habilitado, y aun así escribe: el archivo es del usuario y `doctor` y `start` dicen lo mismo. Deshabilitar no detiene lo que corre: lo dice y señala `crisol stop <servicio>`. Solo vale para los servicios de datos.
+
+## `crisol db reset-password <servicio>` (2026-10-17, V3 de la verificación manual de la Fase 9)
+
+Cambia la contraseña generada de un servicio **con el servicio en marcha y sin perder datos**, y actualiza `secrets/`. Necesita el daemon (pregunta al servidor con la contraseña vieja). Cómo, por servicio:
+
+| Servicio | Cómo | ¿En marcha? |
+|---|---|---|
+| MySQL, MariaDB | `ALTER USER` por el cliente `mysql` (el SQL entra por su entrada estándar; el archivo de opciones privado lleva la contraseña vieja) | sí |
+| PostgreSQL | `ALTER ROLE postgres PASSWORD` por `psql` (la vieja en `PGPASSWORD`, el SQL por la entrada estándar) | sí |
+| Redis | `CONFIG SET requirepass` por una conexión normal; el comando de parada (`redis-cli`) se rehace con la nueva | sí |
+| MongoDB | `updateUser` por el protocolo de red; el gancho de parada lee la contraseña del archivo en el momento de usarla | sí |
+| Garnet, Meilisearch | no es posible: leen la contraseña solo al arrancar | parado: se escribe la nueva para el siguiente arranque; en marcha: se niega y dice cómo (`crisol stop`, repetir, `crisol start`) |
+| Mailpit, Memcached | no tienen contraseña | – |
+
+Orden seguro: la contraseña nueva espera en `secrets/<servicio>-<serie>.next` mientras se le pide al servidor; si lo rechaza, se borra y todo queda como estaba; si lo acepta, reemplaza al archivo y se rehacen los archivos de ejecución (opciones de `mysqladmin`, configuración de Redis). Una base hecha antes de las contraseñas: MySQL y MariaDB aceptan recibir una (entran sin contraseña); PostgreSQL y MongoDB (sin `--auth` o con `trust`) piden reinicializar. Después hay que actualizar el `.env` de los proyectos (`crisol db credentials`). El protocolo sube a la versión 3 (24 operaciones).

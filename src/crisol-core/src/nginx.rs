@@ -377,26 +377,24 @@ fn render_mail(input: &NginxInput<'_>, mail: &MailRoute) -> Result<String, Strin
     {
         return Err(format!("`{}` is not a plain host name", mail.domain));
     }
-    Ok(format!(
-        "{HEADER}
-         # {domain}: Mailpit, the page and the API.
-         server {{
-         {listen}             server_name {domain};
-
-             location / {{
-                 proxy_pass http://127.0.0.1:{port};
-                 proxy_http_version 1.1;
-                 proxy_set_header Host $host;
-                 proxy_set_header Upgrade $http_upgrade;
-                 proxy_set_header Connection \"upgrade\";
-                 proxy_read_timeout 1h;
-             }}
-         }}
-",
-        domain = mail.domain,
-        port = mail.port,
-        listen = listen_loopbacks("    ", input.http_port, ""),
-    ))
+    let mut text = format!(
+        "{HEADER}\n# {}: Mailpit, the page and the API.\nserver {{\n",
+        mail.domain
+    );
+    text.push_str(&listen_loopbacks("    ", input.http_port, ""));
+    let _ = writeln!(text, "    server_name {};\n", mail.domain);
+    text.push_str("    location / {\n");
+    let _ = writeln!(text, "        proxy_pass http://127.0.0.1:{};", mail.port);
+    text.push_str(concat!(
+        "        proxy_http_version 1.1;\n",
+        "        proxy_set_header Host $host;\n",
+        "        proxy_set_header Upgrade $http_upgrade;\n",
+        "        proxy_set_header Connection \"upgrade\";\n",
+        "        proxy_read_timeout 1h;\n",
+        "    }\n",
+        "}\n",
+    ));
+    Ok(text)
 }
 
 fn render_upstreams(pools: &PhpPools, used: &BTreeSet<&str>) -> String {

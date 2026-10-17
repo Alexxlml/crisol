@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use crisol_core::cacert::NoRoots;
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
+use crisol_core::dbservice::NoAdmin;
 use crisol_core::engine::{Deps, NoSystemChecks};
 use crisol_core::fetch::fake::FakeFetcher;
 use crisol_core::ipc::pipe_name;
@@ -46,6 +47,7 @@ fn deps() -> Deps {
         system: Arc::new(NoSystemChecks),
         roots: Arc::new(NoRoots),
         config_probe: Arc::new(AlwaysEffective),
+        db_admin: Arc::new(NoAdmin),
         catalog: Catalog::embedded().unwrap(),
         target: Target {
             os: Os::Windows,

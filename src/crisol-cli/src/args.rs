@@ -209,6 +209,14 @@ pub enum DbAction {
         /// The service.
         service: String,
     },
+    /// Makes a new password for a service without losing its data, with the service running
+    /// (`ALTER USER`, `ALTER ROLE`, `CONFIG SET`…), and keeps it where `credentials` shows it.
+    /// Garnet and Meilisearch read theirs only when they start: stop them first. Update the
+    /// `.env` of your projects afterwards.
+    ResetPassword {
+        /// The service.
+        service: String,
+    },
 }
 
 /// What a command comes to: one call, or following a log.
@@ -347,6 +355,9 @@ impl Command {
             Self::Db {
                 action: DbAction::Credentials { service },
             } => Call::Credentials { service },
+            Self::Db {
+                action: DbAction::ResetPassword { service },
+            } => Call::ResetPassword { service },
             Self::Autostart { action } => return Plan::Autostart(action),
             Self::System { action } => return Plan::System(action),
         };

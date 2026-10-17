@@ -28,7 +28,7 @@ use crisol_core::fetch::fake::FakeFetcher;
 use crisol_core::install::{install, InstallOptions};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::service::ServiceState;
-use crisol_platform::{JobObjectSupervisor, WindowsPortProbe, WindowsPrivateDirs};
+use crisol_platform::{JobObjectSupervisor, WindowsDbAdmin, WindowsPortProbe, WindowsPrivateDirs};
 
 /// The tests of this file share ports, so they run one at a time.
 static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -70,7 +70,8 @@ fn world(config: &str) -> World {
         Arc::new(JobObjectSupervisor::new()),
         Arc::new(WindowsPortProbe::new()),
         Arc::new(WindowsPrivateDirs::new()),
-    );
+    )
+    .with_admin(Arc::new(WindowsDbAdmin));
     World { tmp, paths, stack }
 }
 
@@ -816,4 +817,131 @@ fn redis_and_garnet_cannot_run_together_on_6379_and_the_second_is_told_who_has_i
     let pw = world.password(DbKind::Garnet);
     assert!(resp(19381, Some(pw.as_str()), &["PING"]).starts_with("+PONG"));
     stop_and_wait(&mut world, DbKind::Garnet);
+}
+
+// ---- reset-password (V3 of the manual verification of phase 9) ----------------------------
+
+/// Changes the password of a running SQL database and checks that the old one stops working, the
+/// new one works, the data is still there, the graceful stop still logs in, and the next start
+/// uses the new one.
+fn reset_sql(kind: DbKind, version: &str, port: u16) {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let name = kind.service();
+    let mut world = world(&format!(
+        "[services.{name}]\nenabled = true\nport = {port}\n"
+    ));
+    install_from_downloads(&world.paths, name, version);
+    run_and_wait(&mut world, kind);
+    let (setup, query) = if kind == DbKind::Postgres {
+        (
+            "CREATE TABLE crisol_t (n int); INSERT INTO crisol_t VALUES (42)",
+            "SELECT n FROM crisol_t",
+        )
+    } else {
+        (
+            "CREATE DATABASE crisol_t; CREATE TABLE crisol_t.t (n INT); INSERT INTO crisol_t.t VALUES (42)",
+            "SELECT n FROM crisol_t.t",
+        )
+    };
+    world.sql(kind, version, port, setup);
+    let old = world.password(kind);
+
+    let message = world.stack.reset_password(kind).unwrap();
+    println!("{name}: {message}");
+    let new = world.password(kind);
+    assert_ne!(old, new);
+    assert!(!world
+        .paths
+        .secrets_dir()
+        .join(format!("{name}-{}.next", kind.series(version)))
+        .exists());
+
+    // The old password is refused, the new one works, and nothing was lost.
+    let refused = world.try_sql(kind, version, port, "SELECT 1", Some(&old));
+    assert!(!refused.status.success(), "the old password still works");
+    assert_eq!(world.sql(kind, version, port, query), "42");
+
+    // The graceful stop logs in with the new one (it would be killed after the grace otherwise).
+    let stopped = stop_and_wait(&mut world, kind);
+    println!("{name}: stop took {stopped:?}");
+    assert!(
+        stopped < Duration::from_secs(25),
+        "the stop fell back to the kill"
+    );
+    run_and_wait(&mut world, kind);
+    assert_eq!(world.sql(kind, version, port, query), "42");
+    stop_and_wait(&mut world, kind);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mysql-8.4.11-winx64.zip (Windows); slow"]
+fn mysql_gets_a_new_password_while_running_and_keeps_its_data() {
+    reset_sql(DbKind::Mysql, "8.4.11", 19306);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mariadb-11.8.9-winx64.zip (Windows); slow"]
+fn mariadb_gets_a_new_password_while_running_and_keeps_its_data() {
+    reset_sql(DbKind::Mariadb, "11.8.9", 19307);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with postgresql-18.6-1-windows-x64-binaries.zip (Windows); slow"]
+fn postgresql_gets_a_new_password_while_running_and_keeps_its_data() {
+    reset_sql(DbKind::Postgres, "18.6", 19432);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with Redis-x64-5.0.14.1.zip (Windows)"]
+fn redis_gets_a_new_password_while_running_and_keeps_its_data() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.redis]\nenabled = true\nport = 19379\n");
+    install_from_downloads(&world.paths, "redis", "5.0.14.1");
+    run_and_wait(&mut world, DbKind::Redis);
+    let old = world.password(DbKind::Redis);
+    assert!(resp(19379, Some(&old), &["SET", "crisol", "42"]).starts_with("+OK"));
+
+    world.stack.reset_password(DbKind::Redis).unwrap();
+    let new = world.password(DbKind::Redis);
+    assert_ne!(old, new);
+    assert!(!resp(19379, Some(&old), &["PING"]).starts_with("+PONG"));
+    assert!(resp(19379, Some(&new), &["GET", "crisol"]).contains("42"));
+
+    // The graceful stop (`redis-cli` with the new one) saves, and the next start has it.
+    let stopped = stop_and_wait(&mut world, DbKind::Redis);
+    assert!(stopped < Duration::from_secs(10), "{stopped:?}");
+    run_and_wait(&mut world, DbKind::Redis);
+    assert!(!resp(19379, Some(&old), &["PING"]).starts_with("+PONG"));
+    assert!(resp(19379, Some(&new), &["GET", "crisol"]).contains("42"));
+    stop_and_wait(&mut world, DbKind::Redis);
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mongodb-windows-x86_64-8.0.34.zip (Windows); very big"]
+fn mongodb_gets_a_new_password_while_running_and_still_stops_by_its_own_command() {
+    use crisol_core::mongowire::{self, MongoError};
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.mongodb]\nenabled = true\nport = 19017\n");
+    install_from_downloads(&world.paths, "mongodb", "8.0.34");
+    run_and_wait(&mut world, DbKind::Mongodb);
+    let old = world.password(DbKind::Mongodb);
+
+    world.stack.reset_password(DbKind::Mongodb).unwrap();
+    let new = world.password(DbKind::Mongodb);
+    assert_ne!(old, new);
+    assert!(matches!(
+        mongowire::shutdown(19017, &old),
+        Err(MongoError::Auth(_))
+    ));
+    std::net::TcpStream::connect(("127.0.0.1", 19017)).expect("a wrong password stops nothing");
+
+    // The stop hook reads the password when it runs: it goes by its own command, not the kill.
+    let stopped = stop_and_wait(&mut world, DbKind::Mongodb);
+    assert!(stopped < Duration::from_secs(25), "{stopped:?}");
 }

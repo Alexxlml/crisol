@@ -25,6 +25,7 @@ use crisol_cli::{run, Context, Link, Remote};
 use crisol_core::autostart::{Autostart, FakeAutostart};
 use crisol_core::cacert::NoRoots;
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
+use crisol_core::dbservice::NoAdmin;
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::fake::FakeFetcher;
 use crisol_core::ipc::pipe_name;
@@ -165,6 +166,7 @@ impl Env {
             }])),
             roots: Arc::new(NoRoots),
             config_probe: Arc::new(AlwaysEffective),
+            db_admin: Arc::new(NoAdmin),
             catalog,
             target: Target {
                 os: Os::Windows,
@@ -944,4 +946,12 @@ fn after_start_the_pool_reads_a_php_ini_that_loads_the_database_and_curl_extensi
     assert!(ini.contains("extension=curl"), "{ini}");
     assert!(ini.contains("extension=pdo_mysql"), "{ini}");
     env.finish();
+}
+
+#[test]
+fn db_reset_password_needs_the_daemon_because_it_asks_a_running_server() {
+    let env = Env::new(&[]);
+    let shown = env.failing(&["db", "reset-password", "mysql"]);
+    assert!(shown.contains("daemon is not running"), "{shown}");
+    assert!(shown.contains("crisol start"), "{shown}");
 }

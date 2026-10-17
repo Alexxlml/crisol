@@ -88,7 +88,8 @@ impl Daemon {
             engine.deps().supervisor.clone(),
             engine.deps().probe.clone(),
             engine.deps().dirs.clone(),
-        );
+        )
+        .with_admin(engine.deps().db_admin.clone());
         Self {
             engine,
             stack: None,
@@ -447,6 +448,19 @@ impl Daemon {
             }
             Call::Stop { service } => {
                 kind(service).map(|kind| Ok(self.stop_database(kind, now, events)))
+            }
+            Call::ResetPassword { service } => {
+                let Some(kind) = DbKind::from_service(service) else {
+                    return Some(Err(RpcError::new(
+                        ErrorCode::NotFound,
+                        format!("no data service called `{service}`"),
+                    )));
+                };
+                Some(
+                    self.dbs
+                        .reset_password(kind)
+                        .map(|message| done(&message, true)),
+                )
             }
             Call::Restart { service } => kind(service).map(|kind| {
                 let started = self.dbs.restart(kind, now)?;

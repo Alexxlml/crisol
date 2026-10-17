@@ -8,6 +8,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::cacert::NoRoots;
 use crate::catalog::{Arch, Catalog, Os, Target};
+use crate::dbservice::NoAdmin;
 use crate::engine::{Deps, NoSystemChecks};
 use crate::fetch::fake::FakeFetcher;
 use crate::paths::fake::FakePrivateDirs;
@@ -72,6 +73,7 @@ impl Rig {
             system: Arc::new(NoSystemChecks),
             roots: Arc::new(NoRoots),
             config_probe: Arc::new(Flag(effective.clone())),
+            db_admin: Arc::new(NoAdmin),
             catalog: Catalog::parse("schema = 1\nserial = 1\n").unwrap(),
             target: Target {
                 os: Os::Windows,
@@ -961,4 +963,84 @@ fn a_reload_that_never_shows_says_so_after_a_few_seconds_and_goes_on() {
         "{events:?}"
     );
     assert!(rig.daemon.settled());
+}
+
+#[test]
+fn stopping_everything_says_each_state_of_each_service_once() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    rig.call(&Call::Start { service: None }, 0).unwrap();
+    rig.listen_mysql();
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(100);
+    rig.listen(HTTP);
+    rig.tick(700);
+
+    let mut all: Vec<Event> = Vec::new();
+    let (reply, events) = rig.call_events(&Call::Shutdown, 1000);
+    reply.unwrap();
+    all.extend(events);
+    rig.mysql_leaves();
+    for ms in [1500, 2000, 3000, 7000, 12_000] {
+        all.extend(rig.tick(ms));
+    }
+    let states: Vec<String> = all
+        .iter()
+        .filter_map(|e| match e {
+            Event::ServiceState {
+                service,
+                state,
+                detail,
+            } => Some(format!("{service}: {state} {detail:?}")),
+            _ => None,
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for line in &states {
+        assert!(seen.insert(line.clone()), "twice: {line} in {states:?}");
+    }
+}
+
+#[test]
+fn reset_password_says_what_it_cannot_do_and_changes_a_stopped_one_that_reads_it_at_start() {
+    let mut rig = Rig::new();
+    let reset = |rig: &mut Rig, service: &str| {
+        rig.call(
+            &Call::ResetPassword {
+                service: service.to_owned(),
+            },
+            0,
+        )
+    };
+    assert_eq!(
+        reset(&mut rig, "nope").unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert!(reset(&mut rig, "memcached")
+        .unwrap_err()
+        .message
+        .contains("no password"));
+
+    // A server that has to be asked is not asked while it is stopped.
+    rig.with_mysql();
+    let error = reset(&mut rig, "mysql").unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotAvailable);
+    assert!(error.message.contains("crisol start mysql"), "{error}");
+
+    // One that reads its password at the start just gets the new one for then.
+    let redis = rig.paths.bin_for("redis", "5.0.14.1").unwrap();
+    fs::create_dir_all(&redis).unwrap();
+    fs::write(redis.join("redis-server.exe"), "MZ").unwrap();
+    let file = rig.paths.secrets_dir().join("redis-5.0");
+    fs::create_dir_all(rig.paths.secrets_dir()).unwrap();
+    fs::write(&file, "OldPassword1\n").unwrap();
+    let reply = done(reset(&mut rig, "redis").unwrap());
+    assert!(
+        reply.changed && reply.message.contains("takes effect"),
+        "{reply:?}"
+    );
+    let kept = fs::read_to_string(&file).unwrap();
+    assert_ne!(kept.trim(), "OldPassword1");
+    assert_eq!(kept.trim().len(), crate::secrets::PASSWORD_LENGTH);
 }

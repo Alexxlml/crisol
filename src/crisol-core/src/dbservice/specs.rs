@@ -152,7 +152,7 @@ fn pwfile(plan: &DbPlan) -> PathBuf {
     plan.secret_path(".pwfile")
 }
 
-fn client_options(plan: &DbPlan) -> PathBuf {
+pub(super) fn client_options(plan: &DbPlan) -> PathBuf {
     plan.secret_path(".client.cnf")
 }
 
@@ -344,13 +344,15 @@ fn mongo_spec(plan: &DbPlan, secret: Option<&Secret>, mongo: &Arc<dyn MongoAdmin
     if secret.is_some() {
         process = process.arg("--auth");
     }
-    let (admin, port, secret) = (Arc::clone(mongo), plan.port, secret.cloned());
+    // The password is read when it is needed: `reset-password` may have changed it since.
+    let (admin, port, file) = (Arc::clone(mongo), plan.port, plan.secret_path(""));
     ServiceSpec::new(plan.name())
         .process(process)
         .port(plan.port)
         .health(HealthCheck::Ports(vec![plan.port]))
         .stop_hook(StopHook::new(move || {
             // The answer does not matter: if it fails, the group is killed after the grace.
+            let secret = secrets::read_secret(&file).ok().flatten();
             let _ = admin.shutdown(port, secret.as_ref());
         }))
         .policy(LifecyclePolicy {
@@ -517,21 +519,25 @@ fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
         spec = spec.port(port);
     }
     if plan.kind == DbKind::Redis {
-        // `SHUTDOWN` saves the data if there are save points, then leaves. The password goes in
-        // the environment variable `redis-cli` reads for it, not in its arguments.
-        let mut stop = ProcessSpec::new(program(plan, "redis-cli.exe")).args([
-            "-h",
-            "127.0.0.1",
-            "-p",
-            &plan.port.to_string(),
-            "shutdown",
-        ]);
-        if let Some(secret) = secret {
-            stop = stop.env("REDISCLI_AUTH", secret.expose());
-        }
-        spec = spec.graceful_stop(stop);
+        spec = spec.graceful_stop(redis_stop(plan, secret));
     }
     spec
+}
+
+/// `SHUTDOWN` saves the data if there are save points, then leaves. The password goes in the
+/// environment variable `redis-cli` reads for it, not in its arguments.
+pub(super) fn redis_stop(plan: &DbPlan, secret: Option<&Secret>) -> ProcessSpec {
+    let mut stop = ProcessSpec::new(program(plan, "redis-cli.exe")).args([
+        "-h",
+        "127.0.0.1",
+        "-p",
+        &plan.port.to_string(),
+        "shutdown",
+    ]);
+    if let Some(secret) = secret {
+        stop = stop.env("REDISCLI_AUTH", secret.expose());
+    }
+    stop
 }
 
 // ---- credentials for the project's .env ---------------------------------------------------
@@ -622,7 +628,12 @@ pub fn credentials(plan: &DbPlan, secret: Option<&Secret>) -> Credentials {
             ));
         }
     }
-    if password.is_none() && plan.kind.auth() != super::Auth::None {
+    if password.is_none() && matches!(plan.kind, DbKind::Mysql | DbKind::Mariadb) {
+        notes.push(format!(
+            "this {0} was made before Crisol generated passwords and has none. With it running, `crisol db reset-password {0}` gives it one and keeps the data.",
+            plan.kind.service()
+        ));
+    } else if password.is_none() && plan.kind.auth() != super::Auth::None {
         notes.push(format!(
             "this {} was made before Crisol generated passwords and has none. To give it one, \
              stop it, delete {} and start it again: that makes it new (the data in it is lost).",

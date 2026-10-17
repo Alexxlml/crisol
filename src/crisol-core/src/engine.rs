@@ -25,6 +25,7 @@ use crisol_protocol::{
 use crate::cacert::RootCertificates;
 use crate::catalog::{Catalog, Target};
 use crate::config::Config;
+use crate::dbservice::DbAdmin;
 use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
 use crate::install::{InstallError, InstallOptions, Progress};
@@ -93,6 +94,8 @@ pub struct Deps {
     pub roots: Arc<dyn RootCertificates>,
     /// Tells when a reload of Nginx has taken effect.
     pub config_probe: Arc<dyn ConfigProbe>,
+    /// Changes the password of a running data service (`reset-password`).
+    pub db_admin: Arc<dyn DbAdmin>,
     /// What can be installed.
     pub catalog: Catalog,
     /// The platform to install for.
@@ -196,6 +199,7 @@ impl Engine {
             | Call::Stop { .. }
             | Call::Restart { .. }
             | Call::Shutdown
+            | Call::ResetPassword { .. }
             | Call::Subscribe => return None,
         })
     }

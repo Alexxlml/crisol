@@ -609,6 +609,18 @@ pub fn shutdown(port: u16, password: &str) -> Result<(), MongoError> {
     send_shutdown(&mut wire)
 }
 
+/// Changes the password of the administrator, logged in with the old one.
+pub fn change_password(port: u16, old: &str, new: &str) -> Result<(), MongoError> {
+    let mut wire = Wire::new(connect(port, Duration::from_secs(10))?);
+    wire.authenticate(ADMIN_USER, old, &fresh_nonce()?)?;
+    wire.command(&[
+        ("updateUser", Value::Str(ADMIN_USER)),
+        ("pwd", Value::Str(new)),
+        ("$db", Value::Str("admin")),
+    ])
+    .map(drop)
+}
+
 /// Sends `shutdown` to a server that asks for no login (one made before Crisol generated
 /// passwords).
 pub fn shutdown_without_login(port: u16) -> Result<(), MongoError> {

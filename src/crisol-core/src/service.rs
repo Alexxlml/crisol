@@ -516,6 +516,12 @@ impl Service {
         Ok(std::mem::take(&mut self.events))
     }
 
+    /// Replaces the command that asks the service to leave, for the next stop. For a service
+    /// whose credentials changed while it ran.
+    pub fn set_graceful_stop(&mut self, command: ProcessSpec) {
+        self.spec.graceful_stop = Some(command);
+    }
+
     /// Asks the service to stop. Idempotent: on a stopped service it does nothing, and on a
     /// failed one it just acknowledges the failure by moving to `Stopped`.
     pub fn stop(&mut self, now: Instant) -> Vec<ServiceEvent> {

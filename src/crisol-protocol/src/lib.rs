@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The version of this protocol. Raised for any change that is not an added field.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The `jsonrpc` member of every message.
 pub const JSONRPC: &str = "2.0";

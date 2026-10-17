@@ -1111,6 +1111,14 @@ fn mailpit_is_a_name_of_nginx_that_forwards_with_the_name_the_browser_used() {
         mail: Some(&route),
     });
     let text = normalised(&rendered.files["sites/_mail.conf"]);
+    // The file the user can open is indented the way the others are.
+    insta::assert_snapshot!("file_sites__mail.conf", text);
+    assert!(
+        text.lines()
+            .all(|line| line.len() - line.trim_start().len() <= 12
+                && (line.len() - line.trim_start().len()) % 4 == 0),
+        "{text}"
+    );
     assert!(text.contains("server_name mail.test;"), "{text}");
     assert!(text.contains("listen 127.0.0.1:8080;"), "{text}");
     assert!(text.contains("proxy_pass http://127.0.0.1:8025;"), "{text}");

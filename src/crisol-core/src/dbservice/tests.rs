@@ -1147,3 +1147,246 @@ fn memcached_listens_on_this_computer_only_has_no_login_and_says_so() {
         shown.notes
     );
 }
+
+// ---- reset-password (V3 of the manual verification of phase 9) ---------------------------------
+
+use std::sync::Mutex;
+
+/// An admin that records what it was asked and can refuse.
+struct Recorder {
+    calls: Mutex<Vec<(Option<String>, String)>>,
+    refuse: bool,
+}
+
+impl Recorder {
+    fn new(refuse: bool) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            refuse,
+        }
+    }
+}
+
+impl DbAdmin for Recorder {
+    fn change_password(
+        &self,
+        _plan: &DbPlan,
+        old: Option<&Secret>,
+        new: &Secret,
+    ) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((old.map(|o| o.expose().to_owned()), new.expose().to_owned()));
+        if self.refuse {
+            Err("Access denied".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Rig {
+    /// MySQL 8.4.11 with its data made and an old password, running.
+    fn running_mysql(&self) -> DbService {
+        self.install("mysql", "8.4.11");
+        let plan = self.plan(DbKind::Mysql);
+        fs::create_dir_all(plan.data.join("mysql")).unwrap();
+        fs::create_dir_all(&plan.secrets).unwrap();
+        secrets::write_file(&plan.secret_path(""), "OldPassword1").unwrap();
+        let mut service = self.service(DbKind::Mysql);
+        service.start(self.at(0));
+        self.listen(19306);
+        service.tick(self.at(700));
+        assert_eq!(*service.state(), ServiceState::Running);
+        service
+    }
+}
+
+#[test]
+fn a_new_password_is_set_on_the_server_with_the_old_one_and_then_kept() {
+    let rig = Rig::new();
+    let mut service = rig.running_mysql();
+    let admin = Recorder::new(false);
+
+    let message = service.reset_password(&admin).unwrap();
+    assert!(message.contains("new password kept in"), "{message}");
+
+    let calls = admin.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    let (old, new) = &calls[0];
+    assert_eq!(old.as_deref(), Some("OldPassword1"));
+    assert_ne!(new, "OldPassword1");
+    let plan = service.plan().clone();
+    let kept = secrets::read_secret(&plan.secret_path(""))
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.expose(), new, "the file has what the server has");
+    assert!(
+        !plan.secret_path(".next").exists(),
+        "the waiting file is gone"
+    );
+    // What a graceful stop logs in with carries the new password too.
+    let options = fs::read_to_string(plan.secret_path(".client.cnf")).unwrap();
+    assert!(options.contains(new.as_str()), "{options}");
+    assert!(!options.contains("OldPassword1"), "{options}");
+}
+
+#[test]
+fn a_server_that_refuses_leaves_the_old_password_and_no_file_behind() {
+    let rig = Rig::new();
+    let mut service = rig.running_mysql();
+    let plan = service.plan().clone();
+
+    let error = service.reset_password(&Recorder::new(true)).unwrap_err();
+    assert!(error.contains("same as before"), "{error}");
+    assert!(error.contains("Access denied"), "{error}");
+    let kept = secrets::read_secret(&plan.secret_path(""))
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.expose(), "OldPassword1");
+    assert!(!plan.secret_path(".next").exists());
+}
+
+#[test]
+fn what_cannot_be_changed_while_it_runs_says_so() {
+    let rig = Rig::new();
+    let garnet_bin = rig
+        .paths
+        .bin_for("garnet", "2.2.3")
+        .unwrap()
+        .join("net10.0");
+    fs::create_dir_all(&garnet_bin).unwrap();
+    fs::write(garnet_bin.join("GarnetServer.exe"), "MZ").unwrap();
+    let mut garnet = rig.service(DbKind::Garnet);
+    garnet.start(rig.at(0));
+    rig.listen(rig.config.services.garnet.port);
+    garnet.tick(rig.at(700));
+    assert_eq!(*garnet.state(), ServiceState::Running);
+    let error = garnet.reset_password(&Recorder::new(false)).unwrap_err();
+    assert!(error.contains("only when it starts"), "{error}");
+    assert!(error.contains("crisol stop garnet"), "{error}");
+
+    // A stopped service is not asked.
+    let mut stopped = rig.service(DbKind::Garnet);
+    assert!(stopped
+        .reset_password(&Recorder::new(false))
+        .unwrap_err()
+        .contains("not running"));
+}
+
+#[test]
+fn a_mongodb_made_without_a_password_has_nothing_to_change() {
+    let rig = Rig::new();
+    let bin = rig.paths.bin_for("mongodb", "8.0.34").unwrap().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("mongod.exe"), "MZ").unwrap();
+    let plan = rig.plan(DbKind::Mongodb);
+    fs::create_dir_all(&plan.data).unwrap();
+    let mut service = rig.service(DbKind::Mongodb);
+    service.start(rig.at(0));
+    rig.listen(rig.config.services.mongodb.port);
+    service.tick(rig.at(700));
+    assert_eq!(*service.state(), ServiceState::Running);
+    let error = service.reset_password(&Recorder::new(false)).unwrap_err();
+    assert!(error.contains("without a password"), "{error}");
+}
+
+#[test]
+fn the_clients_are_given_the_sql_on_their_input_and_the_old_password_in_the_environment() {
+    let rig = Rig::new();
+    rig.install("mysql", "8.4.11");
+    rig.install("mariadb", "11.8.9");
+    rig.install("postgresql", "18.6");
+    let old = Secret::new("OldPassword1");
+    let new = Secret::new("NewPassword2");
+
+    let mysql = client_call(&rig.plan(DbKind::Mysql), Some(&old), &new).unwrap();
+    assert!(mysql.program.ends_with("mysql.exe"));
+    assert!(mysql
+        .stdin
+        .contains("ALTER USER 'root'@'localhost' IDENTIFIED BY 'NewPassword2';"));
+    // The options file of the client has the old password; nothing secret is an argument.
+    assert!(mysql
+        .args
+        .iter()
+        .any(|a| a.starts_with("--defaults-extra-file=")));
+    assert!(mysql.args.iter().all(|a| !a.contains("Password")));
+
+    let mariadb = client_call(&rig.plan(DbKind::Mariadb), Some(&old), &new).unwrap();
+    assert_eq!(mariadb.stdin.matches("ALTER USER IF EXISTS").count(), 3);
+
+    let postgres = client_call(&rig.plan(DbKind::Postgres), Some(&old), &new).unwrap();
+    assert!(postgres.program.ends_with("psql.exe"));
+    assert!(postgres.args.iter().all(|a| !a.contains("Password")));
+    assert!(postgres
+        .env
+        .contains(&("PGPASSWORD".to_owned(), "OldPassword1".to_owned())));
+    assert!(postgres
+        .stdin
+        .contains("ALTER ROLE postgres PASSWORD 'NewPassword2';"));
+
+    // Data made without a password is logged into with none.
+    assert!(client_call(&rig.plan(DbKind::Mysql), None, &new).is_some());
+    // Redis and MongoDB need no program.
+    assert!(client_call(&rig.plan(DbKind::Mysql), None, &new).is_some());
+}
+
+#[test]
+fn redis_is_asked_to_log_in_and_then_to_set_its_password() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut seen = String::new();
+        let mut buffer = [0_u8; 512];
+        for _ in 0..2 {
+            let n = stream.read(&mut buffer).unwrap();
+            seen.push_str(&String::from_utf8_lossy(&buffer[..n]));
+            stream.write_all(b"+OK\r\n").unwrap();
+        }
+        seen
+    });
+    redis_set_password(port, Some("OldPassword1"), "NewPassword2").unwrap();
+    let seen = server.join().unwrap();
+    assert!(seen.contains("AUTH\r\n$12\r\nOldPassword1"), "{seen}");
+    assert!(
+        seen.contains("requirepass\r\n$12\r\nNewPassword2"),
+        "{seen}"
+    );
+
+    // A refusal comes back as the server's words.
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 512];
+        let _ = stream.read(&mut buffer).unwrap();
+        stream.write_all(b"-ERR invalid password\r\n").unwrap();
+    });
+    let error = redis_set_password(port, Some("wrong"), "NewPassword2").unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("invalid password"), "{error}");
+}
+
+#[test]
+fn after_a_reset_the_stop_of_redis_logs_in_with_the_new_password() {
+    let rig = Rig::new();
+    let redis = rig.paths.bin_for("redis", "5.0.14.1").unwrap();
+    fs::create_dir_all(&redis).unwrap();
+    fs::write(redis.join("redis-server.exe"), "MZ").unwrap();
+    let mut service = rig.service(DbKind::Redis);
+    service.start(rig.at(0));
+    rig.listen(rig.config.services.redis.port);
+    service.tick(rig.at(700));
+    assert_eq!(*service.state(), ServiceState::Running);
+    let admin = Recorder::new(false);
+    service.reset_password(&admin).unwrap();
+    let new = admin.calls.lock().unwrap()[0].1.clone();
+
+    service.stop(rig.at(3000));
+    let stop = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(stop.spec.program.ends_with("redis-cli.exe"));
+    assert_eq!(stop.spec.env, [("REDISCLI_AUTH".into(), new.into())]);
+}

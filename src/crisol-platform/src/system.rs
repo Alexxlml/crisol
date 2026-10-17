@@ -26,7 +26,7 @@ use crisol_protocol::{Check, CheckStatus};
 
 use crate::{
     FileHosts, HelperLocation, JobObjectSupervisor, PowerShellNrpt, RegistryAutostart,
-    RegistryUserPath, WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs,
+    RegistryUserPath, WindowsDbAdmin, WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs,
     WindowsRootCertificates, WindowsTrustStore,
 };
 
@@ -45,6 +45,7 @@ pub fn default_deps() -> io::Result<Deps> {
         system: Arc::new(WindowsSystemChecks),
         roots: Arc::new(WindowsRootCertificates),
         config_probe: Arc::new(TcpConfigProbe),
+        db_admin: Arc::new(WindowsDbAdmin),
         catalog,
         target,
     })
