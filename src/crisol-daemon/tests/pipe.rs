@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crisol_core::cacert::NoRoots;
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
 use crisol_core::engine::{Deps, NoSystemChecks};
 use crisol_core::fetch::fake::FakeFetcher;
@@ -42,6 +43,7 @@ fn deps() -> Deps {
         owners: Arc::new(TrustAllOwners),
         env: Arc::new(|_| None),
         system: Arc::new(NoSystemChecks),
+        roots: Arc::new(NoRoots),
         catalog: Catalog::embedded().unwrap(),
         target: Target {
             os: Os::Windows,

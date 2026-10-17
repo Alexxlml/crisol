@@ -89,3 +89,13 @@ Decidida por el propietario (hallazgo 6 de la revisión de la Fase 4).
 - `exclude_certificates` (núcleo, puro) quita del texto de Mozilla cada entrada cuyo DER está en esa lista: el bloque, las líneas de nombre justo encima y la línea en blanco que lo sigue. Lo demás queda igual y en el mismo orden. La CA local de Crisol se añade después y no se filtra por esta lista.
 - El archivo empieza con un comentario que dice que ya no es una copia literal, nombra la versión del bundle de origen y lista los CN excluidos (`Left out: none.` si no hubo). `WrittenCacert::excluded` los lleva y una advertencia dice cuántos y cuáles.
 - Si la lista de `Disallowed` no se puede leer, el bundle de Mozilla se deja entero y una advertencia lo dice.
+
+## Corrección: quién lo genera y cuándo (2026-10-17, V1 de la verificación manual de la Fase 9)
+
+Las funciones existían, pero nadie las llamaba: PHP corría sin `php.ini` ni `cacert.pem`. Ahora lo hace `crisol-core::phpsetup::refresh_php` (primero `etc/php/cacert.pem` con la CA local validada si existe y las raíces de Windows aptas para TLS; después el `php.ini` de cada versión), y se llama:
+
+- en `WebStack::apply`, antes de crear o arrancar un pool (así el `start` general, cada recarga y la creación de la CA lo dejan al día);
+- al cambiar `[php]` en `crisol.toml` (la vigilancia lo detecta): se regeneran los `php.ini` y se reinician **solo** los pools cuyo archivo cambió o cuyo `max_requests` cambió, esperando a que sus puertos queden libres;
+- al instalar PHP o el paquete `cacert`, con o sin daemon (`Engine`), para que el shim encuentre su `php.ini`.
+
+**Decisión: `crisol install php` instala también `cacert` si falta.** Es un archivo pequeño, con hash fijado en el catálogo, y sin él el cURL de PHP no confía en ningún sitio HTTPS (el síntoma que el usuario vería primero es un `curl error 60`). Si la descarga falla, PHP queda instalado igual; el siguiente `start` avisa «the CA bundle is not installed (`crisol install cacert`)» y el `php.ini` se genera sin `curl.cainfo`. Se conserva lo decidido antes: solo `curl.cainfo`, los *overrides* al final y escritura solo si cambió.

@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::ca::ensure_ca;
+use crate::cacert::{NoRoots, RootCertificates};
 use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
 use crate::manage::InstalledVersion;
@@ -41,6 +42,7 @@ use crate::nginx::{
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
+use crate::phpsetup::refresh_php;
 use crate::ports::{PortProbe, PortStatus};
 use crate::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
@@ -61,6 +63,9 @@ const RELOAD_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a pool that no site uses keeps running after the reload that stops sending it
 /// requests: the old Nginx workers finish what they were doing.
 const RETIRE_GRACE: Duration = Duration::from_secs(5);
+
+/// How long a restarted pool waits for its ports to be free before it starts anyway.
+const RESTART_WAIT: Duration = Duration::from_secs(5);
 
 // ---- planning -------------------------------------------------------------------------
 
@@ -309,6 +314,10 @@ struct Reload {
 
 struct Pool {
     service: Service,
+    /// Where this version of PHP is installed, to build the pool again.
+    install: PathBuf,
+    /// The `max_requests` its workers were started with.
+    max_requests: u32,
 }
 
 /// How long `nginx -s quit` is given before Nginx is killed. A quit takes under a second with
@@ -332,10 +341,14 @@ pub struct WebStack {
     supervisor: Arc<dyn ProcessSupervisor>,
     probe: Arc<dyn PortProbe>,
     dirs: Arc<dyn PrivateDirs>,
+    /// The system's root certificates, for `etc/php/cacert.pem`.
+    roots: Arc<dyn RootCertificates>,
     nginx: Option<Service>,
     pools: BTreeMap<String, Pool>,
     /// Pools started by `apply` that have not finished starting; a reload waits for these.
     awaiting: BTreeSet<String>,
+    /// Pools being stopped to start again with a new `php.ini` or `[php]` setting.
+    restarting: BTreeMap<String, Instant>,
     /// Pools that no site uses; stopped once the reload that stops sending them requests ends.
     unused: BTreeSet<String>,
     retire_at: Option<Instant>,
@@ -383,9 +396,11 @@ impl WebStack {
             supervisor,
             probe,
             dirs,
+            roots: Arc::new(NoRoots),
             nginx: None,
             pools: BTreeMap::new(),
             awaiting: BTreeSet::new(),
+            restarting: BTreeMap::new(),
             unused: BTreeSet::new(),
             retire_at: None,
             stopping: Vec::new(),
@@ -396,6 +411,21 @@ impl WebStack {
             reload_again: false,
             promoted_tls: None,
         }
+    }
+
+    /// The system roots that go into the CA bundle of PHP. Without this the bundle is Mozilla's
+    /// alone (and the local CA).
+    #[must_use]
+    pub fn with_root_certificates(mut self, roots: Arc<dyn RootCertificates>) -> Self {
+        self.roots = roots;
+        self
+    }
+
+    /// Takes the `[php]` section of a new `crisol.toml`. The next [`apply`](Self::apply)
+    /// regenerates the `php.ini` files and restarts the pools whose workers would not see the
+    /// change (the ports of a pool never move).
+    pub fn set_php_config(&mut self, php: PhpConfig) {
+        self.php = php;
     }
 
     /// Whether the stack was started and not stopped.
@@ -470,6 +500,8 @@ impl WebStack {
                 }
             }
         };
+        let refreshed = self.refresh_php_files(&versions);
+        tls_warnings.extend(refreshed.warnings);
         let desired = Desired {
             sites: plan
                 .sites
@@ -497,6 +529,9 @@ impl WebStack {
         self.desired = Some(desired);
 
         let (new_pools, retired_pools) = self.sync_pools(&versions)?;
+        if self.running {
+            self.restart_stale_pools(&refreshed.changed, &new_pools, now);
+        }
 
         if self.nginx.is_none() {
             self.nginx = Some(self.nginx_service(false)?);
@@ -550,7 +585,14 @@ impl WebStack {
             };
             let spec = pool_spec(&self.paths, &self.php, version, &installed.path, ports)?;
             let service = Service::new(spec, self.supervisor.clone(), self.probe.clone());
-            self.pools.insert(version.clone(), Pool { service });
+            self.pools.insert(
+                version.clone(),
+                Pool {
+                    service,
+                    install: installed.path.clone(),
+                    max_requests: self.php.max_requests,
+                },
+            );
             new_pools.push(version.clone());
         }
         let retired_pools: Vec<String> = self
@@ -562,6 +604,81 @@ impl WebStack {
         self.unused.extend(retired_pools.iter().cloned());
 
         Ok((new_pools, retired_pools))
+    }
+
+    /// The CA bundle and the `php.ini` of each version in use, before any pool starts: the CA may
+    /// have been made just before, and the `php.ini` names the bundle.
+    fn refresh_php_files(
+        &self,
+        versions: &BTreeMap<String, InstalledVersion>,
+    ) -> crate::phpsetup::PhpRefresh {
+        let list: Vec<String> = versions.keys().cloned().collect();
+        refresh_php(
+            &self.paths,
+            &self.php,
+            &list,
+            self.roots.as_ref(),
+            self.dirs.as_ref(),
+        )
+    }
+
+    /// Stops the running pools whose workers started with an older `php.ini` or `max_requests`;
+    /// [`tick`](Self::tick) starts them again once they are down. Sites on those versions get a
+    /// 502 for the moment this takes. Pools that were just created already read the new files.
+    fn restart_stale_pools(&mut self, ini_changed: &[String], new_pools: &[String], now: Instant) {
+        let max_requests = self.php.max_requests;
+        for (version, pool) in &mut self.pools {
+            let stale = ini_changed.contains(version) || pool.max_requests != max_requests;
+            let live = matches!(
+                pool.service.state(),
+                ServiceState::Running | ServiceState::Starting
+            );
+            if stale && live && !new_pools.contains(version) && !self.unused.contains(version) {
+                let _ = pool.service.stop(now);
+                self.restarting.insert(version.clone(), now);
+            }
+        }
+    }
+
+    /// Starts again the pools that [`restart_stale_pools`](Self::restart_stale_pools) stopped.
+    fn tick_restarts(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
+        // A pool starts again when its workers are gone and their ports are free, or after a
+        // while, and then the service says who holds the port.
+        let ready: Vec<String> = self
+            .restarting
+            .iter()
+            .filter(|(version, since)| {
+                let down = self.pools.get(*version).is_none_or(|p| {
+                    matches!(
+                        p.service.state(),
+                        ServiceState::Stopped | ServiceState::Failed(_)
+                    )
+                });
+                let free = self.ports.ports(version).is_none_or(|ports| {
+                    ports
+                        .iter()
+                        .all(|port| matches!(self.probe.probe(*port), Ok(PortStatus::Free)))
+                });
+                down && (free || now.saturating_duration_since(**since) >= RESTART_WAIT)
+            })
+            .map(|(version, _)| version.clone())
+            .collect();
+        for version in ready {
+            self.restarting.remove(&version);
+            let (Some(ports), Some(pool)) =
+                (self.ports.ports(&version), self.pools.get_mut(&version))
+            else {
+                continue;
+            };
+            let Ok(spec) = pool_spec(&self.paths, &self.php, &version, &pool.install, ports) else {
+                continue;
+            };
+            pool.service = Service::new(spec, self.supervisor.clone(), self.probe.clone());
+            pool.max_requests = self.php.max_requests;
+            if let Ok(list) = pool.service.start(now) {
+                events.extend(wrap(&service_name(&version), list));
+            }
+        }
     }
 
     /// The local CA (made if there is none) and the plan for the certificate for `hosts`: the
@@ -779,6 +896,7 @@ impl WebStack {
         self.reload_again = false;
         self.retire_at = None;
         self.awaiting.clear();
+        self.restarting.clear();
         if let Some(nginx) = &mut self.nginx {
             events.extend(wrap("nginx", nginx.stop(now)));
         }
@@ -796,6 +914,7 @@ impl WebStack {
         self.reload_again = false;
         self.retire_at = None;
         self.awaiting.clear();
+        self.restarting.clear();
         if let Some(nginx) = &mut self.nginx {
             nginx.abort();
         }
@@ -835,6 +954,7 @@ impl WebStack {
         self.reload.is_none()
             && !self.reload_again
             && self.awaiting.is_empty()
+            && self.restarting.is_empty()
             && self.nginx.as_ref().is_none_or(steady)
             && self.pools.values().all(|p| steady(&p.service))
             && self.stopping.iter().all(steady)
@@ -871,6 +991,7 @@ impl WebStack {
                 .get(version)
                 .is_some_and(|p| *p.service.state() == ServiceState::Starting)
         });
+        self.tick_restarts(now, &mut events);
         self.tick_reload(now, &mut events);
         if self.retire_at.is_some_and(|at| now >= at) {
             self.retire_unused(now);

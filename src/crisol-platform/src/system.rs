@@ -25,7 +25,8 @@ use crisol_protocol::{Check, CheckStatus};
 
 use crate::{
     FileHosts, HelperLocation, JobObjectSupervisor, PowerShellNrpt, RegistryAutostart,
-    RegistryUserPath, WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs, WindowsTrustStore,
+    RegistryUserPath, WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs,
+    WindowsRootCertificates, WindowsTrustStore,
 };
 
 /// The dependencies of the engine with the Windows implementations.
@@ -41,6 +42,7 @@ pub fn default_deps() -> io::Result<Deps> {
         owners: Arc::new(WindowsFileOwners),
         env: Arc::new(|name| std::env::var(name).ok()),
         system: Arc::new(WindowsSystemChecks),
+        roots: Arc::new(WindowsRootCertificates),
         catalog,
         target,
     })

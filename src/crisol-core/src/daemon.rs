@@ -63,6 +63,8 @@ struct Built {
     http: u16,
     https: u16,
     tld: String,
+    php_base_port: u16,
+    php_workers: u16,
 }
 
 impl Built {
@@ -71,6 +73,8 @@ impl Built {
             http: config.services.nginx.http_port,
             https: config.services.nginx.https_port,
             tld: config.sites.tld.clone(),
+            php_base_port: config.php.base_port,
+            php_workers: config.php.workers,
         }
     }
 }
@@ -507,9 +511,10 @@ impl Daemon {
         let (stack, config, plan) = self.build()?;
         self.built_with = Some(Built::of(&config));
         let mut stack = stack;
-        if let Err(error) = stack.apply(&plan, now) {
-            return Err(web_error(error));
-        }
+        let applied = match stack.apply(&plan, now) {
+            Ok(applied) => applied,
+            Err(error) => return Err(web_error(error)),
+        };
         let started = stack.start(now);
         // `start` refuses (and says why) when the home is open.
         if let Some(reason) = started.iter().find_map(|e| match e {
@@ -530,6 +535,7 @@ impl Daemon {
             changed: true,
             warnings: plan.warnings,
         };
+        reply.warnings.extend(applied.warnings);
         reply.warnings.extend(self.config_warnings());
         Ok(Reply::Done(reply))
     }
@@ -623,7 +629,8 @@ impl Daemon {
             deps.supervisor.clone(),
             deps.probe.clone(),
             deps.dirs.clone(),
-        );
+        )
+        .with_root_certificates(deps.roots.clone());
         Ok((stack, config, plan))
     }
 
@@ -650,7 +657,7 @@ impl Daemon {
             .is_some_and(|b| *b != Built::of(&config))
         {
             events(Event::ReloadFailed {
-                reason: "the ports or the suffix in crisol.toml changed; run `crisol restart` to apply them"
+                reason: "the ports, the PHP pool ports or the suffix in crisol.toml changed; run `crisol restart` to apply them"
                     .to_owned(),
             });
             return;
@@ -665,6 +672,9 @@ impl Daemon {
             }
         };
         if let Some(stack) = &mut self.stack {
+            // `[php]` may have changed: the `php.ini` is regenerated and the pools that need it
+            // restart.
+            stack.set_php_config(config.php.clone());
             match stack.apply(&plan, now) {
                 Ok(applied) if applied.reload_requested => events(Event::ReloadStarted),
                 Ok(_) => {}
@@ -704,6 +714,7 @@ impl Daemon {
         };
         stamp(&paths.config_file(), &mut hasher);
         stamp(&paths.sites_file(), &mut hasher);
+        stamp(&paths.ca_cert(), &mut hasher);
         if let Ok(loaded) = Config::load_from(paths) {
             let linked = SitesFile::load(paths).unwrap_or_default();
             let list = crate::sites::discover(paths, &loaded.config, &linked);

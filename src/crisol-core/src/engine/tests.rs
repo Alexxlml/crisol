@@ -6,6 +6,7 @@ use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
 use super::*;
+use crate::cacert::NoRoots;
 use crate::catalog::{Arch, Os};
 use crate::fetch::fake::FakeFetcher;
 use crate::paths::fake::FakePrivateDirs;
@@ -87,6 +88,7 @@ impl Rig {
             owners: Arc::new(TrustAllOwners),
             env: Arc::new(|_| None),
             system,
+            roots: Arc::new(NoRoots),
             catalog,
             target: WINDOWS,
         };
@@ -952,4 +954,30 @@ fn enabling_something_that_is_not_a_data_service_is_refused_and_writes_nothing()
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams);
     assert!(!rig.paths().config_file().exists());
+}
+
+#[test]
+fn installing_php_leaves_its_php_ini_for_the_shim_and_a_missing_bundle_is_no_error() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    rig.install("php", "8.4.26");
+    // The fake build is only an executable: give it what a real one ships.
+    let install = rig.paths().bin_for("php", "8.4.26").unwrap();
+    fs::create_dir_all(install.join("ext")).unwrap();
+    fs::write(
+        install.join("php.ini-development"),
+        "[PHP]\n;extension=curl\n",
+    )
+    .unwrap();
+    fs::write(install.join("ext").join("php_curl.dll"), "MZ").unwrap();
+    assert!(!rig.paths().php_ini("8.4.26").unwrap().exists());
+
+    // Same version again: nothing downloaded, but the generated files are brought up to date.
+    match rig.install("php", "8.4.26") {
+        Reply::Installed(info) => assert!(info.already),
+        other => panic!("{other:?}"),
+    }
+    let ini = fs::read_to_string(rig.paths().php_ini("8.4.26").unwrap()).unwrap();
+    assert!(ini.contains("extension=curl"), "{ini}");
+    // The catalog of this test has no bundle: PHP is installed all the same.
+    assert!(!rig.paths().php_cacert().exists());
 }

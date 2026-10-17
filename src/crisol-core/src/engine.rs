@@ -22,6 +22,7 @@ use crisol_protocol::{
     VersionList,
 };
 
+use crate::cacert::RootCertificates;
 use crate::catalog::{Catalog, Target};
 use crate::config::Config;
 use crate::edit::TomlEditor;
@@ -31,6 +32,7 @@ use crate::manage::{
     install_version, list_available, list_installed, uninstall, Environment, ManageError,
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
+use crate::phpsetup::{installed_php_versions, refresh_php};
 use crate::pin::{use_global, use_local, UseError, Used};
 use crate::ports::PortProbe;
 use crate::process::ProcessSupervisor;
@@ -86,6 +88,8 @@ pub struct Deps {
     pub env: EnvLookup,
     /// The checks that need the operating system.
     pub system: Arc<dyn SystemChecks>,
+    /// The root certificates the system trusts, for the CA bundle of PHP.
+    pub roots: Arc<dyn RootCertificates>,
     /// What can be installed.
     pub catalog: Catalog,
     /// The platform to install for.
@@ -387,6 +391,12 @@ impl Engine {
             },
             self.deps.dirs.as_ref(),
         );
+        if matches!(
+            result,
+            Ok(_) | Err(ManageError::Install(InstallError::AlreadyInstalled(_)))
+        ) {
+            self.after_install(service);
+        }
         match result {
             Ok(installed) => {
                 let (name, number) = installed_name(&installed.path);
@@ -412,6 +422,47 @@ impl Engine {
             }
             Err(error) => Err(manage_error(error)),
         }
+    }
+
+    /// PHP needs its generated files as soon as it is installed, with or without the daemon: the
+    /// shim reads the `php.ini`. Installing PHP also installs Mozilla's CA bundle if it is not
+    /// there yet (it is small, pinned by hash in the catalog, and without it PHP's cURL trusts no
+    /// HTTPS site, ADR-0011); a failure there is not an error, the warning comes at the next
+    /// start. Installing the bundle on its own regenerates the files too.
+    fn after_install(&self, service: &str) {
+        if !matches!(service, "php" | "cacert") {
+            return;
+        }
+        if service == "php" && !self.is_installed("cacert") {
+            let env = Environment {
+                paths: &self.paths,
+                catalog: &self.deps.catalog,
+                target: self.deps.target,
+                fetcher: self.deps.fetcher.as_ref(),
+            };
+            let _ = install_version(
+                &env,
+                "cacert",
+                "latest",
+                &InstallOptions::default(),
+                &mut |_| {},
+                self.deps.dirs.as_ref(),
+            );
+        }
+        let php = Config::load_from(&self.paths)
+            .map(|loaded| loaded.config.php)
+            .unwrap_or_default();
+        let _ = refresh_php(
+            &self.paths,
+            &php,
+            &installed_php_versions(&self.paths),
+            self.deps.roots.as_ref(),
+            self.deps.dirs.as_ref(),
+        );
+    }
+
+    fn is_installed(&self, service: &str) -> bool {
+        list_installed(&self.paths).is_ok_and(|list| list.iter().any(|i| i.service == service))
     }
 
     fn uninstall(&self, service: &str, version: &str) -> Result<Reply, RpcError> {

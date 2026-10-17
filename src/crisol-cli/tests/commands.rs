@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use crisol_cli::{run, Context, Link, Remote};
 use crisol_core::autostart::{Autostart, FakeAutostart};
+use crisol_core::cacert::NoRoots;
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::fake::FakeFetcher;
@@ -161,6 +162,7 @@ impl Env {
                 detail: "from the system".to_owned(),
                 fix: None,
             }])),
+            roots: Arc::new(NoRoots),
             catalog,
             target: Target {
                 os: Os::Windows,
@@ -300,6 +302,25 @@ fn play_nginx(
         while !stop.load(Ordering::Relaxed) {
             for record in supervisor.spawned() {
                 if !handled.insert(record.process) {
+                    continue;
+                }
+                if record.spec.program.to_string_lossy().contains("php-cgi") {
+                    // A PHP worker: it listens on the port it was given.
+                    if let Some(port) = record
+                        .spec
+                        .args
+                        .get(1)
+                        .and_then(|a| a.to_string_lossy().rsplit(':').next()?.parse().ok())
+                    {
+                        probe.occupy(
+                            port,
+                            PortOwner {
+                                pid: record.pid,
+                                name: Some("php-cgi.exe".to_owned()),
+                                address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+                            },
+                        );
+                    }
                     continue;
                 }
                 let args: Vec<String> = record
@@ -894,4 +915,31 @@ fn system_install_and_uninstall_ask_the_setup_once_each_with_the_sites_suffix() 
     assert!(!env.daemon_running());
     let (code, _, err) = env.run(&["system"]);
     assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn after_start_the_pool_reads_a_php_ini_that_loads_the_database_and_curl_extensions() {
+    let mut env = Env::new(&[("nginx", "1.28.3"), ("php", "8.4.26")]);
+    env.ok(&["install", "nginx"]);
+    env.ok(&["install", "php"]);
+    // The fake build is an executable only: give it what a real one ships.
+    let install = env.paths.bin_for("php", "8.4.26").unwrap();
+    fs::create_dir_all(install.join("ext")).unwrap();
+    fs::write(
+        install.join("php.ini-development"),
+        "[PHP]\n;extension=curl\n;extension=pdo_mysql\n",
+    )
+    .unwrap();
+    for dll in ["php_curl.dll", "php_pdo_mysql.dll"] {
+        fs::write(install.join("ext").join(dll), "MZ").unwrap();
+    }
+    fs::create_dir_all(env.paths.www_dir().join("blog")).unwrap();
+    assert!(!env.paths.php_ini("8.4.26").unwrap().exists());
+
+    env.ok(&["start"]);
+
+    let ini = fs::read_to_string(env.paths.php_ini("8.4.26").unwrap()).unwrap();
+    assert!(ini.contains("extension=curl"), "{ini}");
+    assert!(ini.contains("extension=pdo_mysql"), "{ini}");
+    env.finish();
 }

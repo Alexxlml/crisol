@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 use super::*;
+use crate::cacert::NoRoots;
 use crate::catalog::{Arch, Catalog, Os, Target};
 use crate::engine::{Deps, NoSystemChecks};
 use crate::fetch::fake::FakeFetcher;
@@ -56,6 +57,7 @@ impl Rig {
             owners: Arc::new(TrustAllOwners),
             env: Arc::new(|_| None),
             system: Arc::new(NoSystemChecks),
+            roots: Arc::new(NoRoots),
             catalog: Catalog::parse("schema = 1\nserial = 1\n").unwrap(),
             target: Target {
                 os: Os::Windows,
@@ -752,4 +754,122 @@ fn shutdown_waits_for_the_databases_too() {
     rig.mysql_leaves();
     rig.tick(1500);
     assert!(rig.daemon.settled());
+}
+
+// ---- the generated PHP files (review of the manual verification of phase 9, V1) ----------
+
+impl Rig {
+    /// PHP 8.4.26 (just enough of it) and Mozilla's CA bundle.
+    fn with_php(&self) {
+        let install = self.paths.bin_for("php", "8.4.26").unwrap();
+        fs::create_dir_all(install.join("ext")).unwrap();
+        fs::write(install.join("php-cgi.exe"), "MZ").unwrap();
+        fs::write(
+            install.join("php.ini-development"),
+            "[PHP]\n;extension=curl\n;date.timezone =\nmemory_limit = 128M\n",
+        )
+        .unwrap();
+        fs::write(install.join("ext").join("php_curl.dll"), "MZ").unwrap();
+        let bundle = self.paths.bin_for("cacert", "2026.9.25").unwrap();
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("cacert.pem"), "## Mozilla\n").unwrap();
+    }
+
+    fn php_cgi_spawns(&self) -> usize {
+        self.supervisor
+            .spawned()
+            .iter()
+            .filter(|r| r.spec.program.to_string_lossy().contains("php-cgi"))
+            .count()
+    }
+}
+
+#[test]
+fn a_start_leaves_the_ini_and_the_bundle_where_the_pool_will_read_them() {
+    let mut rig = Rig::new();
+    rig.with_php();
+    rig.call(&Call::Start { service: None }, 0).unwrap();
+
+    let ini = fs::read_to_string(rig.paths.php_ini("8.4.26").unwrap()).unwrap();
+    assert!(ini.contains("extension=curl"), "{ini}");
+    assert!(ini.contains("curl.cainfo"), "{ini}");
+    assert!(rig.paths.php_cacert().is_file());
+    // The pool was launched with `PHPRC` on the folder of that file.
+    let worker = rig
+        .supervisor
+        .spawned()
+        .into_iter()
+        .find(|r| r.spec.program.to_string_lossy().contains("php-cgi"))
+        .expect("a php-cgi worker");
+    let phprc = worker
+        .spec
+        .env
+        .iter()
+        .find(|(k, _)| k == "PHPRC")
+        .map(|(_, v)| std::path::PathBuf::from(v))
+        .unwrap();
+    assert!(phprc.join("php.ini").is_file(), "{}", phprc.display());
+}
+
+#[test]
+fn a_start_without_the_bundle_says_so_and_the_ini_has_no_cainfo() {
+    let mut rig = Rig::new();
+    rig.with_php();
+    fs::remove_dir_all(rig.paths.bin_for("cacert", "2026.9.25").unwrap()).unwrap();
+    let reply = done(rig.call(&Call::Start { service: None }, 0).unwrap());
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|w| w.contains("crisol install cacert")),
+        "{:?}",
+        reply.warnings
+    );
+    let ini = fs::read_to_string(rig.paths.php_ini("8.4.26").unwrap()).unwrap();
+    assert!(!ini.contains("curl.cainfo = "), "{ini}");
+}
+
+#[test]
+fn changing_php_in_the_file_regenerates_the_ini_and_restarts_only_its_pool() {
+    let mut rig = Rig::new();
+    rig.with_php();
+    rig.call(&Call::Start { service: None }, 0).unwrap();
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(100);
+    rig.listen(HTTP);
+    for port in 19100..19104 {
+        rig.listen(port);
+    }
+    rig.tick(600);
+    assert_eq!(rig.php_cgi_spawns(), 4);
+
+    fs::write(
+        rig.paths.config_file(),
+        format!("[services.nginx]\nhttp_port = {HTTP}\nhttps_port = 19443\n\n[php]\nbase_port = 19100\ntimezone = \"Europe/Madrid\"\n"),
+    )
+    .unwrap();
+    rig.tick(5000);
+    let ini = fs::read_to_string(rig.paths.php_ini("8.4.26").unwrap()).unwrap();
+    assert!(ini.contains("date.timezone = \"Europe/Madrid\""), "{ini}");
+
+    // The workers go down (their ports free up) and come up again with the new file.
+    assert_eq!(
+        rig.php_cgi_spawns(),
+        4,
+        "waits for the ports of the old workers"
+    );
+    for port in 19100..19104 {
+        rig.probe.release(port);
+    }
+    for ms in [5200, 5300, 5400] {
+        rig.tick(ms);
+    }
+    assert_eq!(rig.php_cgi_spawns(), 8, "{:?}", rig.state());
+    for port in 19100..19104 {
+        rig.listen(port);
+    }
+    rig.tick(6000);
+    assert_eq!(rig.service_state("php-8.4.26").as_deref(), Some("running"));
+    assert_eq!(rig.php_cgi_spawns(), 8, "{:?}", rig.state());
 }
