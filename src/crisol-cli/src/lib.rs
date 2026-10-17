@@ -18,11 +18,12 @@ use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::{Deps, Engine};
 use crisol_core::paths::CrisolPaths;
+use crisol_core::setup::SystemSetup;
 use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
-use crate::args::{Args, AutostartAction, Plan};
+use crate::args::{Args, AutostartAction, Plan, SystemAction};
 
 /// Exit code: it worked.
 pub const EXIT_OK: u8 = 0;
@@ -85,6 +86,10 @@ pub struct Context {
     pub connect: Box<dyn Fn() -> std::io::Result<Box<dyn Link>>>,
     /// Starts the daemon without waiting for it.
     pub spawn_daemon: Box<dyn Fn() -> std::io::Result<()>>,
+    /// The one-time setup that needs an administrator (the helper and the DNS rule).
+    pub setup: Box<dyn SystemSetup>,
+    /// The suffix of the local sites the setup is for (`test`).
+    pub suffix: String,
     /// The sign-in entry that starts the daemon.
     pub autostart: Box<dyn Autostart>,
     /// The `crisold` that entry would start (the one next to this program).
@@ -160,6 +165,37 @@ impl Session<'_> {
             }
             Plan::Follow { service, lines } => self.follow(&service, lines),
             Plan::Autostart(action) => self.autostart(action),
+            Plan::System(action) => self.system(action),
+        }
+    }
+
+    fn system(&mut self, action: SystemAction) -> u8 {
+        let setup = self.context.setup.as_ref();
+        let suffix = &self.context.suffix;
+        let outcome = match action {
+            SystemAction::Install => setup.install(suffix),
+            SystemAction::Uninstall => setup.uninstall(suffix),
+        };
+        match outcome {
+            Ok(report) => {
+                if self.json {
+                    let steps = serde_json::to_string(&report.steps).unwrap_or_default();
+                    let _ = writeln!(self.out, "{{\"steps\":{steps}}}");
+                } else {
+                    for step in &report.steps {
+                        let _ = writeln!(self.out, "{step}");
+                    }
+                }
+                EXIT_OK
+            }
+            Err(error) => {
+                let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    ErrorCode::NotAvailable
+                } else {
+                    ErrorCode::Io
+                };
+                self.fail(&RpcError::new(code, error.to_string()))
+            }
         }
     }
 

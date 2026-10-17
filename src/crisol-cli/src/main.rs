@@ -5,7 +5,7 @@ use std::time::Duration;
 use crisol_cli::{run, Context, Link, Remote};
 use crisol_core::ipc::pipe_name;
 use crisol_platform::{
-    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart,
+    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart, WindowsSetup,
 };
 
 fn main() -> ExitCode {
@@ -18,6 +18,8 @@ fn main() -> ExitCode {
         }
     };
     let pipe = pipe_name(paths.home());
+    let suffix = crisol_core::config::Config::load_from(&paths)
+        .map_or_else(|_| "test".to_owned(), |loaded| loaded.config.sites.tld);
     // `crisold.exe` is installed next to `crisol.exe`.
     let daemon = std::env::current_exe()
         .ok()
@@ -30,6 +32,14 @@ fn main() -> ExitCode {
             let client = connect_to_daemon(&pipe)?;
             Ok(Box::new(Remote(client)) as Box<dyn Link>)
         }),
+        setup: Box::new(WindowsSetup::new(
+            daemon
+                .as_ref()
+                .and_then(|d| d.parent())
+                .map(|dir| dir.join("crisol-elevate.exe"))
+                .unwrap_or_default(),
+        )),
+        suffix,
         autostart: Box::new(RegistryAutostart::new()),
         daemon_exe: daemon.clone(),
         spawn_daemon: Box::new(move || match &daemon {

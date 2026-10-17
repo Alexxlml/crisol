@@ -13,16 +13,22 @@
 //! prompt is shown and the reason is explained.
 
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crisol_core::dns::ElevatedOp;
+use crisol_core::setup::{check as check_manifest, SetupOp, MANIFEST_FILE};
 use crisol_core::PrivateDirs;
 
-use crate::nrpt::run_elevated_op;
+use crate::nrpt::{run_elevated, run_elevated_op};
 use crate::private_dir::WindowsPrivateDirs;
 use crate::system_paths::{helper_exe_in, program_files_directory};
+
+/// The version of Crisol this program was built as. The helper is built from the same
+/// workspace, so an installed helper of another version is one to install again.
+pub const HELPER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The most characters of arguments handed to the helper (Windows allows 32 767 for the whole
 /// command line, and `ShellExecute` has to fit the program path in it too).
@@ -71,8 +77,8 @@ impl HelperLocation {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "the privileged helper is not installed at {}; Crisol's installer puts it \
-                     there (it needs an administrator)",
+                    "the privileged helper is not installed at {}; `crisol system install` puts it \
+                     there (it needs an administrator, once)",
                     self.path.display()
                 ),
             ));
@@ -93,7 +99,23 @@ impl HelperLocation {
                 ));
             }
         }
-        Ok(())
+        // Which program it is, without running it (running it would show the UAC prompt): the
+        // manifest the installer wrote, in a folder only administrators can have written.
+        let manifest = folder.join(MANIFEST_FILE);
+        let text = match fs::read_to_string(&manifest) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        check_manifest(text.as_deref(), &fs::read(&self.path)?, HELPER_VERSION)
+            .map_err(|problem| io::Error::new(io::ErrorKind::InvalidData, problem.to_string()))
+    }
+
+    /// Checks the helper, and only then shows the UAC prompt and runs a setup operation (its
+    /// removal), which it must be the installed copy to do.
+    pub fn run_setup(&self, op: &SetupOp) -> io::Result<u32> {
+        self.verify()?;
+        run_elevated(&self.path, &op.to_args())
     }
 
     /// Checks the helper, and only then shows the UAC prompt and runs `op`. An operation whose
@@ -127,8 +149,16 @@ mod tests {
         let folder = dir.path().join("Crisol");
         fs::create_dir(&folder).unwrap();
         let exe = folder.join("crisol-elevate.exe");
-        fs::write(&exe, b"not really a program").unwrap();
+        fs::write(&exe, PROGRAM).unwrap();
+        write_manifest(&folder, HELPER_VERSION, PROGRAM);
         (dir, exe, Arc::new(FakePrivateDirs::new()))
+    }
+
+    const PROGRAM: &[u8] = b"not really a program";
+
+    fn write_manifest(folder: &Path, version: &str, program: &[u8]) {
+        let manifest = crisol_core::setup::Manifest::of(version, program);
+        fs::write(folder.join(MANIFEST_FILE), manifest.to_text()).unwrap();
     }
 
     #[test]
@@ -176,7 +206,10 @@ mod tests {
         );
         let error = location.verify().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
-        assert!(error.to_string().contains("installer"), "{error}");
+        assert!(
+            error.to_string().contains("crisol system install"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -243,5 +276,64 @@ mod tests {
         let names: Vec<String> = (0..100).map(|i| format!("site-{i}.test")).collect();
         let error = location.run(&ElevatedOp::HostsSet { names }).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    // ---- review of phase 7, W1: which program it is, without running it ----------------------
+
+    #[test]
+    fn a_helper_without_a_manifest_or_with_a_different_program_or_version_is_refused() {
+        let (_dir, exe, dirs) = installed_in_a_temp_folder();
+        let folder = exe.parent().unwrap().to_path_buf();
+        let location = HelperLocation::at(exe.clone(), dirs);
+        location.verify().unwrap();
+
+        // Swapped for another program: the hash no longer matches what the installer wrote.
+        fs::write(&exe, b"something else entirely").unwrap();
+        let error = location.verify().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("not the program that was installed"),
+            "{error}"
+        );
+        fs::write(&exe, PROGRAM).unwrap();
+        location.verify().unwrap();
+
+        // Installed by another version of Crisol.
+        write_manifest(&folder, "0.0.1", PROGRAM);
+        assert!(location.verify().unwrap_err().to_string().contains("0.0.1"));
+        write_manifest(&folder, HELPER_VERSION, PROGRAM);
+
+        // No manifest, or one nobody can read.
+        fs::remove_file(folder.join(MANIFEST_FILE)).unwrap();
+        assert!(location
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("no manifest"));
+        fs::write(folder.join(MANIFEST_FILE), "junk").unwrap();
+        assert!(location
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("damaged"));
+    }
+
+    #[test]
+    fn the_helper_is_never_run_while_it_does_not_verify() {
+        // `run` and `run_setup` check first: with a swapped program neither gets as far as
+        // showing a prompt, and the error says why.
+        let (_dir, exe, dirs) = installed_in_a_temp_folder();
+        let location = HelperLocation::at(exe.clone(), dirs);
+        fs::write(&exe, b"swapped").unwrap();
+        let error = location.run(&ElevatedOp::HostsClear).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+        let error = location
+            .run_setup(&SetupOp::UninstallSelf {
+                suffix: "test".to_owned(),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
 }

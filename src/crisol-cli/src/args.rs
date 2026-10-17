@@ -144,12 +144,29 @@ pub enum Command {
     },
     /// Checks the installation and says what to fix.
     Doctor,
+    /// Sets up (or removes) the names of the local sites: needs your administrator rights, once.
+    System {
+        /// `install` or `uninstall`.
+        #[command(subcommand)]
+        action: SystemAction,
+    },
     /// Starts the daemon when you sign in to Windows (or stops doing it).
     Autostart {
         /// `on`, `off` or `status` (the default).
         #[arg(value_enum, default_value = "status")]
         action: AutostartAction,
     },
+}
+
+/// What `crisol system` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum SystemAction {
+    /// Installs the privileged helper in Program Files and makes the DNS rule for the local
+    /// sites. Windows asks for your permission once.
+    Install,
+    /// Removes the DNS rule, Crisol's block of the hosts file and the helper. Windows asks for
+    /// your permission once.
+    Uninstall,
 }
 
 /// What to do with the sign-in entry.
@@ -175,6 +192,8 @@ pub enum Plan {
         /// Lines from the end to start with.
         lines: usize,
     },
+    /// `system`: the one-time setup that needs an administrator.
+    System(SystemAction),
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
     /// `stop`: shut down, or stop the services only.
@@ -300,6 +319,7 @@ impl Command {
             }
             Self::Doctor => Call::Doctor,
             Self::Autostart { action } => return Plan::Autostart(action),
+            Self::System { action } => return Plan::System(action),
         };
         Plan::Call(call)
     }

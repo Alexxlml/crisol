@@ -7,6 +7,8 @@ mod console;
 #[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
+mod helper_install;
+#[cfg(windows)]
 mod helper_location;
 #[cfg(windows)]
 mod hosts_file;
@@ -38,7 +40,12 @@ pub use console::survive_ctrl_c;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
-pub use helper_location::HelperLocation;
+pub use helper_install::{
+    install_into, install_self, remove_installation, remove_system_changes, uninstall_self,
+    WindowsSetup,
+};
+#[cfg(windows)]
+pub use helper_location::{HelperLocation, HELPER_VERSION};
 #[cfg(windows)]
 pub use hosts_file::{flush_dns, ElevatedHosts, FileHosts};
 #[cfg(windows)]

@@ -26,6 +26,7 @@ pub mod process;
 pub mod project;
 pub mod resolve;
 pub mod service;
+pub mod setup;
 pub mod shims;
 pub mod sites;
 pub mod tls;

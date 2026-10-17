@@ -125,9 +125,14 @@ fn helper_check() -> Check {
             name,
             CheckStatus::Warning,
             "not installed: the names of the local sites cannot be set up automatically",
-            None,
+            Some("crisol system install"),
         ),
-        Err(error) => check(name, CheckStatus::Problem, error.to_string(), None),
+        Err(error) => check(
+            name,
+            CheckStatus::Problem,
+            error.to_string(),
+            Some("crisol system install"),
+        ),
     }
 }
 

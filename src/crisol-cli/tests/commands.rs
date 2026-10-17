@@ -34,6 +34,7 @@ use crisol_core::ports::PortOwner;
 use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
+use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
 use crisol_daemon::{run as run_daemon, Options};
 use crisol_platform::connect_to_daemon;
 use crisol_protocol::{Check, CheckStatus};
@@ -94,6 +95,19 @@ impl Autostart for SharedAutostart {
     }
 }
 
+/// One fake setup shared by every command of a test.
+struct SharedSetup(Arc<FakeSetup>);
+
+impl SystemSetup for SharedSetup {
+    fn install(&self, suffix: &str) -> std::io::Result<SetupReport> {
+        self.0.install(suffix)
+    }
+
+    fn uninstall(&self, suffix: &str) -> std::io::Result<SetupReport> {
+        self.0.uninstall(suffix)
+    }
+}
+
 struct Marked(Vec<Check>);
 
 impl SystemChecks for Marked {
@@ -115,6 +129,7 @@ struct Env {
     daemon: Arc<Mutex<Option<JoinHandle<std::io::Result<()>>>>>,
     daemon_exe: std::path::PathBuf,
     autostart: Arc<FakeAutostart>,
+    setup: Arc<FakeSetup>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -165,6 +180,7 @@ impl Env {
             daemon: Arc::new(Mutex::new(None)),
             daemon_exe,
             autostart: Arc::new(FakeAutostart::new()),
+            setup: Arc::new(FakeSetup::new()),
             driver_stop,
             driver,
         }
@@ -195,6 +211,8 @@ impl Env {
                     Some(std::thread::spawn(move || run_daemon(options)));
                 Ok(())
             }),
+            setup: Box::new(SharedSetup(Arc::clone(&self.setup))),
+            suffix: "test".to_owned(),
             autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
             daemon_exe: Some(self.daemon_exe.clone()),
             daemon_wait: Duration::from_secs(10),
@@ -707,4 +725,32 @@ fn autostart_is_a_setting_of_the_user_that_can_be_turned_on_and_off() {
         !env.daemon_running(),
         "this setting never starts anything now"
     );
+}
+
+// ---- the one-time setup that needs an administrator ----------------------------------------
+
+#[test]
+fn system_install_and_uninstall_ask_the_setup_once_each_with_the_sites_suffix() {
+    let env = Env::new(&[]);
+    let installed = env.ok(&["system", "install"]);
+    assert!(
+        installed.contains("installed the helper and the rule for .test"),
+        "{installed}"
+    );
+    let removed = env.ok(&["system", "uninstall"]);
+    assert!(
+        removed.contains("removed the helper and the rule for .test"),
+        "{removed}"
+    );
+    assert_eq!(env.setup.calls(), ["install test", "uninstall test"]);
+    let json = env.ok(&["--json", "system", "install"]);
+    let value: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    assert_eq!(
+        value["steps"][0],
+        "installed the helper and the rule for .test"
+    );
+    // It never starts the daemon: it is not about the services.
+    assert!(!env.daemon_running());
+    let (code, _, err) = env.run(&["system"]);
+    assert_eq!(code, 2, "{err}");
 }

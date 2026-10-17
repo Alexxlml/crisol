@@ -18,7 +18,23 @@ use std::process::ExitCode;
 
 use crisol_core::dns::{DnsError, ElevatedOp};
 use crisol_core::hosts::DirectHosts;
-use crisol_platform::{flush_dns, restrict_dll_search, FileHosts, PowerShellNrpt};
+use crisol_core::setup::SetupOp;
+use crisol_platform::{
+    flush_dns, install_self, restrict_dll_search, uninstall_self, FileHosts, PowerShellNrpt,
+};
+
+/// The exit code of a setup operation: 0, or the number that says what failed.
+fn finish(
+    outcome: &Result<crisol_core::setup::SetupReport, crisol_core::setup::SetupFailure>,
+) -> ExitCode {
+    match outcome {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(failure) => {
+            eprintln!("crisol-elevate: {}", failure.message());
+            ExitCode::from(failure.code())
+        }
+    }
+}
 
 fn main() -> ExitCode {
     // From here on, DLLs are loaded from System32 only (the static imports are limited at link
@@ -28,6 +44,18 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The one-time installation and its removal come first; everything else is an everyday
+    // operation on the NRPT or the hosts file.
+    if let Some(parsed) = SetupOp::parse(&args) {
+        return match parsed {
+            Err(error) => {
+                eprintln!("crisol-elevate: {error}");
+                ExitCode::from(2)
+            }
+            Ok(SetupOp::InstallSelf { suffix }) => finish(&install_self(&suffix)),
+            Ok(SetupOp::UninstallSelf { suffix }) => finish(&uninstall_self(&suffix)),
+        };
+    }
     let op = match ElevatedOp::parse(&args) {
         Ok(op) => op,
         Err(error) => {
