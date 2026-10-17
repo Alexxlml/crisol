@@ -1,4 +1,4 @@
-//! MySQL and MariaDB as services (F9.1, F9.5; ADR-0006, ADR-0007).
+//! MySQL, MariaDB and PostgreSQL as services (F9.1, F9.2, F9.5; ADR-0006, ADR-0007, ADR-0016).
 //!
 //! What a database service needs besides a [`Service`]:
 //!
@@ -32,21 +32,24 @@ use crate::process::{
     ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
 };
 use crate::service::{
-    FailureReason, HealthCheck, LifecyclePolicy, Service, ServiceEvent, ServiceSpec, ServiceState,
+    FailureReason, HealthCheck, HealthCommand, LifecyclePolicy, Service, ServiceEvent, ServiceSpec,
+    ServiceState,
 };
 
-/// The two MySQL-protocol servers.
+/// The database servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbKind {
     /// Oracle's MySQL.
     Mysql,
     /// MariaDB.
     Mariadb,
+    /// PostgreSQL.
+    Postgres,
 }
 
 impl DbKind {
-    /// Both, MySQL first.
-    pub const ALL: [Self; 2] = [Self::Mysql, Self::Mariadb];
+    /// All of them, MySQL first.
+    pub const ALL: [Self; 3] = [Self::Mysql, Self::Mariadb, Self::Postgres];
 
     /// The name of the service (`mysql`, `mariadb`): in the catalog, in `crisol.toml` and in
     /// every folder.
@@ -55,6 +58,7 @@ impl DbKind {
         match self {
             Self::Mysql => "mysql",
             Self::Mariadb => "mariadb",
+            Self::Postgres => "postgresql",
         }
     }
 
@@ -68,13 +72,22 @@ impl DbKind {
         match self {
             Self::Mysql => "mysqld.exe",
             Self::Mariadb => "mariadbd.exe",
+            Self::Postgres => "postgres.exe",
+        }
+    }
+
+    /// The generated configuration file.
+    fn config_file(self) -> &'static str {
+        match self {
+            Self::Mysql | Self::Mariadb => "my.ini",
+            Self::Postgres => "postgresql.conf",
         }
     }
 
     /// The program that creates the data directory of MariaDB (MySQL initializes itself).
     fn installer(self) -> Option<&'static str> {
         match self {
-            Self::Mysql => None,
+            Self::Mysql | Self::Postgres => None,
             Self::Mariadb => Some("mariadb-install-db.exe"),
         }
     }
@@ -85,6 +98,7 @@ impl DbKind {
         match self {
             Self::Mysql => config.services.mysql.enabled,
             Self::Mariadb => config.services.mariadb.enabled,
+            Self::Postgres => config.services.postgresql.enabled,
         }
     }
 
@@ -94,6 +108,7 @@ impl DbKind {
         match self {
             Self::Mysql => config.services.mysql.port,
             Self::Mariadb => config.services.mariadb.port,
+            Self::Postgres => config.services.postgresql.port,
         }
     }
 
@@ -101,15 +116,17 @@ impl DbKind {
         match self {
             Self::Mysql => config.services.mysql.version.as_deref(),
             Self::Mariadb => config.services.mariadb.version.as_deref(),
+            Self::Postgres => config.services.postgresql.version.as_deref(),
         }
     }
 
     /// The part of a version that decides whether two data directories are compatible: the first
-    /// two numbers (`8.4`, `11.8`, `10.11`). A new series is a new folder, never an upgrade in
-    /// place.
+    /// two numbers for MySQL and MariaDB (`8.4`, `11.8`, `10.11`), the major for PostgreSQL
+    /// (`17`, `18`). A new series is a new folder, never an upgrade in place.
     #[must_use]
     pub fn series(self, version: &str) -> String {
-        version.split('.').take(2).collect::<Vec<_>>().join(".")
+        let parts = if self == Self::Postgres { 1 } else { 2 };
+        version.split('.').take(parts).collect::<Vec<_>>().join(".")
     }
 }
 
@@ -145,9 +162,9 @@ pub struct DbPlan {
     pub data: PathBuf,
     /// `data/<service>/<series>.init/`: where it is made first.
     pub staging: PathBuf,
-    /// `etc/<service>/<series>/my.ini`.
+    /// `etc/<service>/<series>/my.ini` (`postgresql.conf` for PostgreSQL).
     pub ini: PathBuf,
-    /// `etc/<service>/overrides/`: the user's own `*.ini`.
+    /// `etc/<service>/overrides/`: the user's own `*.ini` (`*.conf` for PostgreSQL).
     pub overrides: PathBuf,
     /// `logs/<service>/error.log`.
     pub error_log: PathBuf,
@@ -181,7 +198,7 @@ pub fn plan(paths: &CrisolPaths, config: &Config, kind: DbKind) -> Result<DbPlan
         port: kind.port(config),
         data: paths.data_for(service, &series)?,
         staging: paths.data_for(service, &format!("{series}.init"))?,
-        ini: etc.join(&series).join("my.ini"),
+        ini: etc.join(&series).join(kind.config_file()),
         overrides: paths.overrides_for(service)?,
         error_log: paths.logs_for(service)?.join("error.log"),
         runtime_log: paths.runtime_log(service)?,
@@ -217,8 +234,45 @@ fn quote(path: &Path) -> Result<String, DbError> {
     Ok(format!("\"{text}\""))
 }
 
-/// The text of `my.ini`.
+/// A path as it goes between the single quotes of a `postgresql.conf` value.
+fn quote_pg(path: &Path) -> Result<String, DbError> {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if let Some(bad) = text.chars().find(|c| *c == '\'' || c.is_control()) {
+        return Err(DbError::Unusable(format!(
+            "`{text}` has a character the database configuration would read differently ({bad:?}); \
+             use a Crisol home without it"
+        )));
+    }
+    Ok(format!("'{text}'"))
+}
+
+/// The text of `postgresql.conf`: this computer only, the port of `crisol.toml`, the log to
+/// standard error (Crisol keeps it in `runtime.log`) and the user's own `*.conf`.
+fn render_postgres(plan: &DbPlan) -> Result<String, DbError> {
+    let mut text = String::from(
+        "# Generated by Crisol; it is rewritten whenever the plan changes. Your own settings go in\n\
+         # the `overrides` folder next to it, which is never touched.\n\n",
+    );
+    let mut line = |key: &str, value: &str| {
+        text.push_str(key);
+        text.push_str(" = ");
+        text.push_str(value);
+        text.push('\n');
+    };
+    // Only this computer: the superuser has no password (ADR-0006).
+    line("listen_addresses", "'127.0.0.1'");
+    line("port", &plan.port.to_string());
+    line("log_destination", "'stderr'");
+    line("logging_collector", "off");
+    line("include_dir", &quote_pg(&plan.overrides)?);
+    Ok(text)
+}
+
+/// The text of `my.ini` (`postgresql.conf` for PostgreSQL).
 pub fn render_ini(plan: &DbPlan) -> Result<String, DbError> {
+    if plan.kind == DbKind::Postgres {
+        return render_postgres(plan);
+    }
     let mut text = String::from(
         "# Generated by Crisol; it is rewritten whenever the plan changes. Your own settings go in\n\
          # the `overrides` folder next to it, which is never touched.\n\n[mysqld]\n",
@@ -271,6 +325,16 @@ pub fn write_ini(plan: &DbPlan) -> Result<(), DbError> {
 /// The one-time initializer, writing into the staging folder.
 #[must_use]
 pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
+    if plan.kind == DbKind::Postgres {
+        // The superuser is `postgres`, with no password, reachable from this computer only
+        // (`trust` in a `pg_hba.conf` that listens nowhere else).
+        return ProcessSpec::new(plan.program("initdb.exe"))
+            .arg("-D")
+            .arg(&plan.staging)
+            .args(["-U", "postgres", "-A", "trust", "-E", "UTF8"])
+            .cwd(&plan.version.path)
+            .log_file(&plan.runtime_log);
+    }
     let spec = match plan.kind.installer() {
         // MariaDB makes a root without a password.
         Some(installer) => ProcessSpec::new(plan.program(installer))
@@ -287,6 +351,9 @@ pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
 /// The long-running service.
 #[must_use]
 pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
+    if plan.kind == DbKind::Postgres {
+        return postgres_spec(plan);
+    }
     let admin = ProcessSpec::new(plan.program("mysqladmin.exe"))
         .arg("--protocol=tcp")
         .arg("--host=127.0.0.1")
@@ -308,6 +375,43 @@ pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
             // A first start, or one after a crash, replays the redo log.
             startup_timeout: Duration::from_secs(90),
             // A clean shutdown flushes the buffer pool.
+            stop_grace: Duration::from_secs(30),
+            ..LifecyclePolicy::default()
+        })
+}
+
+fn postgres_spec(plan: &DbPlan) -> ServiceSpec {
+    let stop = ProcessSpec::new(plan.program("pg_ctl.exe"))
+        .arg("stop")
+        .arg("-D")
+        .arg(&plan.data)
+        .args(["-m", "fast"]);
+    let ready = ProcessSpec::new(plan.program("pg_isready.exe")).args([
+        "-h",
+        "127.0.0.1",
+        "-p",
+        &plan.port.to_string(),
+        "-q",
+    ]);
+    ServiceSpec::new(plan.name())
+        .process(
+            ProcessSpec::new(plan.program(plan.kind.server()))
+                .arg("-D")
+                .arg(&plan.data)
+                .arg("-c")
+                .arg(format!("config_file={}", plan.ini.display()))
+                .cwd(&plan.version.path)
+                .log_file(&plan.runtime_log),
+        )
+        .port(plan.port)
+        // The port opens before the server accepts connections; `pg_isready` says when it does.
+        .health(HealthCheck::Command(HealthCommand {
+            spec: ready,
+            timeout: Duration::from_secs(5),
+        }))
+        .graceful_stop(stop)
+        .policy(LifecyclePolicy {
+            startup_timeout: Duration::from_secs(90),
             stop_grace: Duration::from_secs(30),
             ..LifecyclePolicy::default()
         })

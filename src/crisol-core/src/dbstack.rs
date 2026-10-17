@@ -99,7 +99,7 @@ impl DbStack {
         Ok(events)
     }
 
-    /// MySQL and MariaDB on the same port cannot both run.
+    /// Two databases on the same port cannot both run.
     fn require_free_port(&self, kind: DbKind, config: &Config) -> Result<(), RpcError> {
         for other in DbKind::ALL.into_iter().filter(|o| *o != kind) {
             let running = self.services.get(&other).is_some_and(|s| active(s.state()));
@@ -107,8 +107,8 @@ impl DbStack {
                 return Err(RpcError::new(
                     ErrorCode::Conflict,
                     format!(
-                        "{} is running on port {}, which {} would use too: MySQL and MariaDB are \
-                         alternatives, only one at a time. Stop it first with `crisol stop {}`, \
+                        "{} is running on port {}, which {} would use too (MySQL and MariaDB are \
+                         alternatives, only one at a time). Stop it first with `crisol stop {}`, \
                          or give one of them another port in crisol.toml",
                         other.service(),
                         other.port(config),

@@ -45,6 +45,7 @@ impl Rig {
         let bin = self.paths.bin_for(service, version).unwrap().join("bin");
         fs::create_dir_all(&bin).unwrap();
         fs::write(bin.join("mysqld.exe"), "MZ").unwrap();
+        fs::write(bin.join("postgres.exe"), "MZ").unwrap();
     }
 
     fn plan(&self, kind: DbKind) -> DbPlan {
@@ -386,4 +387,103 @@ fn stopping_a_running_database_asks_it_to_shut_down_first() {
     rig.ports.release(19306);
     db.tick(rig.at(1500));
     assert_eq!(*db.state(), ServiceState::Stopped);
+}
+
+#[test]
+fn postgresql_data_is_split_by_major_and_listens_on_this_computer_only() {
+    let mut rig = Rig::new();
+    rig.config.services.postgresql.port = 19432;
+    rig.install("postgresql", "17.11");
+    rig.install("postgresql", "18.6");
+    let latest = rig.plan(DbKind::Postgres);
+    assert_eq!(latest.version.version.to_string(), "18.6");
+    assert_eq!(latest.series, "18");
+    assert_eq!(
+        latest.data,
+        rig.paths.home().join("data").join("postgresql").join("18")
+    );
+    assert!(
+        latest.ini.ends_with("postgresql/18/postgresql.conf")
+            || latest.ini.ends_with(r"postgresql\18\postgresql.conf")
+    );
+    rig.config.services.postgresql.version = Some("17".to_owned());
+    let old = rig.plan(DbKind::Postgres);
+    assert_eq!(
+        (old.series.as_str(), old.version.version.to_string()),
+        ("17", "17.11".to_owned())
+    );
+    assert_ne!(old.data, latest.data);
+
+    let text = render_ini(&latest).unwrap();
+    assert!(text.contains("listen_addresses = '127.0.0.1'"), "{text}");
+    assert!(text.contains("port = 19432"), "{text}");
+    assert!(text.contains("include_dir = '"), "{text}");
+    assert!(
+        !text.contains('\\') && !text.to_lowercase().contains("password"),
+        "{text}"
+    );
+    // A path with a single quote cannot be written between single quotes.
+    let mut odd = latest.clone();
+    odd.overrides = PathBuf::from("C:/it's/overrides");
+    assert!(render_ini(&odd).is_err());
+}
+
+#[test]
+fn postgresql_initializes_with_initdb_and_runs_postgres_directly() {
+    let mut rig = Rig::new();
+    rig.config.services.postgresql.port = 19432;
+    rig.install("postgresql", "17.11");
+    let plan = rig.plan(DbKind::Postgres);
+    let mut db = rig.service(DbKind::Postgres);
+    db.start(rig.at(0));
+    let init = rig.supervisor.spawned()[0].clone();
+    assert!(
+        init.spec.program.ends_with("initdb.exe"),
+        "{:?}",
+        init.spec.program
+    );
+    let args = words(&init.spec);
+    assert!(
+        args.contains(&"trust".to_owned()) && args.contains(&"postgres".to_owned()),
+        "{args:?}"
+    );
+    assert!(
+        args.contains(&plan.staging.display().to_string()),
+        "{args:?}"
+    );
+    fs::create_dir_all(plan.staging.join("base")).unwrap();
+    rig.supervisor.exit(init.process, 0).unwrap();
+    db.tick(rig.at(500));
+    assert!(plan.data.join("base").is_dir());
+    let server = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(server.spec.program.ends_with("postgres.exe"));
+    let args = words(&server.spec);
+    assert!(args.contains(&plan.data.display().to_string()), "{args:?}");
+    assert!(
+        args.contains(&format!("config_file={}", plan.ini.display())),
+        "{args:?}"
+    );
+    // Ready only when `pg_isready` says so: an open port alone is not enough.
+    rig.listen(19432);
+    db.tick(rig.at(1200));
+    let probe = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(
+        probe.spec.program.ends_with("pg_isready.exe"),
+        "{:?}",
+        probe.spec.program
+    );
+    assert_eq!(*db.state(), ServiceState::Starting);
+    rig.supervisor.exit(probe.process, 0).unwrap();
+    db.tick(rig.at(1500));
+    db.tick(rig.at(2200));
+    assert_eq!(*db.state(), ServiceState::Running);
+    // And it is stopped with `pg_ctl stop -m fast`.
+    db.stop(rig.at(3000));
+    let stop = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(stop.spec.program.ends_with("pg_ctl.exe"));
+    let args = words(&stop.spec);
+    assert!(
+        args.contains(&"fast".to_owned()) && args.contains(&"stop".to_owned()),
+        "{args:?}"
+    );
 }

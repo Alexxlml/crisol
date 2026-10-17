@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 5
+serial = 6
 generated = "2026-10-14"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -195,3 +195,33 @@ format = "zip"
 root = "mysql-8.4.11-winx64"
 executable = "bin/mysqld.exe"
 size = 281191914
+
+# PostgreSQL (F9.2). The PostgreSQL project links its Windows binaries to EDB (EnterpriseDB), who
+# publish them at get.enterprisedb.com. EDB publishes NO hash and NO signature for them, and the
+# executables are not Authenticode-signed: these hashes were computed on a download over HTTPS and
+# are identical on two separate downloads. That is integrity of the transfer, not authenticity
+# against the provider (lower certainty, like PHP 7.4; analisis/fuentes-binarios.md). The archive
+# carries the server under `pgsql/` (and pgAdmin, which is why it is so large).
+[[package]]
+service = "postgresql"
+version = "17.11"
+os = "windows"
+arch = "x86_64"
+url = "https://get.enterprisedb.com/postgresql/postgresql-17.11-1-windows-x64-binaries.zip"
+sha256 = "6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3"
+format = "zip"
+root = "pgsql"
+executable = "bin/postgres.exe"
+size = 340719294
+
+[[package]]
+service = "postgresql"
+version = "18.6"
+os = "windows"
+arch = "x86_64"
+url = "https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip"
+sha256 = "fbe23da234ee31547bf8a36d29dfd81e82b849df2d2b78d2eecb43d360252f8c"
+format = "zip"
+root = "pgsql"
+executable = "bin/postgres.exe"
+size = 343808005

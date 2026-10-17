@@ -554,7 +554,7 @@ fn load_update_is_the_door_for_outside_catalogs_and_checks_signature_and_serial(
 // ---- the contents of the built-in catalog (F3.2) --------------------------------
 
 /// The only sites a built-in entry may download from.
-const OFFICIAL_HOSTS: [&str; 7] = [
+const OFFICIAL_HOSTS: [&str; 8] = [
     "windows.php.net",
     "nginx.org",
     "nodejs.org",
@@ -562,6 +562,7 @@ const OFFICIAL_HOSTS: [&str; 7] = [
     "curl.se",
     "archive.mariadb.org",
     "cdn.mysql.com",
+    "get.enterprisedb.com",
 ];
 
 fn built_in() -> Catalog {
@@ -585,7 +586,16 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
     let catalog = built_in();
     assert_eq!(
         catalog.services(),
-        ["cacert", "composer", "mariadb", "mysql", "nginx", "node", "php"]
+        [
+            "cacert",
+            "composer",
+            "mariadb",
+            "mysql",
+            "nginx",
+            "node",
+            "php",
+            "postgresql"
+        ]
     );
     assert!(catalog.packages().iter().all(|p| p.target == WINDOWS));
     assert!(catalog.serial() >= 3);
@@ -647,6 +657,11 @@ fn built_in_archives_are_unpacked_the_way_each_provider_packages_them() {
                 ArchiveFormat::Zip,
                 "bin/mariadbd.exe",
                 Some(format!("mariadb-{version}-winx64")),
+            ),
+            "postgresql" => (
+                ArchiveFormat::Zip,
+                "bin/postgres.exe",
+                Some("pgsql".to_owned()),
             ),
             "mysql" => (
                 ArchiveFormat::Zip,

@@ -98,19 +98,28 @@ impl World {
 
     /// Runs the SQL with the `mysql` client of the installed version, as root without a password.
     fn sql(&self, kind: DbKind, version: &str, port: u16, sql: &str) -> String {
-        let client = self
+        let bin = self
             .paths
             .bin_for(kind.service(), version)
             .unwrap()
-            .join("bin")
-            .join("mysql.exe");
-        let out = Command::new(client)
-            .args(["--protocol=tcp", "-h127.0.0.1", "-uroot", "-N", "-B"])
-            .arg(format!("-P{port}"))
-            .arg("-e")
-            .arg(sql)
-            .output()
-            .unwrap();
+            .join("bin");
+        let mut command;
+        if kind == DbKind::Postgres {
+            command = Command::new(bin.join("psql.exe"));
+            command
+                .args(["-h", "127.0.0.1", "-U", "postgres", "-d", "postgres", "-tA"])
+                .args(["-p", &port.to_string()])
+                .arg("-c")
+                .arg(sql);
+        } else {
+            command = Command::new(bin.join("mysql.exe"));
+            command
+                .args(["--protocol=tcp", "-h127.0.0.1", "-uroot", "-N", "-B"])
+                .arg(format!("-P{port}"))
+                .arg("-e")
+                .arg(sql);
+        }
+        let out = command.output().unwrap();
         assert!(
             out.status.success(),
             "{sql}: {}",
@@ -145,8 +154,13 @@ fn exercise(kind: DbKind, version: &str, port: u16, series: &str) {
         started.elapsed()
     );
     let data = world.paths.data_for(name, series).unwrap();
+    let marker = if kind == DbKind::Postgres {
+        "base"
+    } else {
+        "mysql"
+    };
     assert!(
-        data.join("mysql").is_dir(),
+        data.join(marker).is_dir(),
         "the data is in {}",
         data.display()
     );
@@ -158,7 +172,18 @@ fn exercise(kind: DbKind, version: &str, port: u16, series: &str) {
 
     // Root without a password, from this computer, and it persists.
     assert_eq!(world.sql(kind, version, port, "SELECT 1"), "1");
-    world.sql(kind, version, port, "CREATE DATABASE crisol_t; CREATE TABLE crisol_t.t (n INT); INSERT INTO crisol_t.t VALUES (42)");
+    let (setup, query) = if kind == DbKind::Postgres {
+        (
+            "CREATE TABLE crisol_t (n int); INSERT INTO crisol_t VALUES (42)",
+            "SELECT n FROM crisol_t",
+        )
+    } else {
+        (
+            "CREATE DATABASE crisol_t; CREATE TABLE crisol_t.t (n INT); INSERT INTO crisol_t.t VALUES (42)",
+            "SELECT n FROM crisol_t.t",
+        )
+    };
+    world.sql(kind, version, port, setup);
     // It listens on the loopback only.
     let listeners = Command::new("netstat")
         .args(["-ano", "-p", "TCP"])
@@ -192,10 +217,7 @@ fn exercise(kind: DbKind, version: &str, port: u16, series: &str) {
         )
     });
     assert_eq!(world.state(kind), Some(ServiceState::Running));
-    assert_eq!(
-        world.sql(kind, version, port, "SELECT n FROM crisol_t.t"),
-        "42"
-    );
+    assert_eq!(world.sql(kind, version, port, query), "42");
     world.stack.stop(Some(kind), Instant::now());
     world.tick_until("the database to stop", 60, |w| w.stack.is_stopped());
 }
@@ -216,4 +238,16 @@ fn mariadb_11_8_initializes_once_runs_persists_and_stops_gracefully() {
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with mariadb-10.11.19-winx64.zip (Windows); slow"]
 fn mariadb_10_11_does_the_same_in_its_own_data_series() {
     exercise(DbKind::Mariadb, "10.11.19", 19308, "10.11");
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with postgresql-18.6-1-windows-x64-binaries.zip (Windows); slow"]
+fn postgresql_18_initializes_once_runs_persists_and_stops_gracefully() {
+    exercise(DbKind::Postgres, "18.6", 19432, "18");
+}
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with postgresql-17.11-1-windows-x64-binaries.zip (Windows); slow"]
+fn postgresql_17_does_the_same_in_its_own_data_series() {
+    exercise(DbKind::Postgres, "17.11", 19433, "17");
 }
