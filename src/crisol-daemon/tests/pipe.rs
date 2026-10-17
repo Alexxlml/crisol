@@ -240,3 +240,32 @@ fn garbage_on_the_pipe_is_answered_and_does_not_hurt_the_daemon() {
     drop((reader, writer));
     daemon.shut_down();
 }
+
+#[test]
+fn clients_that_open_the_pipe_and_leave_do_not_bring_the_daemon_down() {
+    let mut daemon = start_daemon();
+    for _ in 0..50 {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&daemon.pipe)
+            {
+                Ok(file) => {
+                    drop(file);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(231) && Instant::now() < end => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+    assert!(daemon
+        .connect()
+        .call(&Call::Status { service: None })
+        .is_ok());
+    daemon.shut_down();
+}

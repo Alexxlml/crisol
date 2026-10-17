@@ -101,10 +101,16 @@ pub fn run(options: Options) -> io::Result<()> {
         loop {
             tokio::select! {
                 connected = instance.connect() => {
-                    connected?;
-                    let next = create_instance(&pipe, false)?;
+                    // A failed connection (a client that opened the pipe and closed it at once
+                    // is `ERROR_NO_DATA`) concerns that client only: log it and listen again.
+                    let next = next_instance(&pipe, &mut log).await?;
                     let connection = std::mem::replace(&mut instance, next);
-                    connections.spawn(serve(connection, shared.clone()));
+                    match connected {
+                        Ok(()) => {
+                            connections.spawn(serve(connection, shared.clone()));
+                        }
+                        Err(e) => log.line(&format!("a client could not connect: {e}")),
+                    }
                 }
                 _ = &mut done_rx => break,
             }
@@ -126,6 +132,30 @@ pub fn run(options: Options) -> io::Result<()> {
     let _ = actor.join();
     log.line("crisold stopped");
     served
+}
+
+/// How many times in a row making the next pipe instance may fail before the daemon gives up.
+const INSTANCE_ATTEMPTS: u32 = 5;
+
+/// The next instance of the pipe to listen on. A failure is waited out and retried: only
+/// several in a row mean the system cannot make pipes and the daemon cannot serve anyone.
+async fn next_instance(name: &str, log: &mut DaemonLog) -> io::Result<NamedPipeServer> {
+    let mut failures = 0;
+    loop {
+        match create_instance(name, false) {
+            Ok(instance) => return Ok(instance),
+            Err(e) => {
+                failures += 1;
+                log.line(&format!(
+                    "could not make a pipe instance ({failures}/{INSTANCE_ATTEMPTS}): {e}"
+                ));
+                if failures >= INSTANCE_ATTEMPTS {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(failures))).await;
+            }
+        }
+    }
 }
 
 /// One instance of the pipe, for the current user only and not for remote clients.
