@@ -176,20 +176,12 @@ fn plan_with_cwd(words: &[&str], cwd: &str) -> Plan {
 
 #[test]
 fn stop_and_logs_are_plans_of_their_own() {
-    assert_eq!(
-        plan(&["stop"]),
-        Plan::Stop {
-            keep_daemon: false,
-            service: None
-        }
-    );
-    assert_eq!(
-        plan(&["stop", "--keep-daemon"]),
-        Plan::Stop {
-            keep_daemon: true,
-            service: None
-        }
-    );
+    // `stop` stops the services and nothing else; closing the daemon is said out loud.
+    assert_eq!(call(&["stop"]), Call::Stop { service: None });
+    assert_eq!(call(&["stop", "--daemon"]), Call::Shutdown);
+    assert_eq!(call(&["shutdown"]), Call::Shutdown);
+    assert!(parse(["crisol", "stop", "--keep-daemon"]).is_err());
+    assert!(parse(["crisol", "stop", "--daemon", "nginx"]).is_err());
     assert_eq!(
         call(&["logs", "nginx"]),
         Call::Logs {

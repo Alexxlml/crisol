@@ -155,17 +155,6 @@ impl Session<'_> {
         let plan = args.command.plan(&self.context.cwd);
         match plan {
             Plan::Call(call) => self.one(&call),
-            Plan::Stop {
-                keep_daemon,
-                service,
-            } => {
-                let call = if keep_daemon || service.is_some() {
-                    Call::Stop { service }
-                } else {
-                    Call::Shutdown
-                };
-                self.one(&call)
-            }
             Plan::Follow { service, lines } => self.follow(&service, lines),
             Plan::Autostart(action) => self.autostart(action),
             Plan::System(action) => self.system(action),

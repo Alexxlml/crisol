@@ -39,14 +39,17 @@ pub enum Command {
         /// that says so.
         service: Option<String>,
     },
-    /// Stops everything and the daemon. With `--keep-daemon`, only the services.
+    /// Stops the services (Nginx and PHP). The daemon keeps running: it watches your files and
+    /// answers the DNS of the local names. `--daemon` closes it too.
     Stop {
-        /// Stop the services but leave the daemon running (the local names keep resolving).
-        #[arg(long)]
-        keep_daemon: bool,
+        /// Close the daemon as well (the local names stop resolving). Same as `crisol shutdown`.
+        #[arg(long, conflicts_with = "service")]
+        daemon: bool,
         /// Only this service.
         service: Option<String>,
     },
+    /// Stops the services and closes the daemon.
+    Shutdown,
     /// Stops and starts the web stack again.
     Restart {
         /// Only this service.
@@ -196,13 +199,6 @@ pub enum Plan {
     System(SystemAction),
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
-    /// `stop`: shut down, or stop the services only.
-    Stop {
-        /// Leave the daemon running.
-        keep_daemon: bool,
-        /// A single service, if named.
-        service: Option<String>,
-    },
 }
 
 /// Parses the arguments (the first is the program name).
@@ -257,14 +253,14 @@ impl Command {
             Self::Restart { service } => Call::Restart { service },
             Self::Status { service } => Call::Status { service },
             Self::Stop {
-                keep_daemon,
-                service,
-            } => {
-                return Plan::Stop {
-                    keep_daemon,
-                    service,
-                }
+                daemon: true,
+                service: _,
             }
+            | Self::Shutdown => Call::Shutdown,
+            Self::Stop {
+                daemon: false,
+                service,
+            } => Call::Stop { service },
             Self::Install { service, version } => Call::Install { service, version },
             Self::Uninstall { service, version } => Call::Uninstall { service, version },
             Self::List { available } => Call::List { available },

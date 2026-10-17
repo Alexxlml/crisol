@@ -267,7 +267,7 @@ impl Env {
     /// Makes sure no daemon is left behind.
     fn finish(&mut self) {
         if self.daemon_running() {
-            let _ = self.run(&["stop"]);
+            let _ = self.run(&["shutdown"]);
         }
         if let Some(thread) = self.daemon.lock().unwrap().take() {
             let _ = thread.join();
@@ -477,7 +477,7 @@ fn status_without_a_daemon_says_stopped_and_nothing_starts() {
     // With nothing running there is nothing to stop, and that is not an error.
     assert!(env.ok(&["stop"]).contains("Nothing was running"));
     assert!(env
-        .ok(&["stop", "--keep-daemon"])
+        .ok(&["stop", "--daemon"])
         .contains("Nothing was running"));
 }
 
@@ -487,7 +487,7 @@ fn start_status_restart_and_stop_run_the_web_stack_through_the_daemon() {
     // Nothing to start before nginx is installed.
     assert!(env.failing(&["start"]).contains("crisol install nginx"));
     // That `start` had to start the daemon to be told so; let it go before the real one.
-    env.ok(&["stop"]);
+    env.ok(&["shutdown"]);
     let end = std::time::Instant::now() + Duration::from_secs(10);
     while env.daemon_running() {
         assert!(std::time::Instant::now() < end, "the daemon did not leave");
@@ -527,14 +527,16 @@ fn start_status_restart_and_stop_run_the_web_stack_through_the_daemon() {
     let restart = env.ok(&["restart"]);
     assert!(restart.contains("running"), "{restart}");
 
-    // Stopping the services leaves the daemon; stopping for good takes it too, and warns that
-    // the local names will not resolve any more.
-    let stopped = env.ok(&["stop", "--keep-daemon"]);
+    // `stop` stops the services and leaves the daemon (and the DNS of the local names) alone, so
+    // it has no warning about names; closing the daemon is said out loud, and warns that the
+    // local names will not resolve any more.
+    let stopped = env.ok(&["stop"]);
     assert!(stopped.contains("stopped"), "{stopped}");
+    assert!(!stopped.contains("warning"), "{stopped}");
     assert!(env.ok(&["status"]).contains("stopped"));
     assert!(env.daemon_running());
     env.ok(&["start"]);
-    let shutdown = env.ok(&["stop"]);
+    let shutdown = env.ok(&["stop", "--daemon"]);
     assert!(shutdown.contains("daemon is leaving"), "{shutdown}");
     assert!(
         shutdown.contains("warning: the local names stop resolving"),
