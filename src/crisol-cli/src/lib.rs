@@ -20,11 +20,13 @@ use crisol_core::engine::{Deps, Engine};
 use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
+use crisol_core::shimsetup::{self, Shell, ShimsError};
+use crisol_core::userpath::{PathChange, UserPath};
 use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
-use crate::args::{Args, AutostartAction, Plan, SystemAction};
+use crate::args::{Args, AutostartAction, PathAction, Plan, ShellArg, ShimsAction, SystemAction};
 
 /// Exit code: it worked.
 pub const EXIT_OK: u8 = 0;
@@ -32,6 +34,9 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: the arguments are wrong (the same as `clap` uses).
 pub const EXIT_USAGE: u8 = 2;
+
+/// Reads a variable of the environment of the process.
+pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
 
 /// A way to make calls: the daemon, or this process.
 pub trait Link {
@@ -93,6 +98,12 @@ pub struct Context {
     pub autostart: Box<dyn Autostart>,
     /// The `crisold` that entry would start (the one next to this program).
     pub daemon_exe: Option<PathBuf>,
+    /// The user PATH (the registry; a double in the tests).
+    pub user_path: Box<dyn UserPath>,
+    /// The `crisol-shim` that `shims install` copies (the one next to this program).
+    pub shim_exe: Option<PathBuf>,
+    /// The environment of this process, to tell which shell this is.
+    pub env: EnvLookup,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
@@ -156,7 +167,186 @@ impl Session<'_> {
             Plan::Follow { service, lines } => self.follow(&service, lines),
             Plan::Autostart(action) => self.autostart(action),
             Plan::System(action) => self.system(action),
+            Plan::Shims(action) => self.shims(action),
+            Plan::Path(action) => self.path(action),
+            Plan::Env(shell) => self.env(shell),
         }
+    }
+
+    /// Prints a text, or `json` when `--json` was given.
+    fn say(&mut self, text: &str, json: &serde_json::Value) {
+        if self.json {
+            let _ = writeln!(self.out, "{json}");
+        } else {
+            let _ = writeln!(self.out, "{text}");
+        }
+    }
+
+    fn shims(&mut self, action: ShimsAction) -> u8 {
+        let paths = &self.context.paths;
+        let folder = paths.shims_dir().display().to_string();
+        match action {
+            ShimsAction::Install => {
+                let Some(exe) = self.context.shim_exe.clone() else {
+                    return self.fail(&RpcError::new(
+                        ErrorCode::NotAvailable,
+                        "crisol-shim.exe was not found next to this program",
+                    ));
+                };
+                let done = match shimsetup::install_shims(paths, &exe, self.context.dirs.as_ref()) {
+                    Ok(done) => done,
+                    Err(ShimsError::Program(e)) => return self.fail(&program_error(&e)),
+                    Err(ShimsError::Io(e)) => {
+                        return self.fail(&RpcError::new(ErrorCode::Io, e.to_string()));
+                    }
+                };
+                let mut text = format!(
+                    "{} shim(s) written and {} already up to date in {folder}",
+                    done.written.len(),
+                    done.unchanged.len()
+                );
+                for (name, why) in &done.failed {
+                    text.push_str(&["\n  could not write ", name, ": ", why].concat());
+                }
+                text.push_str(
+                    "
+They run in a terminal once the folder is in your PATH: `crisol path add`",
+                );
+                let failed: Vec<_> = done
+                    .failed
+                    .iter()
+                    .map(|(n, w)| serde_json::json!({"shim": n, "why": w}))
+                    .collect();
+                let json = serde_json::json!({
+                    "written": done.written,
+                    "unchanged": done.unchanged,
+                    "failed": failed,
+                });
+                self.say(&text, &json);
+                if done.failed.is_empty() {
+                    EXIT_OK
+                } else {
+                    EXIT_FAILED
+                }
+            }
+            ShimsAction::Remove => match shimsetup::remove_shims_files(paths) {
+                Ok(removed) => {
+                    let text = if removed.is_empty() {
+                        format!("There were no shims in {folder}")
+                    } else {
+                        format!("{} shim(s) removed from {folder}", removed.len())
+                    };
+                    self.say(&text, &serde_json::json!({ "removed": removed }));
+                    EXIT_OK
+                }
+                Err(e) => self.fail(&RpcError::new(ErrorCode::Io, e.to_string())),
+            },
+            ShimsAction::Status => {
+                let present = shimsetup::shims_present(paths);
+                let missing: Vec<&str> = present
+                    .iter()
+                    .filter(|(_, p)| !p)
+                    .map(|(c, _)| *c)
+                    .collect();
+                let text = if missing.is_empty() {
+                    format!("All the shims are in {folder}")
+                } else if missing.len() == present.len() {
+                    format!("There are no shims in {folder}; `crisol shims install` makes them")
+                } else {
+                    format!(
+                        "Missing in {folder}: {}; `crisol shims install` makes them",
+                        missing.join(", ")
+                    )
+                };
+                let list: Vec<_> = present
+                    .iter()
+                    .map(|(c, p)| serde_json::json!({"command": c, "present": p}))
+                    .collect();
+                self.say(&text, &serde_json::json!({"folder": folder, "shims": list}));
+                EXIT_OK
+            }
+        }
+    }
+
+    fn path(&mut self, action: PathAction) -> u8 {
+        let paths = &self.context.paths;
+        let store = self.context.user_path.as_ref();
+        let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
+        let folder = paths.shims_dir().display().to_string();
+        let word = match action {
+            PathAction::Add => match shimsetup::path_add(store, paths) {
+                Ok(PathChange::Added) => "added",
+                Ok(_) => "already",
+                Err(e) => return self.fail(&io_error(e)),
+            },
+            PathAction::Remove => match shimsetup::path_remove(store, paths) {
+                Ok(PathChange::Removed) => "removed",
+                Ok(_) => "absent",
+                Err(e) => return self.fail(&io_error(e)),
+            },
+            PathAction::Status => "status",
+        };
+        let status = match shimsetup::path_status(store, paths, &|p| p.is_file()) {
+            Ok(status) => status,
+            Err(e) => return self.fail(&io_error(e)),
+        };
+        let mut text = match word {
+            "added" => format!(
+                "{folder} is now first in your user PATH. Open a new terminal to use it"
+            ),
+            "already" => format!("{folder} is already in your user PATH"),
+            "removed" => format!(
+                "{folder} is no longer in your user PATH. Terminals that are open keep the old PATH until they are closed"
+            ),
+            "absent" => format!("{folder} was not in your user PATH"),
+            _ if status.in_path => format!("{folder} is in your user PATH"),
+            _ => format!("{folder} is not in your user PATH; `crisol path add` puts it there"),
+        };
+        // What would win over the shims matters whenever they are (or are about to be) in use.
+        if word != "removed" && word != "absent" {
+            for line in shimsetup::describe_shadows(&status.shadows) {
+                text.push_str(
+                    "
+  ",
+                );
+                text.push_str(&line);
+            }
+        }
+        let shadowed: Vec<_> = status
+            .shadows
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "command": s.program,
+                    "found": s.found.display().to_string(),
+                    "machine_path": s.in_system_path,
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "path": word,
+            "in_path": status.in_path,
+            "shadowed_by": shadowed,
+        });
+        self.say(&text, &json);
+        EXIT_OK
+    }
+
+    fn env(&mut self, shell: Option<ShellArg>) -> u8 {
+        let shell = match shell {
+            Some(ShellArg::Powershell) => Shell::PowerShell,
+            Some(ShellArg::Cmd) => Shell::Cmd,
+            Some(ShellArg::Bash) => Shell::Bash,
+            None => shimsetup::detect_shell(self.context.env.as_ref()),
+        };
+        // The script itself, nothing else, so that it can be piped into the shell.
+        let script = shimsetup::env_script(&self.context.paths.shims_dir(), shell);
+        if self.json {
+            let _ = writeln!(self.out, "{}", serde_json::json!({ "script": script }));
+        } else {
+            let _ = write!(self.out, "{script}");
+        }
+        EXIT_OK
     }
 
     fn system(&mut self, action: SystemAction) -> u8 {

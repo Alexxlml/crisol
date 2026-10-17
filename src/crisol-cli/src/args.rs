@@ -175,6 +175,60 @@ pub enum Command {
         #[arg(value_enum, default_value = "status")]
         action: AutostartAction,
     },
+    /// Puts the commands `php`, `node`, `npm`, `composer`… in Crisol's shims folder, or takes
+    /// them out. They do nothing in a terminal until the folder is in your PATH (`crisol path add`).
+    Shims {
+        /// `install`, `remove` or `status` (the default).
+        #[arg(value_enum, default_value = "status")]
+        action: ShimsAction,
+    },
+    /// Adds Crisol's shims folder to your user PATH, or takes it out. It changes nothing else of
+    /// the PATH, and nothing in the machine PATH.
+    Path {
+        /// `add`, `remove` or `status` (the default).
+        #[arg(value_enum, default_value = "status")]
+        action: PathAction,
+    },
+    /// Prints the lines that put Crisol's shims first in the PATH of **one terminal**, without
+    /// writing anything: `crisol env | Invoke-Expression` in PowerShell.
+    Env {
+        /// `powershell`, `cmd` or `bash`; by default the one you are in.
+        #[arg(long, value_enum)]
+        shell: Option<ShellArg>,
+    },
+}
+
+/// What `crisol shims` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ShimsAction {
+    /// Copy the shims into the shims folder.
+    Install,
+    /// Delete them.
+    Remove,
+    /// Say which are there.
+    Status,
+}
+
+/// What `crisol path` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PathAction {
+    /// Put the shims folder first in the user PATH.
+    Add,
+    /// Take it out.
+    Remove,
+    /// Say whether it is there and what wins over it.
+    Status,
+}
+
+/// The shell `crisol env` writes for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ShellArg {
+    /// PowerShell.
+    Powershell,
+    /// `cmd.exe`.
+    Cmd,
+    /// Git Bash and other POSIX shells.
+    Bash,
 }
 
 /// What `crisol system` does.
@@ -235,6 +289,12 @@ pub enum Plan {
     System(SystemAction),
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
+    /// `shims`: the files in the shims folder, which belong to the user as well.
+    Shims(ShimsAction),
+    /// `path`: the user PATH.
+    Path(PathAction),
+    /// `env`: the lines for one terminal.
+    Env(Option<ShellArg>),
 }
 
 /// Parses the arguments (the first is the program name).
@@ -360,6 +420,9 @@ impl Command {
             } => Call::ResetPassword { service },
             Self::Autostart { action } => return Plan::Autostart(action),
             Self::System { action } => return Plan::System(action),
+            Self::Shims { action } => return Plan::Shims(action),
+            Self::Path { action } => return Plan::Path(action),
+            Self::Env { shell } => return Plan::Env(shell),
         };
         Plan::Call(call)
     }

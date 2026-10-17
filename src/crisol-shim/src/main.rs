@@ -1,5 +1,5 @@
-//! The shim: `php.exe`, `node.exe`, `npm`, `npx` and `composer` in `shims/` are all this one
-//! program (F4.2). It works out which version applies in the current directory and runs the
+//! The shim: `php.exe`, `node.exe`, `npm`, `npx`, `composer`, `corepack`, `pnpm`, `pnpx`,
+//! `yarn` and `yarnpkg` in `shims/` are all this one program (F4.2, F10.2). It works out which version applies in the current directory and runs the
 //! real binary with the same arguments, input, output and exit code.
 //!
 //! It has no logic of its own: choosing the version is `crisol_core::resolve`, and the rules
@@ -14,10 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command as Process};
 
 use crisol_core::catalog::Catalog;
+use crisol_core::nodetool::{corepack_enable_note, plan_launch};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::project::FileOwners;
 use crisol_core::resolve::{
-    resolve, resolve_composer, Command, ResolveContext, ResolveError, COMPOSER_PHAR,
+    resolve, resolve_composer, Command, ResolveContext, ResolveError, Tool, COMPOSER_PHAR,
 };
 
 /// The exit code when the shim itself cannot do its job (no version, no binary).
@@ -55,7 +56,9 @@ fn not_a_shim(args: &[OsString]) -> i32 {
         println!("crisol-shim {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
-    report("this program only works under the name of a command: php, node, npm, npx or composer");
+    report(
+        "this program only works under the name of a command: php, node, npm, npx, composer, corepack, pnpm, pnpx, yarn or yarnpkg",
+    );
     USAGE
 }
 
@@ -65,6 +68,12 @@ fn report(message: &str) {
 }
 
 fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
+    if command == Command::Corepack {
+        if let Some(note) = corepack_enable_note(args) {
+            report(&note);
+            return Ok(0);
+        }
+    }
     let paths = crisol_platform::resolve_paths().map_err(|e| e.to_string())?;
     let cwd =
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
@@ -89,9 +98,23 @@ fn launch(command: Command, args: &[OsString]) -> Result<i32, String> {
     }
 
     let install = &resolution.resolved.version.path;
-    let (program, leading) = program_for(command, install, &paths)?;
+    let version = resolution.resolved.version.version.to_string();
+    let (program, leading, extra_env) = if command.tool() == Tool::Node {
+        let launch = plan_launch(command, install, &version, &paths, &|name| {
+            std::env::var_os(name)
+        })
+        .map_err(|e| e.to_string())?;
+        (launch.program, launch.leading, launch.env)
+    } else {
+        let (program, leading) = program_for(command, install, &paths)?;
+        (
+            program,
+            leading.into_iter().map(PathBuf::into_os_string).collect(),
+            Vec::new(),
+        )
+    };
     let mut process = Process::new(&program);
-    process.args(leading).args(args);
+    process.args(leading).args(args).envs(extra_env);
     match php_ini_for(
         command,
         &paths,
@@ -127,26 +150,15 @@ fn explain(error: ResolveError) -> String {
     }
 }
 
-/// The executable that runs `command` inside an installation, and the arguments that go
-/// before the user's own. For everything but Composer there are none; Composer is a PHAR, so
-/// it runs as `php composer.phar …` with the PHP that was resolved.
+/// The executable that runs `command` (PHP or Composer; the Node ones are `nodetool`) inside an
+/// installation, and the arguments that go before the user's own. Composer is a PHAR, so it
+/// runs as `php composer.phar …` with the PHP that was resolved.
 fn program_for(
     command: Command,
     install: &Path,
     paths: &CrisolPaths,
 ) -> Result<(PathBuf, Vec<PathBuf>), String> {
-    let name = match command {
-        Command::Php | Command::Composer => "php",
-        Command::Node => "node",
-        Command::Npm => "npm",
-        Command::Npx => "npx",
-    };
-    let file = match (cfg!(windows), command) {
-        (true, Command::Npm | Command::Npx) => format!("{name}.cmd"),
-        (true, _) => format!("{name}.exe"),
-        (false, _) => name.to_owned(),
-    };
-    let program = install.join(file);
+    let program = install.join(if cfg!(windows) { "php.exe" } else { "php" });
     if !program.is_file() {
         return Err(format!(
             "`{}` is not there: the installation looks damaged",
@@ -178,8 +190,7 @@ const NODE_CA_VAR: &str = "NODE_EXTRA_CA_CERTS";
 /// if neither the copy nor its folder can be modified by other accounts: otherwise one line on
 /// stderr says which and how to fix it, and Node is told nothing.
 fn node_ca_for(command: Command, paths: &CrisolPaths) -> Option<PathBuf> {
-    let for_node = matches!(command, Command::Node | Command::Npm | Command::Npx);
-    if !for_node || std::env::var_os(NODE_CA_VAR).is_some() {
+    if command.tool() != Tool::Node || std::env::var_os(NODE_CA_VAR).is_some() {
         return None;
     }
     let ca = paths.node_ca().ok()?;

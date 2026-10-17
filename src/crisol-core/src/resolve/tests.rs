@@ -160,6 +160,11 @@ fn commands_know_which_tool_they_follow() {
         ("node", Command::Node, Tool::Node),
         ("npm", Command::Npm, Tool::Node),
         ("npx", Command::Npx, Tool::Node),
+        ("corepack", Command::Corepack, Tool::Node),
+        ("pnpm", Command::Pnpm, Tool::Node),
+        ("pnpx", Command::Pnpx, Tool::Node),
+        ("Yarn", Command::Yarn, Tool::Node),
+        ("yarnpkg", Command::Yarnpkg, Tool::Node),
     ] {
         assert_eq!(Command::from_name(name), Some(command), "{name}");
         assert_eq!(command.tool(), tool, "{name}");

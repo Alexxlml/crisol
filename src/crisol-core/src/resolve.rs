@@ -80,6 +80,16 @@ pub enum Command {
     Npx,
     /// `composer`, which runs on the resolved PHP.
     Composer,
+    /// `corepack`, which ships with Node up to 24.
+    Corepack,
+    /// `pnpm`, through Corepack.
+    Pnpm,
+    /// `pnpx`, through Corepack.
+    Pnpx,
+    /// `yarn`, through Corepack.
+    Yarn,
+    /// `yarnpkg`, through Corepack.
+    Yarnpkg,
 }
 
 impl Command {
@@ -92,6 +102,11 @@ impl Command {
             "npm" => Self::Npm,
             "npx" => Self::Npx,
             "composer" => Self::Composer,
+            "corepack" => Self::Corepack,
+            "pnpm" => Self::Pnpm,
+            "pnpx" => Self::Pnpx,
+            "yarn" => Self::Yarn,
+            "yarnpkg" => Self::Yarnpkg,
             _ => return None,
         })
     }
@@ -101,7 +116,14 @@ impl Command {
     pub fn tool(self) -> Tool {
         match self {
             Self::Php | Self::Composer => Tool::Php,
-            Self::Node | Self::Npm | Self::Npx => Tool::Node,
+            Self::Node
+            | Self::Npm
+            | Self::Npx
+            | Self::Corepack
+            | Self::Pnpm
+            | Self::Pnpx
+            | Self::Yarn
+            | Self::Yarnpkg => Tool::Node,
         }
     }
 }

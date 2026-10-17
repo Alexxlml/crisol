@@ -83,6 +83,7 @@ impl Rig {
             .env_remove("PHPRC")
             .env_remove("CRISOL_PHPRC")
             .env_remove("NODE_EXTRA_CA_CERTS")
+            .env_remove("COREPACK_HOME")
             .env_remove("ECHO_EXIT")
             .env_remove("ECHO_STDIN");
         command
@@ -417,19 +418,171 @@ fn a_damaged_installation_is_reported_not_guessed() {
     assert!(stderr(&output).contains("damaged"), "{}", stderr(&output));
 }
 
+/// Puts the scripts of npm (and of Corepack) in a Node "installation" of the rig.
+fn add_node_scripts(dir: &Path, corepack: bool) {
+    let npm = dir.join("node_modules").join("npm").join("bin");
+    fs::create_dir_all(&npm).unwrap();
+    for script in ["npm-cli.js", "npx-cli.js"] {
+        fs::write(npm.join(script), "").unwrap();
+    }
+    if corepack {
+        let dist = dir.join("node_modules").join("corepack").join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        for script in ["corepack", "pnpm", "pnpx", "yarn", "yarnpkg"] {
+            fs::write(dist.join(format!("{script}.js")), "").unwrap();
+        }
+    }
+}
+
 #[test]
-fn node_commands_follow_the_node_version() {
+fn npm_and_npx_run_their_script_on_the_node_of_the_project_without_a_batch_file() {
     let rig = Rig::new();
-    let dir = rig.install("node", "22.5.0", &exe_name("node"));
-    // npm and npx are batch files on Windows; any file with the right name will do here.
-    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    assert!(dir.join(exe_name("node")).is_file());
+    let old = rig.install("node", "20.20.2", &exe_name("node"));
+    let new = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&old, true);
+    add_node_scripts(&new, true);
+    fs::write(
+        rig.work.join(".nvmrc"),
+        "20
+",
+    )
+    .unwrap();
+
+    for (name, script) in [("npm", "npm-cli.js"), ("npx", "npx-cli.js")] {
+        let output = rig.run(&rig.shim(name), &["install", "left-pad"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let text = stdout(&output);
+        let exe = text.lines().next().unwrap();
+        assert!(
+            exe.contains("20.20.2") && exe.ends_with("node.exe"),
+            "{exe}"
+        );
+        let seen = args_seen(&output);
+        assert!(
+            seen[0].ends_with(script) && seen[0].contains("20.20.2"),
+            "{seen:?}"
+        );
+        assert_eq!(seen[1..], ["install", "left-pad"]);
+    }
+}
+
+/// The pending test of phase 4: the hardening of Rust for batch files (`npm.cmd`) rejects some
+/// arguments and quotes others in its own way. Going straight to the script, nothing of that
+/// applies: `%`, `^`, `"`, `&`, `!`, spaces and even a line break reach npm as they were typed.
+#[test]
+fn npm_receives_percent_caret_quote_and_even_line_breaks_unchanged() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, false);
+    let npm = rig.shim("npm");
+    let tricky = [
+        "50%",
+        "%PATH%",
+        "a^b",
+        "^",
+        "say \"hi\"",
+        "ends with quote\"",
+        "two  spaces and a trailing backslash\\",
+        "a&b|c<d>e",
+        "!bang!",
+        "--message=fix: 100% \"done\" ^_^",
+        "",
+    ];
+    let output = rig.run(&npm, &tricky);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(args_seen(&output)[1..], tricky);
+
+    // A line break is the one thing Rust refuses to give a batch file.
+    let output = rig.run(
+        &npm,
+        &[
+            "run",
+            "line one
+line two",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains(
+            "ARG:2:line one
+line two"
+        ),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn a_node_command_without_its_script_says_the_installation_is_damaged() {
+    let rig = Rig::new();
+    rig.install("node", "22.5.0", &exe_name("node"));
     let output = rig.run(&rig.shim("npm"), &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).contains(npm),
-        "npm.cmd is missing here: {}",
+        stderr(&output).contains("npm-cli.js") && stderr(&output).contains("damaged"),
+        "{}",
         stderr(&output)
+    );
+}
+
+#[test]
+fn pnpm_and_yarn_go_through_corepack_with_downloads_kept_in_the_cache() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, true);
+    let cache = rig.home.join("cache").join("corepack");
+
+    for (name, script) in [
+        ("pnpm", "pnpm.js"),
+        ("pnpx", "pnpx.js"),
+        ("yarn", "yarn.js"),
+        ("yarnpkg", "yarnpkg.js"),
+        ("corepack", "corepack.js"),
+    ] {
+        let output = rig.run(&rig.shim(name), &["--version"]);
+        assert!(output.status.success(), "{name}: {}", stderr(&output));
+        assert!(args_seen(&output)[0].ends_with(script), "{name}");
+        assert_eq!(PathBuf::from(echoed_var(&output, "COREPACK_HOME")), cache);
+    }
+    // The user's own value wins.
+    let own = rig
+        .command(&rig.shim("pnpm"))
+        .env("COREPACK_HOME", "D:/mine")
+        .output()
+        .unwrap();
+    assert_eq!(echoed_var(&own, "COREPACK_HOME"), "D:/mine");
+}
+
+#[test]
+fn corepack_enable_writes_nothing_and_says_why_but_the_rest_goes_through() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    add_node_scripts(&dir, true);
+    let corepack = rig.shim("corepack");
+
+    let output = rig.run(&corepack, &["enable"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty(), "Corepack did not run");
+    assert!(
+        stderr(&output).contains("wrote nothing") && stderr(&output).contains("pnpm"),
+        "{}",
+        stderr(&output)
+    );
+    let output = rig.run(&corepack, &["prepare", "pnpm@9", "--activate"]);
+    assert_eq!(args_seen(&output)[1..], ["prepare", "pnpm@9", "--activate"]);
+}
+
+#[test]
+fn a_node_without_corepack_explains_pnpm_and_yarn() {
+    let rig = Rig::new();
+    let dir = rig.install("node", "26.0.0", &exe_name("node"));
+    add_node_scripts(&dir, false);
+    let output = rig.run(&rig.shim("pnpm"), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(
+        text.contains("Node 26.0.0 does not include Corepack") && text.contains("`pnpm`"),
+        "{text}"
     );
 }
 
@@ -501,7 +654,7 @@ fn run_under_its_own_name_it_explains_itself() {
 
     let output = rig.run(&own, &[]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("php, node, npm, npx or composer"));
+    assert!(stderr(&output).contains("php, node, npm, npx, composer, corepack"));
 }
 
 /// The acceptance figure of F4.2: the shim adds well under ~20 ms to a command. Measured as
@@ -1014,5 +1167,161 @@ fn node_is_not_told_about_a_copy_other_accounts_can_modify() {
     assert!(
         !warning.contains("(OI)"),
         "no inheritance flags on a file: {warning}"
+    );
+}
+
+/// The whole Node chain with the official binaries: two Node versions installed through the real
+/// installer, `node`, `npm`, `npx` and `corepack` through the shims, the version following the
+/// directory, arguments with `%`, `^`, `"` and spaces reaching a real `node`, and
+/// `corepack enable` writing nothing.
+///
+/// ```text
+/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip and node-v24.22.0-win-x64.zip> cargo test -p crisol-shim real_node -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the official Node 20.20.2 and 24.22.0 archives (Windows)"]
+fn real_node_runs_through_the_shims() {
+    let rig = Rig::new();
+    let paths = install_downloaded(&rig, &[("node", "20.20.2"), ("node", "24.22.0")]);
+    let (node, npm, npx, corepack) = (
+        rig.shim("node"),
+        rig.shim("npm"),
+        rig.shim("npx"),
+        rig.shim("corepack"),
+    );
+    let first_line = |output: &Output| {
+        stdout(output)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_owned()
+    };
+
+    // The version follows the directory.
+    let output = rig.run(&node, &["--version"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        first_line(&output),
+        "v24.22.0",
+        "the highest supported one by default"
+    );
+    fs::write(rig.work.join(".nvmrc"), "20\n").unwrap();
+    assert_eq!(first_line(&rig.run(&node, &["--version"])), "v20.20.2");
+
+    // npm and npx are the ones of that Node, started without a batch file.
+    let output = rig.run(&npm, &["--version"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let npm_20 = first_line(&output);
+    let output = rig.run(&npx, &["--version"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(first_line(&output), npm_20, "npx comes with npm");
+    fs::write(rig.work.join(".nvmrc"), "24\n").unwrap();
+    let npm_24 = first_line(&rig.run(&npm, &["--version"]));
+    assert_ne!(npm_20, npm_24, "each Node brings its own npm");
+    println!("npm {npm_20} with Node 20, npm {npm_24} with Node 24");
+
+    // Arguments reach a real node exactly, whatever cmd.exe would have thought of them.
+    let tricky = [
+        "50%",
+        "%PATH%",
+        "a^b",
+        "say \"hi\" now",
+        "two  spaces",
+        "a&b|c",
+        "line\nbreak",
+        "",
+    ];
+    let mut args = vec!["-p", "JSON.stringify(process.argv.slice(1))", "--"];
+    args.extend(tricky);
+    let output = rig.run(&node, &args);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    let echoed = serde_json_like(&text);
+    assert_eq!(echoed, tricky);
+    // The exit code comes back.
+    let output = rig.run(&node, &["-e", "process.exit(9)"]);
+    assert_eq!(output.status.code(), Some(9));
+
+    // The same arguments through npm itself (it runs a script of the project).
+    fs::write(
+        rig.work.join("package.json"),
+        r#"{"name":"probe","version":"1.0.0","scripts":{"show":"node -p \"JSON.stringify(process.argv.slice(1))\""}}"#,
+    )
+    .unwrap();
+    let output = rig.run(
+        &npm,
+        &["run", "--silent", "show", "--", "plain", "with space"],
+    );
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains(r#"["plain","with space"]"#),
+        "{}",
+        stdout(&output)
+    );
+
+    // `corepack enable` writes nothing: the installation is as it was.
+    let install = paths.bin_for("node", "24.22.0").unwrap();
+    let listing = |dir: &Path| {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing(&install);
+    let output = rig.run(&corepack, &["enable"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(listing(&install), before);
+    assert!(stderr(&output).contains("wrote nothing"));
+    let output = rig.run(&corepack, &["--version"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    println!("corepack {}", first_line(&output));
+}
+
+/// `pnpm` through the shim downloads pnpm into `cache/corepack` of the home and nowhere else.
+/// It needs the network (the npm registry).
+#[test]
+#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 24.22.0 archive (Windows)"]
+fn real_pnpm_goes_through_corepack_and_downloads_only_into_the_home() {
+    let rig = Rig::new();
+    install_downloaded(&rig, &[("node", "24.22.0")]);
+    let outside =
+        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("node").join("corepack"));
+    let snapshot = |dir: &Option<PathBuf>| {
+        dir.as_ref()
+            .map(|d| fs::read_dir(d).map_or(0, |entries| entries.flatten().count()))
+    };
+    let before = snapshot(&outside);
+
+    fs::write(
+        rig.work.join("package.json"),
+        r#"{"name":"probe","packageManager":"pnpm@9.15.9"}"#,
+    )
+    .unwrap();
+    let output = rig.run(&rig.shim("pnpm"), &["--version"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output).trim(), "9.15.9");
+    let cache = rig.home.join("cache").join("corepack");
+    assert!(
+        cache.is_dir() && fs::read_dir(&cache).unwrap().count() > 0,
+        "pnpm was kept in the cache"
+    );
+    assert_eq!(
+        snapshot(&outside),
+        before,
+        "nothing was written to %LOCALAPPDATA%\node"
     );
 }

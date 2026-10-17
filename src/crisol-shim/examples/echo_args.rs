@@ -2,7 +2,7 @@
 //! the tests can check that the shim passed everything on faithfully. Not part of the product.
 //!
 //! Output, one item per line: `EXE:` (its own path, which says which installation ran),
-//! `CWD:`, `PHPRC:` and `CRISOL_PHPRC:` (or `-`), one `ARG:<n>:` line per argument, and `STDIN:` with what it
+//! `CWD:`, `PHPRC:`, `CRISOL_PHPRC:`, `NODE_EXTRA_CA_CERTS:` and `COREPACK_HOME:` (or `-`), one `ARG:<n>:` line per argument, and `STDIN:` with what it
 //! read. The exit code is taken from `ECHO_EXIT` (0 if unset).
 
 use std::io::Read;
@@ -29,6 +29,10 @@ fn main() {
     println!(
         "NODE_EXTRA_CA_CERTS:{}",
         std::env::var("NODE_EXTRA_CA_CERTS").unwrap_or_else(|_| "-".to_owned())
+    );
+    println!(
+        "COREPACK_HOME:{}",
+        std::env::var("COREPACK_HOME").unwrap_or_else(|_| "-".to_owned())
     );
     for (index, arg) in std::env::args_os().skip(1).enumerate() {
         println!("ARG:{index}:{}", arg.to_string_lossy());

@@ -148,7 +148,7 @@ pub fn shims_in_path(store: &dyn UserPath, shims: &Path) -> io::Result<bool> {
 }
 
 /// The programs a shim stands for and the file names that would run in their place.
-pub const SHIMMED_PROGRAMS: [(&str, &[&str]); 5] = [
+pub const SHIMMED_PROGRAMS: [(&str, &[&str]); 10] = [
     ("php", &["php.exe", "php.bat", "php.cmd"]),
     ("node", &["node.exe"]),
     ("npm", &["npm.cmd", "npm.exe"]),
@@ -157,6 +157,11 @@ pub const SHIMMED_PROGRAMS: [(&str, &[&str]); 5] = [
         "composer",
         &["composer.exe", "composer.bat", "composer.cmd"],
     ),
+    ("corepack", &["corepack.cmd", "corepack.exe"]),
+    ("pnpm", &["pnpm.cmd", "pnpm.exe"]),
+    ("pnpx", &["pnpx.cmd", "pnpx.exe"]),
+    ("yarn", &["yarn.cmd", "yarn.exe"]),
+    ("yarnpkg", &["yarnpkg.cmd", "yarnpkg.exe"]),
 ];
 
 /// Another installation of a shimmed program that wins over the shims.

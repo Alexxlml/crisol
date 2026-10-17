@@ -28,6 +28,7 @@ mod names {
     pub const CERTS: &str = "certs";
     pub const SHIMS: &str = "shims";
     pub const SECRETS: &str = "secrets";
+    pub const CACHE: &str = "cache";
     pub const WWW: &str = "www";
 }
 
@@ -439,6 +440,18 @@ impl CrisolPaths {
     #[must_use]
     pub fn secrets_dir(&self) -> PathBuf {
         self.home.join(names::SECRETS)
+    }
+
+    /// Downloads that can be made again (package manager downloads of Corepack, the npm cache):
+    /// `cache/`. Safe to delete.
+    #[must_use]
+    pub fn cache_dir(&self) -> PathBuf {
+        self.home.join(names::CACHE)
+    }
+
+    /// The cache of one tool: `cache/<name>/`.
+    pub fn cache_for(&self, name: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.cache_dir().join(validate_component(name)?))
     }
 
     /// The only directory that enters the user `PATH`: `shims/`.

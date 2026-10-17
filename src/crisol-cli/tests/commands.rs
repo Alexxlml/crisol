@@ -37,6 +37,8 @@ use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
+use crisol_core::userpath::fake::FakeUserPath;
+use crisol_core::userpath::{PathValue, UserPath};
 use crisol_core::web::AlwaysEffective;
 use crisol_daemon::{run as run_daemon, Options, Timing};
 use crisol_platform::connect_to_daemon;
@@ -111,6 +113,31 @@ impl SystemSetup for SharedSetup {
     }
 }
 
+/// One user PATH shared by every command of a test.
+struct SharedUserPath(Arc<FakeUserPath>);
+
+impl UserPath for SharedUserPath {
+    fn read(&self) -> std::io::Result<Option<PathValue>> {
+        self.0.read()
+    }
+
+    fn write(&self, value: Option<&PathValue>) -> std::io::Result<()> {
+        self.0.write(value)
+    }
+
+    fn system_path(&self) -> std::io::Result<Option<String>> {
+        self.0.system_path()
+    }
+
+    fn expand(&self, text: &str) -> String {
+        self.0.expand(text)
+    }
+
+    fn notify_changed(&self) -> std::io::Result<()> {
+        self.0.notify_changed()
+    }
+}
+
 struct Marked(Vec<Check>);
 
 impl SystemChecks for Marked {
@@ -132,6 +159,8 @@ struct Env {
     daemon: Arc<Mutex<Option<JoinHandle<std::io::Result<()>>>>>,
     daemon_exe: std::path::PathBuf,
     autostart: Arc<FakeAutostart>,
+    user_path: Arc<FakeUserPath>,
+    shim_exe: std::path::PathBuf,
     setup: Arc<FakeSetup>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
@@ -175,6 +204,8 @@ impl Env {
         };
         let daemon_exe = tmp.path().join("crisold.exe");
         fs::write(&daemon_exe, b"MZ").unwrap();
+        let shim_exe = tmp.path().join("crisol-shim.exe");
+        fs::write(&shim_exe, b"MZ shim").unwrap();
         let driver_stop = Arc::new(AtomicBool::new(false));
         let driver = Some(play_nginx(supervisor, probe, Arc::clone(&driver_stop)));
         Self {
@@ -186,6 +217,8 @@ impl Env {
             daemon: Arc::new(Mutex::new(None)),
             daemon_exe,
             autostart: Arc::new(FakeAutostart::new()),
+            user_path: Arc::new(FakeUserPath::with_user(r"C:\Tools;%USERPROFILE%\bin")),
+            shim_exe,
             setup: Arc::new(FakeSetup::new()),
             driver_stop,
             driver,
@@ -221,6 +254,9 @@ impl Env {
             setup: Box::new(SharedSetup(Arc::clone(&self.setup))),
             autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
             daemon_exe: Some(self.daemon_exe.clone()),
+            user_path: Box::new(SharedUserPath(Arc::clone(&self.user_path))),
+            shim_exe: Some(self.shim_exe.clone()),
+            env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(25),
@@ -891,6 +927,129 @@ fn a_crisold_other_accounts_could_replace_is_neither_registered_nor_launched() {
     // Closing the folder is all it takes.
     env.dirs.close(env.daemon_exe.parent().unwrap());
     env.ok(&["autostart", "on"]);
+}
+
+// ---- the shims, the user PATH and `env` (F10.2) -----------------------------------------------
+
+#[test]
+fn shims_install_status_and_remove_only_touch_the_shims_folder() {
+    let env = Env::new(&[]);
+    let shims = env.paths.shims_dir();
+    assert!(env.ok(&["shims"]).contains("There are no shims"));
+
+    let done = env.ok(&["shims", "install"]);
+    assert!(done.contains("10 shim(s) written"), "{done}");
+    assert!(done.contains("crisol path add"), "{done}");
+    for name in [
+        "php", "node", "npm", "npx", "composer", "corepack", "pnpm", "pnpx", "yarn", "yarnpkg",
+    ] {
+        assert!(shims.join(format!("{name}.exe")).is_file(), "{name}");
+    }
+    assert!(env
+        .ok(&["shims", "install"])
+        .contains("0 shim(s) written and 10 already"));
+    assert!(env.ok(&["shims", "status"]).contains("All the shims"));
+    let json = env.ok(&["--json", "shims", "status"]);
+    assert!(
+        json.contains(r#""command":"pnpm","present":true"#),
+        "{json}"
+    );
+    assert_eq!(
+        env.user_path.writes(),
+        0,
+        "installing the files never touches the PATH"
+    );
+
+    fs::write(shims.join("my-tool.cmd"), "@echo hi").unwrap();
+    assert!(env.ok(&["shims", "remove"]).contains("10 shim(s) removed"));
+    assert!(
+        shims.join("my-tool.cmd").is_file(),
+        "what is not a shim stays"
+    );
+    assert!(env.ok(&["shims", "remove"]).contains("There were no shims"));
+}
+
+#[test]
+fn a_shim_program_other_accounts_could_replace_is_not_installed() {
+    let env = Env::new(&[]);
+    env.dirs.expose(env.shim_exe.parent().unwrap());
+    let refused = env.failing(&["shims", "install"]);
+    assert!(refused.contains("icacls"), "{refused}");
+    assert!(!env.paths.shims_dir().join("php.exe").exists());
+    env.dirs.close(env.shim_exe.parent().unwrap());
+    env.ok(&["shims", "install"]);
+}
+
+#[test]
+fn path_add_and_remove_change_one_entry_and_give_the_value_back_as_it_was() {
+    let env = Env::new(&[]);
+    let before = env.user_path.user();
+    assert!(env.ok(&["path"]).contains("is not in your user PATH"));
+
+    let added = env.ok(&["path", "add"]);
+    assert!(added.contains("is now first in your user PATH"), "{added}");
+    let value = env.user_path.user().unwrap().text;
+    assert!(
+        value.starts_with(&env.paths.shims_dir().display().to_string())
+            && value.ends_with(r"C:\Tools;%USERPROFILE%\bin"),
+        "{value}"
+    );
+    assert!(env
+        .ok(&["path", "add"])
+        .contains("already in your user PATH"));
+    assert_eq!(env.user_path.writes(), 1);
+    assert!(env
+        .ok(&["--json", "path", "status"])
+        .contains(r#""in_path":true"#));
+
+    assert!(env
+        .ok(&["path", "remove"])
+        .contains("no longer in your user PATH"));
+    assert!(env
+        .ok(&["path", "remove"])
+        .contains("was not in your user PATH"));
+    assert_eq!(env.user_path.user(), before);
+}
+
+#[test]
+fn path_says_what_wins_over_the_shims_and_how_to_get_around_it() {
+    let env = Env::new(&[]);
+    // A real file in a real folder stands for the Node the machine PATH has.
+    let machine = env.paths.home().join("machine-node");
+    fs::create_dir_all(&machine).unwrap();
+    fs::write(machine.join("node.exe"), b"MZ").unwrap();
+    env.user_path.set_system(&machine.display().to_string());
+
+    let out = env.ok(&["path", "add"]);
+    assert!(out.contains("`node` in a terminal runs"), "{out}");
+    assert!(
+        out.contains("machine PATH") && out.contains("crisol env"),
+        "{out}"
+    );
+    let json = env.ok(&["--json", "path", "status"]);
+    assert!(
+        json.contains(r#""command":"node""#) && json.contains(r#""machine_path":true"#),
+        "{json}"
+    );
+}
+
+#[test]
+fn env_prints_only_the_lines_for_the_shell_and_writes_nothing() {
+    let env = Env::new(&[]);
+    let dir = env.paths.shims_dir().display().to_string();
+    // The test context says it is `cmd.exe` (it has PROMPT).
+    assert_eq!(env.ok(&["env"]), format!("set \"PATH={dir};%PATH%\"\n"));
+    let power = env.ok(&["env", "--shell", "powershell"]);
+    assert!(
+        power.starts_with("if (($env:Path -split ';')[0] -ne '"),
+        "{power}"
+    );
+    assert!(env.ok(&["env", "--shell", "bash"]).contains("export PATH="));
+    assert!(env
+        .ok(&["--json", "env", "--shell", "cmd"])
+        .starts_with(r#"{"script":"set"#));
+    assert_eq!(env.user_path.writes(), 0);
+    assert!(!env.paths.shims_dir().join("php.exe").exists());
 }
 
 // ---- the one-time setup that needs an administrator ----------------------------------------

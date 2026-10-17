@@ -7,6 +7,7 @@
 //! installed and trustworthy, the NRPT rule, the managed block of `hosts`, the local CA and the
 //! trust store. It changes nothing.
 
+use std::fmt::Write as _;
 use std::io;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -19,8 +20,8 @@ use crisol_core::fetch::HttpFetcher;
 use crisol_core::hosts::{block_names, HostsFile};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
+use crisol_core::shimsetup::{describe_shadows, path_status};
 use crisol_core::trust::status as trust_status;
-use crisol_core::userpath::shims_in_path;
 use crisol_core::web::TcpConfigProbe;
 use crisol_protocol::{Check, CheckStatus};
 
@@ -97,23 +98,50 @@ impl SystemChecks for WindowsSystemChecks {
 }
 
 fn path_check(paths: &CrisolPaths) -> Check {
-    match shims_in_path(&RegistryUserPath::new(), &paths.shims_dir()) {
-        Ok(true) => check(
+    let shims = paths.shims_dir();
+    let status = match path_status(&RegistryUserPath::new(), paths, &|p| p.is_file()) {
+        Ok(status) => status,
+        Err(error) => return check("PATH", CheckStatus::Problem, error.to_string(), None),
+    };
+    let shadows = describe_shadows(&status.shadows);
+    // What wins over the shims says more than whether they are in the PATH: the machine's Node
+    // is ahead of them even when they are (ADR-0002, F10).
+    match (status.in_path, shadows.is_empty()) {
+        (true, true) => check(
             "PATH",
             CheckStatus::Ok,
-            format!("{} is in your user PATH", paths.shims_dir().display()),
+            format!("{} is in your user PATH", shims.display()),
             None,
         ),
-        Ok(false) => check(
+        (true, false) => check(
             "PATH",
             CheckStatus::Warning,
             format!(
-                "{} is not in your user PATH, so `php` and `node` in a terminal are not Crisol's",
-                paths.shims_dir().display()
+                "{} is in your user PATH, but other programs come before it: {}",
+                shims.display(),
+                shadows.join("; ")
             ),
-            None,
+            Some("crisol env"),
         ),
-        Err(error) => check("PATH", CheckStatus::Problem, error.to_string(), None),
+        (false, _) => {
+            let mut detail = format!(
+                "{} is not in your user PATH, so `php` and `node` in a terminal are not Crisol's",
+                shims.display()
+            );
+            if !shadows.is_empty() {
+                let _ = write!(
+                    detail,
+                    "; and once it is, other programs still come before it: {}",
+                    shadows.join("; ")
+                );
+            }
+            check(
+                "PATH",
+                CheckStatus::Warning,
+                detail,
+                Some("crisol path add"),
+            )
+        }
     }
 }
 

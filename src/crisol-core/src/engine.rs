@@ -794,7 +794,7 @@ impl Engine {
             Check {
                 name,
                 status: CheckStatus::Ok,
-                detail: format!("{} has php, node, npm, npx and composer", dir.display()),
+                detail: format!("{} has {}", dir.display(), SHIM_COMMANDS.join(", ")),
                 fix: None,
             }
         } else {
