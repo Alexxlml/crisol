@@ -5,7 +5,8 @@ use std::time::Duration;
 use crisol_cli::{run, Context, Link, Remote};
 use crisol_core::ipc::pipe_name;
 use crisol_platform::{
-    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart, WindowsSetup,
+    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart,
+    WindowsPrivateDirs, WindowsSetup,
 };
 
 fn main() -> ExitCode {
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
         suffix,
         autostart: Box::new(RegistryAutostart::new()),
         daemon_exe: daemon.clone(),
+        dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {
             Some(path) if path.is_file() => spawn_daemon(path),
             _ => Err(std::io::Error::new(

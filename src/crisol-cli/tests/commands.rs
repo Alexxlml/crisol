@@ -216,6 +216,7 @@ impl Env {
             suffix: "test".to_owned(),
             autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
             daemon_exe: Some(self.daemon_exe.clone()),
+            dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(50),
             follow_rounds: Some(3),
@@ -726,6 +727,25 @@ fn autostart_is_a_setting_of_the_user_that_can_be_turned_on_and_off() {
         !env.daemon_running(),
         "this setting never starts anything now"
     );
+}
+
+#[test]
+fn a_crisold_other_accounts_could_replace_is_neither_registered_nor_launched() {
+    let env = Env::new(&[("nginx", "1.28.3")]);
+    env.dirs.expose(env.daemon_exe.parent().unwrap());
+    let refused = env.failing(&["autostart", "on"]);
+    assert!(
+        refused.contains("will not") && refused.contains("icacls"),
+        "{refused}"
+    );
+    assert!(env.autostart.current().unwrap().is_none());
+    // `start` would have to launch the daemon: it does not, and says the same.
+    let refused = env.failing(&["start"]);
+    assert!(refused.contains("icacls"), "{refused}");
+    assert!(!env.daemon_running());
+    // Closing the folder is all it takes.
+    env.dirs.close(env.daemon_exe.parent().unwrap());
+    env.ok(&["autostart", "on"]);
 }
 
 // ---- the one-time setup that needs an administrator ----------------------------------------

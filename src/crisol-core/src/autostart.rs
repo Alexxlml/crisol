@@ -10,6 +10,11 @@ use std::io;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
+use crisol_protocol::{Check, CheckStatus};
+
+use crate::paths::PrivateDirs;
+use crate::programs::{require_trusted_program, ProgramError};
+
 /// Where the sign-in entry is kept.
 pub trait Autostart: Send + Sync {
     /// The command line that is set to run at sign-in, if there is an entry.
@@ -82,18 +87,107 @@ pub fn state(store: &dyn Autostart, daemon: &Path) -> io::Result<AutostartState>
     })
 }
 
-/// Makes the daemon start at sign-in.
-pub fn enable(store: &dyn Autostart, daemon: &Path) -> io::Result<AutostartChange> {
+/// Why the entry could not be made.
+#[derive(Debug, thiserror::Error)]
+pub enum AutostartError {
+    /// `crisold`, or its folder, can be replaced by other accounts: it would run at every
+    /// sign-in with the user's rights.
+    #[error("{0}")]
+    Program(#[from] ProgramError),
+    /// The store or the path failed.
+    #[error("{0}")]
+    Io(#[from] io::Error),
+}
+
+/// Makes the daemon start at sign-in. Refuses if `daemon` or its folder can be written by other
+/// accounts (`dirs` says), since whoever can replace it runs code as this user at every sign-in.
+pub fn enable(
+    store: &dyn Autostart,
+    daemon: &Path,
+    dirs: &dyn PrivateDirs,
+) -> Result<AutostartChange, AutostartError> {
     let command = command_for(daemon)?;
+    require_trusted_program(daemon, dirs)?;
+    enable_command(store, &command).map_err(AutostartError::Io)
+}
+
+fn enable_command(store: &dyn Autostart, command: &str) -> io::Result<AutostartChange> {
     match store.current()? {
-        Some(current) if current.eq_ignore_ascii_case(&command) => Ok(AutostartChange::Unchanged),
+        Some(current) if current.eq_ignore_ascii_case(command) => Ok(AutostartChange::Unchanged),
         Some(_) => {
-            store.set(&command)?;
+            store.set(command)?;
             Ok(AutostartChange::Replaced)
         }
         None => {
-            store.set(&command)?;
+            store.set(command)?;
             Ok(AutostartChange::Enabled)
+        }
+    }
+}
+
+/// The program an entry runs: its quoted path, or its first word when it is not quoted.
+fn program_of(command: &str) -> Option<&str> {
+    let command = command.trim();
+    if let Some(rest) = command.strip_prefix('"') {
+        return rest.split_once('"').map(|(path, _)| path);
+    }
+    command.split_whitespace().next()
+}
+
+/// The `doctor` check of the sign-in entry: `None` when there is none; a problem when it runs a
+/// `crisold.exe` that other accounts can replace (the entry runs at every sign-in), with
+/// `crisol autostart off` as the way out.
+pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs) -> Option<Check> {
+    let name = "autostart";
+    let mk = |status, detail: String, fix: Option<&str>| Check {
+        name: name.to_owned(),
+        status,
+        detail,
+        fix: fix.map(str::to_owned),
+    };
+    let command = match store.current() {
+        Ok(Some(command)) => command,
+        Ok(None) => return None,
+        Err(error) => {
+            return Some(mk(
+                CheckStatus::Warning,
+                format!("cannot read the sign-in entry: {error}"),
+                None,
+            ))
+        }
+    };
+    let Some(program) = program_of(&command).map(Path::new) else {
+        return Some(mk(
+            CheckStatus::Warning,
+            format!("the sign-in entry is not a program: {command}"),
+            Some("crisol autostart off"),
+        ));
+    };
+    match require_trusted_program(program, dirs) {
+        Ok(()) => Some(mk(
+            CheckStatus::Ok,
+            format!("{} starts when you sign in", program.display()),
+            None,
+        )),
+        Err(ProgramError::Missing { .. }) => Some(mk(
+            CheckStatus::Warning,
+            format!(
+                "the sign-in entry runs {}, which is not there any more",
+                program.display()
+            ),
+            Some("crisol autostart off"),
+        )),
+        Err(ProgramError::Exposed { path, .. }) => Some(mk(
+            CheckStatus::Problem,
+            format!(
+                "the sign-in entry runs {} and {} can be modified by other accounts, who would run code as you at every sign-in; close it, or turn the entry off",
+                program.display(),
+                path.display()
+            ),
+            Some("crisol autostart off"),
+        )),
+        Err(error @ ProgramError::Check { .. }) => {
+            Some(mk(CheckStatus::Warning, error.to_string(), None))
         }
     }
 }
@@ -152,6 +246,7 @@ impl Autostart for FakeAutostart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::fake::FakePrivateDirs;
 
     fn daemon() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -188,16 +283,25 @@ mod tests {
         let (_dir, exe) = daemon();
         let store = FakeAutostart::new();
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::Off);
-        assert_eq!(enable(&store, &exe).unwrap(), AutostartChange::Enabled);
+        assert_eq!(
+            enable(&store, &exe, &FakePrivateDirs::new()).unwrap(),
+            AutostartChange::Enabled
+        );
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::On);
-        assert_eq!(enable(&store, &exe).unwrap(), AutostartChange::Unchanged);
+        assert_eq!(
+            enable(&store, &exe, &FakePrivateDirs::new()).unwrap(),
+            AutostartChange::Unchanged
+        );
 
         let stale = FakeAutostart::with("\"D:\\old\\crisold.exe\"");
         assert_eq!(
             state(&stale, &exe).unwrap(),
             AutostartState::Other("\"D:\\old\\crisold.exe\"".to_owned())
         );
-        assert_eq!(enable(&stale, &exe).unwrap(), AutostartChange::Replaced);
+        assert_eq!(
+            enable(&stale, &exe, &FakePrivateDirs::new()).unwrap(),
+            AutostartChange::Replaced
+        );
         assert_eq!(state(&stale, &exe).unwrap(), AutostartState::On);
     }
 
@@ -206,8 +310,40 @@ mod tests {
         let (_dir, exe) = daemon();
         let store = FakeAutostart::new();
         assert!(!disable(&store).unwrap());
-        enable(&store, &exe).unwrap();
+        enable(&store, &exe, &FakePrivateDirs::new()).unwrap();
         assert!(disable(&store).unwrap());
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::Off);
+    }
+
+    #[test]
+    fn an_open_crisold_is_not_registered() {
+        let (_dir, exe) = daemon();
+        let dirs = FakePrivateDirs::new();
+        dirs.expose(exe.parent().unwrap());
+        let store = FakeAutostart::new();
+        assert!(matches!(
+            enable(&store, &exe, &dirs),
+            Err(AutostartError::Program(ProgramError::Exposed { .. }))
+        ));
+        assert_eq!(store.current().unwrap(), None);
+    }
+
+    #[test]
+    fn doctor_flags_an_entry_that_runs_a_program_others_can_replace() {
+        let (_dir, exe) = daemon();
+        let dirs = FakePrivateDirs::new();
+        let store = FakeAutostart::new();
+        assert!(check(&store, &dirs).is_none(), "no entry, nothing to say");
+
+        enable(&store, &exe, &dirs).unwrap();
+        assert_eq!(check(&store, &dirs).unwrap().status, CheckStatus::Ok);
+
+        dirs.expose(exe.parent().unwrap());
+        let flagged = check(&store, &dirs).unwrap();
+        assert_eq!(flagged.status, CheckStatus::Problem);
+        assert_eq!(flagged.fix.as_deref(), Some("crisol autostart off"));
+
+        let gone = FakeAutostart::with("\"D:\\nowhere\\crisold.exe\"");
+        assert_eq!(check(&gone, &dirs).unwrap().status, CheckStatus::Warning);
     }
 }

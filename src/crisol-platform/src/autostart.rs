@@ -110,6 +110,7 @@ impl Autostart for RegistryAutostart {
 mod tests {
     use super::*;
     use crisol_core::autostart::{disable, enable, state, AutostartChange, AutostartState};
+    use crisol_core::paths::fake::FakePrivateDirs;
     use windows::Win32::System::Registry::{RegLoadAppKeyW, KEY_ALL_ACCESS};
 
     /// A private application hive over a file in a temporary folder of its own, as in the tests
@@ -216,9 +217,15 @@ mod tests {
         }
 
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::Off);
-        assert_eq!(enable(&store, &exe).unwrap(), AutostartChange::Enabled);
+        assert_eq!(
+            enable(&store, &exe, &FakePrivateDirs::new()).unwrap(),
+            AutostartChange::Enabled
+        );
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::On);
-        assert_eq!(enable(&store, &exe).unwrap(), AutostartChange::Unchanged);
+        assert_eq!(
+            enable(&store, &exe, &FakePrivateDirs::new()).unwrap(),
+            AutostartChange::Unchanged
+        );
         assert!(disable(&store).unwrap());
         assert_eq!(state(&store, &exe).unwrap(), AutostartState::Off);
         // The other entry is still there.

@@ -673,6 +673,35 @@ mod tests {
     }
 
     #[test]
+    fn a_program_is_trusted_in_a_private_folder_and_not_in_one_opened_with_icacls() {
+        // The rule for the programs that start on their own (review of phase 8, finding 3),
+        // with the real judge on folders of this test's own temp dir.
+        use crisol_core::programs::{require_trusted_program, ProgramError};
+
+        let tmp = TempDir::new().unwrap();
+        let private = tmp.path().join("private");
+        assert!(WindowsPrivateDirs.create_private_dir(&private).unwrap());
+        let program = private.join("crisold.exe");
+        fs::write(&program, "MZ").unwrap();
+        require_trusted_program(&program, &WindowsPrivateDirs).unwrap();
+
+        let open = tmp.path().join("open");
+        fs::create_dir(&open).unwrap();
+        let granted = Command::new("icacls")
+            .arg(&open)
+            .args(["/grant", "*S-1-5-11:(OI)(CI)M"])
+            .output()
+            .unwrap();
+        assert!(granted.status.success(), "icacls failed");
+        let exposed = open.join("crisold.exe");
+        fs::write(&exposed, "MZ").unwrap();
+        match require_trusted_program(&exposed, &WindowsPrivateDirs) {
+            Err(ProgramError::Exposed { fix, .. }) => assert!(fix.starts_with("icacls "), "{fix}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn a_private_folder_does_not_inherit_the_openness_of_its_parent() {
         // The real case: `C:\` grants "modify" to Authenticated Users and inherits it down.
         // Reproduce it on a parent inside this test's temp dir, then create inside it.

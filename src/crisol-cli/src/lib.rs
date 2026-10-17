@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::{Deps, Engine};
-use crisol_core::paths::CrisolPaths;
+use crisol_core::paths::{CrisolPaths, PrivateDirs};
+use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
 use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
@@ -94,6 +95,8 @@ pub struct Context {
     pub autostart: Box<dyn Autostart>,
     /// The `crisold` that entry would start (the one next to this program).
     pub daemon_exe: Option<PathBuf>,
+    /// Judges who can write to the programs before they are registered or launched.
+    pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
     pub daemon_wait: Duration,
     /// Time between asking again for the log of `logs -f`.
@@ -209,11 +212,12 @@ impl Session<'_> {
         let store = self.context.autostart.as_ref();
         let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
         let (word, message) = match action {
-            AutostartAction::On => match crisol_core::autostart::enable(store, &daemon) {
+            AutostartAction::On => match crisol_core::autostart::enable(store, &daemon, self.context.dirs.as_ref()) {
                 Ok(AutostartChange::Enabled) => ("on", "Crisol will start when you sign in".to_owned()),
                 Ok(AutostartChange::Replaced) => ("on", "Crisol will start when you sign in (the entry of another crisold was replaced)".to_owned()),
                 Ok(AutostartChange::Unchanged) => ("on", "Crisol already starts when you sign in".to_owned()),
-                Err(e) => return self.fail(&io_error(e)),
+                Err(crisol_core::autostart::AutostartError::Program(e)) => return self.fail(&program_error(&e)),
+                Err(crisol_core::autostart::AutostartError::Io(e)) => return self.fail(&io_error(e)),
             },
             AutostartAction::Off => match crisol_core::autostart::disable(store) {
                 Ok(true) => ("off", "Crisol will not start when you sign in".to_owned()),
@@ -268,6 +272,11 @@ impl Session<'_> {
     }
 
     fn start_daemon(&mut self) -> Result<Box<dyn Link>, RpcError> {
+        // The daemon runs with the user's rights: not if someone else could have replaced it.
+        if let Some(exe) = &self.context.daemon_exe {
+            require_trusted_program(exe, self.context.dirs.as_ref())
+                .map_err(|e| program_error(&e))?;
+        }
         (self.context.spawn_daemon)().map_err(|e| {
             RpcError::new(
                 ErrorCode::Io,

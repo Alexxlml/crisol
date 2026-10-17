@@ -23,6 +23,7 @@ pub mod phppool;
 pub mod pin;
 pub mod ports;
 pub mod process;
+pub mod programs;
 pub mod project;
 pub mod resolve;
 pub mod service;

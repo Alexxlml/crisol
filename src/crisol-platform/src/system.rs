@@ -24,8 +24,8 @@ use crisol_core::userpath::shims_in_path;
 use crisol_protocol::{Check, CheckStatus};
 
 use crate::{
-    FileHosts, HelperLocation, JobObjectSupervisor, PowerShellNrpt, RegistryUserPath,
-    WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs, WindowsTrustStore,
+    FileHosts, HelperLocation, JobObjectSupervisor, PowerShellNrpt, RegistryAutostart,
+    RegistryUserPath, WindowsFileOwners, WindowsPortProbe, WindowsPrivateDirs, WindowsTrustStore,
 };
 
 /// The dependencies of the engine with the Windows implementations.
@@ -67,13 +67,18 @@ fn suffix_of(paths: &CrisolPaths) -> String {
 impl SystemChecks for WindowsSystemChecks {
     fn checks(&self, paths: &CrisolPaths) -> Vec<Check> {
         let tld = suffix_of(paths);
-        vec![
+        let mut checks = vec![
             path_check(paths),
             helper_check(),
             nrpt_check(&tld),
             hosts_check(),
             trust_check(paths),
-        ]
+        ];
+        checks.extend(crisol_core::autostart::check(
+            &RegistryAutostart::new(),
+            &WindowsPrivateDirs::new(),
+        ));
+        checks
     }
 
     fn shutdown_warnings(&self, paths: &CrisolPaths) -> Vec<String> {

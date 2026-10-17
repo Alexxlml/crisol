@@ -208,6 +208,8 @@ pub enum SetupFailure {
     ForeignRule,
     /// Removal was asked of a program that is not the installed copy.
     NotInstalledCopy,
+    /// The program being installed, or the folder it is in, can be written by other accounts.
+    SourceOpen,
 }
 
 impl SetupFailure {
@@ -223,6 +225,7 @@ impl SetupFailure {
             Self::Rule => 13,
             Self::ForeignRule => 14,
             Self::NotInstalledCopy => 15,
+            Self::SourceOpen => 16,
         }
     }
 
@@ -238,6 +241,7 @@ impl SetupFailure {
             Self::Rule,
             Self::ForeignRule,
             Self::NotInstalledCopy,
+            Self::SourceOpen,
         ]
         .into_iter()
         .find(|f| u32::from(f.code()) == code)
@@ -255,6 +259,7 @@ impl SetupFailure {
             Self::Rule => "the DNS rule or Crisol's block of the hosts file could not be changed; the helper was left installed so you can try again",
             Self::ForeignRule => "another tool has a DNS rule for that suffix; Crisol leaves it alone, so none was made. Remove it yourself or use another suffix",
             Self::NotInstalledCopy => "removal only runs from the installed helper",
+            Self::SourceOpen => "the helper being installed, or the folder it is in, can be changed by other accounts, so it was not given administrator rights; close the folder and try again",
         }
     }
 }

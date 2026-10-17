@@ -18,11 +18,16 @@
 //! folders and doubles. What a test never does is raise the UAC prompt, touch the real
 //! `Program Files`, `hosts` or the NRPT; those are tried by hand.
 //!
-//! **What this trusts.** The installing process copies whatever program it was started from. The
+//! **What this trusts.** The installing process copies the program it was started from. The
 //! person who runs `crisol system install` is choosing to give administrator rights to the
 //! `crisol-elevate.exe` that came with their `crisol.exe`, exactly as with any installer they
-//! download. Everything after that (the helper is only ever run from `Program Files`, after its
-//! hash and the permissions of its folder have been checked) does not depend on it.
+//! download. Two checks narrow that (review of phase 8, finding 3): before the UAC prompt, and
+//! again inside the elevated process, neither the program nor its folder may be writable by
+//! other accounts, and the program is read **once**: the bytes that are written to Program Files
+//! are the bytes the manifest hashes. Everything after that (the helper is only ever run from
+//! `Program Files`, after its hash and the permissions of its folder have been checked) does not
+//! depend on the source any more. Signing the published binaries with Authenticode, and checking
+//! the signature of the source before the prompt, is packaging work (`docs/plan.md`).
 
 use std::fs;
 use std::io;
@@ -34,6 +39,7 @@ use std::sync::Arc;
 use crisol_core::dns::{disable, enable, DnsError, NrptPolicy, DEFAULT_DNS_ADDR};
 use crisol_core::hosts::HostsManager;
 use crisol_core::paths::PrivateDirs;
+use crisol_core::programs::{require_trusted_program, ProgramError};
 use crisol_core::setup::{
     Manifest, SetupFailure, SetupOp, SetupReport, SystemSetup, MANIFEST_FILE,
 };
@@ -57,11 +63,16 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 /// administrators can write it, or nothing is copied. A program that is already there is
 /// replaced; the manifest is written last, so a half-finished install has none and verifies as
 /// "install it again".
+///
+/// `source` and its folder must not be writable by other accounts (`PermissionDenied`, with a
+/// [`ProgramError`] inside), and `source` is read once: those bytes are written and hashed.
 pub fn install_into(
     program_files: &Path,
     source: &Path,
     dirs: Arc<dyn PrivateDirs>,
 ) -> io::Result<PathBuf> {
+    require_trusted_program(source, dirs.as_ref()).map_err(program_io_error)?;
+    let program = fs::read(source)?;
     let folder = program_files.join(HELPER_FOLDER);
     fs::create_dir_all(&folder)?;
     if dirs.is_writable_by_non_administrators(&folder)? {
@@ -75,20 +86,28 @@ pub fn install_into(
         ));
     }
     let destination = helper_exe_in(program_files);
-    let program = fs::read(source)?;
     if source != destination {
         let staged = folder.join("crisol-elevate.exe.new");
         fs::write(&staged, &program)?;
         fs::rename(&staged, &destination)?;
     }
-    // Written last, from what is on disk now rather than from what was meant to be there.
-    let installed = fs::read(&destination)?;
-    let manifest = Manifest::of(HELPER_VERSION, &installed);
+    // The hash is of the bytes read above, which are the ones written; `verify` below hashes the
+    // file as it is on disk and so catches any difference.
+    let manifest = Manifest::of(HELPER_VERSION, &program);
     let staged = folder.join(format!("{MANIFEST_FILE}.new"));
     fs::write(&staged, manifest.to_text())?;
     fs::rename(&staged, folder.join(MANIFEST_FILE))?;
     HelperLocation::at(destination.clone(), dirs).verify()?;
     Ok(destination)
+}
+
+/// A [`ProgramError`] as the I/O error `install_into` returns, keeping it inside.
+fn program_io_error(error: ProgramError) -> io::Error {
+    match error {
+        ProgramError::Missing { .. } => io::Error::new(io::ErrorKind::NotFound, error),
+        ProgramError::Exposed { .. } => io::Error::new(io::ErrorKind::PermissionDenied, error),
+        ProgramError::Check { source, .. } => source,
+    }
 }
 
 /// Undoes what the helper changed in the system: Crisol's NRPT rule for `suffix` and the
@@ -160,6 +179,12 @@ pub fn install_self(suffix: &str) -> Result<SetupReport, SetupFailure> {
     let mut report = SetupReport::default();
     let destination = install_into(&program_files, &source, Arc::new(WindowsPrivateDirs::new()))
         .map_err(|e| match e.kind() {
+            io::ErrorKind::PermissionDenied
+                if e.get_ref()
+                    .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ProgramError>) =>
+            {
+                SetupFailure::SourceOpen
+            }
             io::ErrorKind::PermissionDenied => SetupFailure::Folder,
             io::ErrorKind::InvalidData => SetupFailure::Verify,
             _ => SetupFailure::Copy,
@@ -237,17 +262,33 @@ fn schedule_removal(folder: &Path) -> io::Result<()> {
 
 /// Installs and removes the helper through the UAC prompt, from the program that is next to
 /// this one.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WindowsSetup {
     helper_source: PathBuf,
+    dirs: Arc<dyn PrivateDirs>,
+}
+
+impl std::fmt::Debug for WindowsSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowsSetup")
+            .field("helper_source", &self.helper_source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WindowsSetup {
     /// With the `crisol-elevate.exe` that came with Crisol (the one `install` will copy).
     #[must_use]
     pub fn new(helper_source: impl Into<PathBuf>) -> Self {
+        Self::with_dirs(helper_source, Arc::new(WindowsPrivateDirs::new()))
+    }
+
+    /// Like [`new`](Self::new), judging permissions with `dirs` (for tests).
+    #[must_use]
+    pub fn with_dirs(helper_source: impl Into<PathBuf>, dirs: Arc<dyn PrivateDirs>) -> Self {
         Self {
             helper_source: helper_source.into(),
+            dirs,
         }
     }
 }
@@ -286,6 +327,10 @@ impl SystemSetup for WindowsSetup {
                 ),
             ));
         }
+        // The elevated process checks again; this is so the prompt is not shown for a program
+        // that will be refused, and so the message has the command that closes the folder.
+        require_trusted_program(&self.helper_source, self.dirs.as_ref())
+            .map_err(program_io_error)?;
         match run_elevated(&self.helper_source, &op.to_args())? {
             0 => {}
             code => return Err(failure(code)),

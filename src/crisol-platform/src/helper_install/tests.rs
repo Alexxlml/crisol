@@ -206,6 +206,7 @@ fn the_exit_codes_of_the_elevated_step_mean_one_thing_each() {
         SetupFailure::Rule,
         SetupFailure::ForeignRule,
         SetupFailure::NotInstalledCopy,
+        SetupFailure::SourceOpen,
     ];
     let codes: BTreeSet<u8> = all.iter().map(|f| f.code()).collect();
     assert_eq!(codes.len(), all.len(), "no two failures share a code");
@@ -228,4 +229,45 @@ fn the_launcher_refuses_a_bad_suffix_or_a_missing_program_before_any_prompt() {
     let error = setup.install("test").unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
     assert!(error.to_string().contains("next to crisol.exe"), "{error}");
+}
+
+#[test]
+fn a_program_other_accounts_can_replace_is_not_installed() {
+    let (_tmp, program_files, source, dirs) = world();
+    dirs.expose(source.parent().unwrap());
+    let error = install_into(&program_files, &source, dirs).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert!(
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ProgramError>),
+        "{error}"
+    );
+    assert!(error.to_string().contains("icacls"), "{error}");
+    assert!(!program_files.join("Crisol").exists(), "nothing was made");
+}
+
+#[test]
+fn the_manifest_hashes_the_bytes_that_were_read_and_written() {
+    let (_tmp, program_files, source, dirs) = world();
+    let installed = install_into(&program_files, &source, dirs).unwrap();
+    let text = fs::read_to_string(program_files.join("Crisol").join(MANIFEST_FILE)).unwrap();
+    assert_eq!(
+        Manifest::parse(&text).unwrap().sha256,
+        crisol_core::setup::sha256_hex(&fs::read(&installed).unwrap())
+    );
+}
+
+#[test]
+fn the_launcher_shows_no_prompt_for_a_program_others_can_replace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("crisol-elevate.exe");
+    fs::write(&source, PROGRAM).unwrap();
+    let dirs = Arc::new(FakePrivateDirs::new());
+    dirs.expose(tmp.path());
+    let error = WindowsSetup::with_dirs(&source, dirs)
+        .install("test")
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    assert!(error.to_string().contains("icacls"), "{error}");
 }
