@@ -792,6 +792,34 @@ enabled = true
 }
 
 #[test]
+fn doctor_lists_a_service_with_data_in_two_series() {
+    let rig = Rig::new(&[]);
+    let named = |rig: &Rig| {
+        checks(rig.call(&Call::Doctor).unwrap())
+            .into_iter()
+            .find(|c| c.name == "data series")
+    };
+    for series in ["10.11", "11.8"] {
+        let data = rig
+            .paths()
+            .data_for("mariadb", series)
+            .unwrap()
+            .join("mysql");
+        fs::create_dir_all(data).unwrap();
+        assert!(series != "11.8" || named(&rig).is_some());
+    }
+    let check = named(&rig).unwrap();
+    assert_eq!(check.status, CheckStatus::Warning);
+    assert!(
+        check
+            .detail
+            .contains("data/mariadb/10.11 and data/mariadb/11.8"),
+        "{}",
+        check.detail
+    );
+}
+
+#[test]
 fn every_message_has_no_stretch_of_spaces() {
     let rig = Rig::new(&[]);
     rig.dirs.expose(rig.paths().home());

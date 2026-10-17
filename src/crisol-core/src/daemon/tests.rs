@@ -418,6 +418,42 @@ fn changing_the_ports_asks_for_a_restart_instead_of_guessing() {
 }
 
 #[test]
+fn a_running_database_whose_port_changed_in_the_file_is_told_once_and_not_restarted() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    rig.call(
+        &Call::Start {
+            service: Some("mysql".to_owned()),
+        },
+        0,
+    )
+    .unwrap();
+    rig.listen_mysql();
+    rig.tick(700);
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("running"));
+    assert!(rig.tick(3000).is_empty(), "same port: nothing to say");
+
+    let text = fs::read_to_string(rig.paths.config_file())
+        .unwrap()
+        .replace("port = 19306", "port = 19307");
+    fs::write(rig.paths.config_file(), text).unwrap();
+    let events = rig.tick(6000);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ReloadFailed { reason }
+            if reason.contains("`mysql` is still on port 19306")
+                && reason.contains("crisol restart mysql")
+                && reason.contains("19307"))),
+        "{events:?}"
+    );
+    // Said once, and the database was left alone.
+    let again = rig.tick(9000);
+    assert!(again.is_empty(), "{again:?}");
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("running"));
+}
+
+#[test]
 fn restart_stops_and_starts_again_by_itself() {
     let mut rig = Rig::new();
     rig.start_running();

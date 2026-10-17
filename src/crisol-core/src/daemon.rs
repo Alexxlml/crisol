@@ -52,6 +52,10 @@ pub struct Daemon {
     shutting_down: bool,
     fingerprint: Option<u64>,
     last_watch: Option<Instant>,
+    /// When the ports of the running databases were last compared with `crisol.toml`.
+    last_db_watch: Option<Instant>,
+    /// The port changes already reported, so each is said once.
+    reported_db_ports: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +95,8 @@ impl Daemon {
             shutting_down: false,
             fingerprint: None,
             last_watch: None,
+            last_db_watch: None,
+            reported_db_ports: Vec::new(),
         }
     }
 
@@ -258,7 +264,33 @@ impl Daemon {
         if self.wanted && self.watch_due(now) {
             self.refresh(now, &mut |e| out.push(e));
         }
+        self.watch_database_ports(now, &mut |e| out.push(e));
         out
+    }
+
+    /// Says, once, that a running database is not on the port `crisol.toml` has now. Nothing is
+    /// restarted.
+    fn watch_database_ports(&mut self, now: Instant, events: &mut dyn FnMut(Event)) {
+        if self.dbs.is_stopped() {
+            self.reported_db_ports.clear();
+            return;
+        }
+        let due = self
+            .last_db_watch
+            .is_none_or(|last| now.saturating_duration_since(last) >= WATCH_EVERY);
+        if !due {
+            return;
+        }
+        self.last_db_watch = Some(now);
+        let changes = self.dbs.port_changes();
+        for change in &changes {
+            if !self.reported_db_ports.contains(change) {
+                events(Event::ReloadFailed {
+                    reason: change.clone(),
+                });
+            }
+        }
+        self.reported_db_ports = changes;
     }
 
     // ---- the calls ----------------------------------------------------------------------
@@ -374,6 +406,7 @@ impl Daemon {
             return web;
         }
         let (started, mut warnings) = self.dbs.start_enabled(now);
+        warnings.extend(self.dbs.take_notices());
         let any_database = !started.is_empty();
         emit_databases(events, started);
         match web {
@@ -440,7 +473,11 @@ impl Daemon {
             ));
         }
         emit_databases(events, started);
-        Ok(done(&format!("Starting {}", kind.service()), true))
+        Ok(Reply::Done(DoneInfo {
+            message: format!("Starting {}", kind.service()),
+            changed: true,
+            warnings: self.dbs.take_notices(),
+        }))
     }
 
     fn stop_database(

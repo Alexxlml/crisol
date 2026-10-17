@@ -35,6 +35,8 @@ pub struct DbStack {
     services: BTreeMap<DbKind, DbService>,
     /// Restarts waiting for the old process to be gone.
     restarting: BTreeSet<DbKind>,
+    /// Things to tell whoever asked for the start (a new series that begins empty).
+    notices: Vec<String>,
 }
 
 impl std::fmt::Debug for DbStack {
@@ -72,7 +74,13 @@ impl DbStack {
             dirs,
             services: BTreeMap::new(),
             restarting: BTreeSet::new(),
+            notices: Vec::new(),
         }
+    }
+
+    /// What the starts since the last call have to say (and forgets it).
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
     }
 
     fn load_config(&self) -> Result<Config, RpcError> {
@@ -113,6 +121,8 @@ impl DbStack {
                 other => RpcError::new(ErrorCode::Io, other.to_string()),
             })?;
         }
+        self.notices
+            .extend(crate::dbservice::new_series_notice(&self.paths, &plan));
         let mut service = DbService::new(plan, self.supervisor.clone(), self.ports.clone());
         let events = tagged(kind.service(), service.start(now));
         self.services.insert(kind, service);
@@ -209,6 +219,40 @@ impl DbStack {
             }
         }
         events
+    }
+
+    /// The databases running on a port other than the one `crisol.toml` says now, as sentences
+    /// that name the command. A running database is not restarted by itself: that would cut the
+    /// connections of the applications using it.
+    #[must_use]
+    pub fn port_changes(&self) -> Vec<String> {
+        let Ok(config) = self.load_config() else {
+            return Vec::new();
+        };
+        self.services
+            .iter()
+            .filter(|(_, service)| active(service.state()))
+            .filter_map(|(kind, service)| {
+                let plan = service.plan();
+                let running: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
+                let wanted = kind.configured_ports(&config);
+                (running != wanted).then(|| {
+                    let list = |ports: &[u16]| {
+                        ports
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    };
+                    format!(
+                        "`{name}` is still on port {now}; `crisol restart {name}` to use {next}",
+                        name = kind.service(),
+                        now = list(&running),
+                        next = list(&wanted)
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Every database that has been started, with its state.

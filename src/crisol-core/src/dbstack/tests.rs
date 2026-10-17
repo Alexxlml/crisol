@@ -244,3 +244,53 @@ port = 19380
     .unwrap();
     rig.stack.start(DbKind::Garnet, rig.at(20)).unwrap();
 }
+
+#[test]
+fn a_new_series_that_starts_empty_beside_another_with_data_says_where_the_data_is() {
+    let mut rig = Rig::new(
+        "[services.mariadb]
+enabled = true
+port = 19307
+",
+    );
+    // MariaDB 11.8 has data; 10.11 gets installed and pinned, and starts empty.
+    let bin = rig
+        .paths
+        .bin_for("mariadb", "10.11.19")
+        .unwrap()
+        .join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("mysqld.exe"), "MZ").unwrap();
+    fs::write(
+        rig.paths.config_file(),
+        "[services.mariadb]
+enabled = true
+port = 19307
+version = \"10.11\"
+",
+    )
+    .unwrap();
+    rig.stack
+        .start(crate::dbservice::DbKind::Mariadb, rig.at(0))
+        .unwrap();
+    let notices = rig.stack.take_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("mariadb 10.11 starts empty")
+            && notices[0].contains("data/mariadb/11.8")
+            && notices[0].contains("mysqldump"),
+        "{notices:?}"
+    );
+    let again = rig.stack.take_notices();
+    assert!(again.is_empty(), "said once: {again:?}");
+}
+
+#[test]
+fn a_series_with_its_own_data_or_the_only_one_says_nothing() {
+    let mut rig = Rig::new(MYSQL_ONLY);
+    rig.stack
+        .start(crate::dbservice::DbKind::Mysql, rig.at(0))
+        .unwrap();
+    let notices = rig.stack.take_notices();
+    assert!(notices.is_empty(), "{notices:?}");
+}

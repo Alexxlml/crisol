@@ -102,6 +102,8 @@ pub fn render_ini(plan: &DbPlan) -> Result<String, DbError> {
     // whoever can run SQL can write a file wherever the user can (a `.bat` in the Startup
     // folder, for one).
     line("secure_file_priv", &quote(&plan.files)?);
+    // `LOAD DATA LOCAL` is how a malicious server reads a client's files; nothing here needs it.
+    line("local_infile", "OFF");
     if plan.kind == DbKind::Mysql {
         // The X protocol would open 33060 for nobody. (No `skip-name-resolve`: the only account
         // `--initialize-insecure` makes is `root@localhost`, and a connection from 127.0.0.1 is

@@ -265,7 +265,7 @@ impl Engine {
         })?;
         let service = kind.service();
         let before = self.load_config()?;
-        let was = kind.is_enabled(&before);
+        let was = kind.enabled(&before);
         let mut warnings = Vec::new();
         if was != enabled {
             let mut editor = TomlEditor::open_config(&self.paths)
@@ -562,8 +562,40 @@ impl Engine {
             self.check_sites(),
         ];
         checks.extend(self.check_memcached());
+        checks.extend(self.check_data_series());
         checks.extend(self.deps.system.checks(&self.paths));
         Reply::Doctor { checks }
+    }
+
+    /// A service with data in more than one series (MariaDB 10.11 and 11.8, say): each series is
+    /// kept apart and nothing is migrated, so `doctor` says where each one is.
+    fn check_data_series(&self) -> Option<Check> {
+        let lines: Vec<String> = crate::dbservice::DbKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let series = crate::dbservice::series_with_data(&self.paths, kind);
+                (series.len() > 1).then(|| {
+                    format!(
+                        "{} has data in {}",
+                        kind.service(),
+                        series
+                            .iter()
+                            .map(|s| format!("data/{}/{s}", kind.service()))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    )
+                })
+            })
+            .collect();
+        (!lines.is_empty()).then(|| Check {
+            name: "data series".to_owned(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{}; the series are kept apart and nothing is migrated, so the one in use is the one the version pinned in crisol.toml (or the newest installed) selects",
+                lines.join("; ")
+            ),
+            fix: None,
+        })
     }
 
     /// Memcached cannot have a login: when it is enabled, `doctor` says so.

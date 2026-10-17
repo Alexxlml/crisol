@@ -266,10 +266,13 @@ impl DbKind {
         Self::ALL.into_iter().find(|k| k.service() == name)
     }
 
-    /// Whether `crisol.toml` has it enabled.
+    /// The main port `crisol.toml` says now (a running one may have been started on another).
     #[must_use]
-    pub fn is_enabled(self, config: &Config) -> bool {
-        (self.descriptor().enabled)(config)
+    pub fn configured_ports(self, config: &Config) -> Vec<u16> {
+        let descriptor = self.descriptor();
+        let mut ports = vec![(descriptor.port)(config)];
+        ports.extend(descriptor.extra_port.map(|f| f(config)));
+        ports
     }
 
     /// Where its password lives.
@@ -424,6 +427,75 @@ pub fn connection_details(
     let plan = plan(paths, config, kind)?;
     let secret = secrets::read_secret(&plan.secret_path(""))?;
     Ok(credentials(&plan, secret.as_ref()))
+}
+
+/// The folders next to the data that are not data: the one being made and the one the database
+/// may write files in.
+fn is_work_folder(name: &str) -> bool {
+    [".init", "-files"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
+
+/// The series of `kind` that have data in `data/<service>/`: not the folders being made
+/// (`<series>.init`) nor the ones the database may write files in (`<series>-files`), and only
+/// those that are not empty.
+#[must_use]
+pub fn series_with_data(paths: &CrisolPaths, kind: DbKind) -> Vec<String> {
+    let Ok(root) = paths.data_for(kind.service(), "x").map(|p| {
+        p.parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default()
+    }) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| !is_work_folder(name))
+        .filter(|name| {
+            fs::read_dir(paths.data_dir().join(kind.service()).join(name))
+                .is_ok_and(|mut d| d.next().is_some())
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// What to tell someone whose database starts in a new, empty series while an older one holds
+/// data: that it is not lost, where it is, and that Crisol migrates nothing.
+#[must_use]
+pub fn new_series_notice(paths: &CrisolPaths, plan: &DbPlan) -> Option<String> {
+    if plan.data.is_dir() {
+        return None;
+    }
+    let others: Vec<String> = series_with_data(paths, plan.kind)
+        .into_iter()
+        .filter(|s| *s != plan.series)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let tool = match plan.kind {
+        DbKind::Mysql | DbKind::Mariadb => "`mysqldump`",
+        DbKind::Postgres => "`pg_dump`",
+        DbKind::Mongodb => "`mongodump`",
+        _ => "its own export",
+    };
+    Some(format!(
+        "{service} {series} starts empty; your data is still in {where_} (nothing is migrated).          To move it, export it from the old series ({tool}, starting that series with the version          pinned in crisol.toml) and import it here",
+        service = plan.kind.service(),
+        series = plan.series,
+        where_ = others
+            .iter()
+            .map(|s| format!("data/{}/{s}", plan.kind.service()))
+            .collect::<Vec<_>>()
+            .join(" and "),
+    ))
 }
 
 /// What Crisol asks of a running MongoDB besides starting it: to make its first user, and to shut
