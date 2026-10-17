@@ -127,6 +127,23 @@ impl Engine {
         &self.deps
     }
 
+    /// Makes sure the home exists and is private **before anything writes in it**. A home that
+    /// does not exist is created through the dependencies' `PrivateDirs`, so it does not inherit
+    /// the open permissions of a drive root (ADR-0008); one that exists is never re-permissioned
+    /// (an open one is refused by the operations themselves, with the command that closes it).
+    /// Whoever builds an engine without a daemon calls this first; `crisold` does the same.
+    pub fn prepare_home(&self) -> Result<(), RpcError> {
+        self.paths
+            .ensure_private_layout(self.deps.dirs.as_ref())
+            .map(|_| ())
+            .map_err(|e| match e {
+                crate::paths::PathsError::OtherAccount { .. } => {
+                    RpcError::new(ErrorCode::HomeExposed, e.to_string())
+                }
+                other => RpcError::new(ErrorCode::Io, other.to_string()),
+            })
+    }
+
     /// Does `call` if it is one of the file operations; `None` if it needs the daemon.
     /// `events` receives the progress of long operations (a download).
     pub fn handle(

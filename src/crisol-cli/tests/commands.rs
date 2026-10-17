@@ -611,6 +611,34 @@ fn an_open_home_blocks_start_and_the_error_carries_the_fix() {
     env.finish();
 }
 
+#[test]
+fn the_first_command_without_a_daemon_makes_the_home_private() {
+    // A new user whose first command is `install` or `park`: the home does not exist yet and
+    // must be born private, not inherit the open permissions of the drive it is on.
+    for args in [
+        vec!["install", "php", "8.4"],
+        vec!["park", "PARKED"],
+        vec!["sites"],
+    ] {
+        let env = Env::new(&[("php", "8.4.26")]);
+        fs::remove_dir_all(env.paths.home()).unwrap();
+        let folder = env.paths.home().with_file_name("elsewhere");
+        fs::create_dir_all(&folder).unwrap();
+        let folder = folder.display().to_string();
+        let args: Vec<&str> = args
+            .iter()
+            .map(|a| if *a == "PARKED" { folder.as_str() } else { *a })
+            .collect();
+        env.ok(&args);
+        assert_eq!(
+            env.dirs.created(),
+            [env.paths.home().to_path_buf()],
+            "{args:?}"
+        );
+        assert!(!env.daemon_running());
+    }
+}
+
 // ---- logs and doctor ------------------------------------------------------------------------
 
 #[test]

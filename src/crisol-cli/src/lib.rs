@@ -255,6 +255,8 @@ impl Session<'_> {
         let deps =
             (self.context.deps)().map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
         let engine = Engine::new(self.context.paths.clone(), deps);
+        // The first command of a new user may be this one: the home must be born private.
+        engine.prepare_home()?;
         Ok(Box::new(Local(Daemon::new(engine))))
     }
 
