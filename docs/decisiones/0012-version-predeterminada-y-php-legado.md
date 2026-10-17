@@ -45,3 +45,7 @@ Interpretación del "8.4^" del usuario: la **línea 8.4** (cualquier 8.4.x, el p
 - Comprobado con PHP 7.4.33 real: arranca con el `php.ini` generado sin advertencias, carga `curl`, `mbstring`, `openssl`, `pdo_sqlite` y `opcache`, y cURL con el bundle del ADR-0011 llega a un sitio HTTPS. El redistribuible 2015-2022 de esta máquina basta para la `vc15`.
 - El ZIP de 7.4.33 no trae hash ni firma del proveedor: ver la tabla de `analisis/fuentes-binarios.md` (certeza menor).
 - Sigue sin hacer: el aviso al instalar y la lista en `doctor` (CLI, Fase 8 y F11.1).
+
+## Ampliación a Node (2026-10-17, F10.1)
+
+El mecanismo es el mismo y se aplica a Node sin cambios en el código: `[recommended] node = "24"` (la LTS en activo; al pasar la 26 a LTS y estabilizarse se cambia con un catálogo nuevo) y Node 20.20.2 con `end_of_life = true`, instalable para proyectos viejos y nunca elegida por defecto ni por `latest`. Con 20, 22 y 24 instaladas, `engines.node = ">=18"` resuelve a 24 y `".nvmrc"` con `20` da 20.

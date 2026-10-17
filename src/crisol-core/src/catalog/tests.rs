@@ -619,7 +619,7 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
     assert_eq!(resolve("nginx", "1.28"), "1.28.3");
     assert_eq!(resolve("nginx", "1.30"), "1.30.5");
     assert_eq!(resolve("node", "22"), "22.23.3");
-    assert_eq!(resolve("node", "24"), "24.21.0");
+    assert_eq!(resolve("node", "24"), "24.22.0");
     assert_eq!(
         catalog
             .latest("composer", WINDOWS)
@@ -762,24 +762,34 @@ fn built_in_packages_carry_a_realistic_size_and_distinct_hashes() {
 fn the_built_in_catalog_recommends_php_8_4_and_marks_7_4_as_unsupported() {
     let catalog = Catalog::embedded().unwrap();
     assert_eq!(catalog.recommended("php"), Some("8.4"));
-    assert_eq!(catalog.recommended("node"), None);
+    assert_eq!(catalog.recommended("node"), Some("24"));
     // The recommended line must be one the catalog can actually install.
     let target = Target {
         os: Os::Windows,
         arch: Arch::X86_64,
     };
     assert!(catalog.find("php", "8.4", target).is_ok());
+    assert!(catalog.find("node", "24", target).is_ok());
+    // Node 20 is only for old projects: it never is what "latest" means.
+    let node20 = catalog.find("node", "20", target).unwrap();
+    assert!(node20.end_of_life);
+    assert_eq!(
+        catalog.latest("node", target).unwrap().version.to_string(),
+        "24.22.0"
+    );
 
     let old = catalog.find("php", "7.4", target).unwrap();
     assert_eq!(old.version.to_string(), "7.4.33");
     assert!(old.end_of_life);
     assert!(catalog.is_end_of_life("php", &old.version));
     for package in catalog.packages().iter().filter(|p| {
-        // PHP 7.4 and the old builds of Redis 5 and Memcached 1.6.8 (ADR-0012, ADR-0017) are the
+        // PHP 7.4, Node 20 and the old builds of Redis 5 and Memcached 1.6.8 (ADR-0012, ADR-0017) are the
         // unsupported ones.
-        !(p.service == "php" && p.version.to_string().starts_with("7."))
-            && p.service != "redis"
-            && p.service != "memcached"
+        let version = p.version.to_string();
+        !matches!(
+            (p.service.as_str(), version.split('.').next().unwrap_or("")),
+            ("php", "7") | ("node", "20") | ("redis" | "memcached", _)
+        )
     }) {
         assert!(
             !package.end_of_life,

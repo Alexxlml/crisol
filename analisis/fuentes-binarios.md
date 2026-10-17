@@ -13,7 +13,7 @@ Qué se descarga, de dónde, qué publica cada proveedor para verificarlo y qué
 | PHP 8.3.35, 8.4.26, 8.5.11 (NTS x64) | `windows.php.net` | SHA-256 en `releases.json` | Hash calculado = hash publicado; la URL de `archives/` entrega los mismos bytes | ✅ coincide |
 | PHP 7.4.33 (NTS x64, vc15) | `windows.php.net/downloads/releases/archives/` | **Nada**: ni hash ni firma para versiones archivadas (`releases.json` ya no la lista; `php.net` publica hashes solo del código fuente) | Hash calculado = `14ae3250…8aace`, idéntico en **dos descargas** HTTPS separadas; `unzip -t` sin errores; nombres sin rutas absolutas, `..` ni unidades; `php.exe -v` imprime `PHP 7.4.33 … NTS Visual C++ 2017 x64`; `php -m` limpio con el `php.ini` generado y cURL con el bundle del ADR-0011 llega a un sitio HTTPS | ⚠️ **certeza menor**: integridad de la transferencia, no autenticidad contra el proveedor |
 | Nginx 1.28.3, 1.30.5, 1.31.6 | `nginx.org` | **Solo** firma PGP (`.zip.asc`); sin hash | Firma verificada con `gpg` y la clave publicada por nginx.org | ✅ firma válida |
-| Node 22.23.3, 24.21.0 (win-x64) | `nodejs.org` | `SHASUMS256.txt` firmado con PGP | Hash calculado = hash publicado; firma de `SHASUMS256.txt` verificada con la clave de `nodejs/release-keys` | ✅ coincide y firma válida |
+| Node 20.20.2 (sin soporte), 22.23.3, 24.22.0 (win-x64) | `nodejs.org` | `SHASUMS256.txt` firmado con PGP (`.sig` separada y `.asc` en claro) | Hash calculado = hash publicado; firma de `SHASUMS256.txt` verificada con `gpg` y las claves de `nodejs/release-keys` (revisión del 2026-10-17, catálogo `serial = 10`) | ✅ coincide y firma válida |
 | Composer 2.10.3 | `getcomposer.org` | `composer.phar.sha256sum` y firma PGP (`.asc`) | Hash calculado = hash publicado; firma verificada con la clave de `keys.openpgp.org` | ✅ coincide y firma válida |
 
 Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se ejecutó ni se extrajo; solo se leyeron los nombres de los ZIP para fijar `root` y `executable`, y se comprobó que ningún nombre fuera absoluto, contuviera `..` o una unidad.
@@ -47,8 +47,9 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 ## Node
 
 - **Fuente:** `https://nodejs.org/dist/v<versión>/node-v<versión>-win-x64.zip` y `SHASUMS256.txt` (más `.asc`, texto firmado).
-- **Versiones:** las dos líneas LTS vigentes, **22.23.3** (Jod) y **24.21.0** (Krypton). Se excluyen Node 20 (fin de vida) y 26 (aún no es LTS).
-- **Verificación:** el hash calculado coincide con la línea correspondiente de `SHASUMS256.txt`. La firma de ese archivo es válida con la clave `5BE8 A3F6 C8A5 C01D 106C 0AD8 20B1 A390 B168 D356` (Antoine du Hamel), descargada de **`github.com/nodejs/release-keys`**, es decir, de una fuente distinta de nodejs.org.
+- **Versiones (revisión del 2026-10-17):** según `nodejs.org/dist/index.json` y `nodejs/Release/schedule.json`: **24.22.0** (Krypton, LTS en activo; pasa a mantenimiento el 2026-10-20), **22.23.3** (Jod, LTS en mantenimiento hasta 2027-04-30) y **20.20.2** (Iron, **sin soporte desde 2026-04-30**, marcada `end_of_life` solo para proyectos viejos). Se excluyen Node 26 (v26.12.0: aún «Current»; será LTS el 2026-10-28, entonces se añade) y las líneas impares. El catálogo ya no ofrece 24.21.0 (sustituida por 24.22.0, mismo criterio que PHP: una versión por línea).
+- **Verificación:** el hash calculado (SHA-256 del ZIP descargado) coincide con la línea `win-x64.zip` de `SHASUMS256.txt`. La firma de ese archivo es válida con claves cuyas huellas aparecen en `nodejs/release-keys` (`keys.list`), descargadas de **`github.com/nodejs/release-keys`**, es decir, de una fuente distinta de nodejs.org: v20.20.2 con `CC68 F5A3 106F F448 322E 48ED 27F5 E38D 5B0A 215F` (marco-ippolito), v22.23.3 con `5BE8 A3F6 C8A5 C01D 106C 0AD8 20B1 A390 B168 D356` (Antoine du Hamel) y v24.22.0 con `C82F A3AE 1CBE DC6B E46B 9360 C43C EC45 C17A B93C` (Richard Lau). Tamaños: 30 283 903, 35 574 076 y 37 733 703 bytes.
+- **Corepack:** los ZIP de 20, 22 y 24 traen `corepack`/`corepack.cmd` y `node_modules/corepack/`. Node 25 en adelante lo quitó de la distribución; si una línea futura no lo trae, el shim de `corepack` debe decirlo (F10.2).
 - **Carpeta raíz:** `node-v<versión>-win-x64/`. Ejecutable: `node.exe` (`npm`, `npx` y `corepack` van dentro).
 
 ## Composer
@@ -103,7 +104,7 @@ Para añadir una versión nueva o actualizar una existente:
 
 Para PHP usar siempre la URL de `archives/`.
 
-**Resultado de la instalación de prueba (2026-10-14):** las 9 entradas se instalan completas con el instalador real: Composer (1 archivo), Nginx (31–32), Node 22 (2 032), Node 24 (1 994) y PHP (78–82).
+**Resultado de la instalación de prueba (2026-10-14):** las 9 entradas se instalan completas con el instalador real: Composer (1 archivo), Nginx (31–32), Node 22 (2 032), Node 24 (1 994; la 24.22.0 se revisó el 2026-10-17) y PHP (78–82).
 
 ## Pendiente
 

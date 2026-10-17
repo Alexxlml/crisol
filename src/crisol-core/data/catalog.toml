@@ -14,13 +14,14 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 9
-generated = "2026-10-14"
+serial = 10
+generated = "2026-10-17"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
 # and when a project's open constraint (">=7.4") is satisfied by it. Change it with a new serial.
 [recommended]
 php = "8.4"
+node = "24"
 
 # PHP 7.4 is here only so that old projects can be started (ADR-0012). It no longer receives
 # security fixes (`end_of_life`), so it is never a default. windows.php.net publishes no hash for
@@ -107,6 +108,21 @@ root = "nginx-1.31.6"
 executable = "nginx.exe"
 size = 2797070
 
+# Node 20 left security support on 2026-04-30 (nodejs/Release schedule). It is here only for
+# old projects (ADR-0012 applies to it as it does to PHP 7.4): never a default.
+[[package]]
+service = "node"
+version = "20.20.2"
+os = "windows"
+arch = "x86_64"
+url = "https://nodejs.org/dist/v20.20.2/node-v20.20.2-win-x64.zip"
+sha256 = "dc3700fdd57a63eedb8fd7e3c7baaa32e6a740a1b904167ff4204bc68ed8bf77"
+format = "zip"
+root = "node-v20.20.2-win-x64"
+executable = "node.exe"
+size = 30283903
+end_of_life = true
+
 [[package]]
 service = "node"
 version = "22.23.3"
@@ -121,15 +137,15 @@ size = 35574076
 
 [[package]]
 service = "node"
-version = "24.21.0"
+version = "24.22.0"
 os = "windows"
 arch = "x86_64"
-url = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
-sha256 = "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip"
+sha256 = "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3"
 format = "zip"
-root = "node-v24.21.0-win-x64"
+root = "node-v24.22.0-win-x64"
 executable = "node.exe"
-size = 37618919
+size = 37733703
 
 [[package]]
 service = "composer"

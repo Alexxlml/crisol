@@ -672,13 +672,34 @@ fn a_version_pinned_by_hand_is_respected_even_if_unsupported() {
     assert_eq!(picked(world.php()).0, "7.4.33");
 }
 
+const RECOMMEND_NODE_24: &str = "
+[recommended]
+node = \"24\"
+";
+
 #[test]
-fn node_has_no_recommendation_and_is_unaffected() {
-    let mut world = World::new(&[], &["22.23.3", "24.21.0"]);
-    world.catalog(RECOMMEND_84);
+fn node_follows_the_recommended_line_and_skips_the_unsupported_one() {
+    let mut world = World::new(&[], &["20.20.2", "22.23.3", "24.22.0"]);
+    world.catalog(&format!(
+        "{RECOMMEND_NODE_24}{}",
+        eol_entry("node", "20.20.2")
+    ));
     let (version, source) = picked(world.node());
     assert_eq!(
         (version.as_str(), source),
-        ("24.21.0", Source::HighestInstalled)
+        ("24.22.0", Source::CatalogRecommendation)
     );
+    // An open `engines.node` also gets the recommended line when it satisfies it.
+    write(&world.app, "package.json", r#"{"engines":{"node":">=18"}}"#);
+    assert_eq!(picked(world.node()).0, "24.22.0");
+    write(
+        &world.app, ".nvmrc", "20
+",
+    );
+    assert_eq!(picked(world.node()).0, "20.20.2");
+
+    // Without a recommendation the highest supported one wins, never the unsupported 20.
+    let mut world = World::new(&[], &["20.20.2", "22.23.3"]);
+    world.catalog(&eol_entry("node", "20.20.2"));
+    assert_eq!(picked(world.node()).0, "22.23.3");
 }

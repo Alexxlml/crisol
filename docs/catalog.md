@@ -29,7 +29,7 @@ end_of_life = true        # opcional: ya no recibe parches de seguridad (ADR-001
 - `format = "file"` es un archivo suelto que se instala tal cual (por ejemplo `composer.phar`); `executable` es el nombre con el que queda.
 - `root` evita que el ejecutable quede en una carpeta intermedia: Nginx y Node empaquetan todo dentro de una carpeta con el nombre de la versión.
 - `[recommended]` asigna a cada servicio la **línea** (`8.4`, no una versión exacta) que se usa cuando nada pide otra cosa y cuando la restricción abierta de un proyecto (`>=7.4`) la cumple. Vive en el catálogo y no en el binario para poder cambiarla (a `8.5`) publicando un catálogo firmado nuevo. Un catálogo sin esta sección es válido. La clave debe ser un nombre de servicio válido y el valor, una línea de versión.
-- `end_of_life = true` marca una versión que se puede instalar (un proyecto viejo la puede necesitar) pero que **nunca** es la predeterminada ni la que elige `latest` mientras exista otra. Al instalarla, `Installed::end_of_life` avisa a quien llama. Hoy solo PHP 7.4.33.
+- `end_of_life = true` marca una versión que se puede instalar (un proyecto viejo la puede necesitar) pero que **nunca** es la predeterminada ni la que elige `latest` mientras exista otra. Al instalarla, `Installed::end_of_life` avisa a quien llama. Hoy PHP 7.4.33 y Node 20.20.2 (más Redis 5 y Memcached 1.6.8, ver ADR-0017).
 - Los campos desconocidos se avisan, no fallan: un catálogo más nuevo sigue leyéndose.
 
 ## Qué se rechaza
