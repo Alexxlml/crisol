@@ -312,6 +312,14 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// Parses catalog text with no signature check, for the tests of other crates that need a
+    /// small catalog of their own. Nothing in the product calls it: real catalogs are the
+    /// built-in one and [`Catalog::load_update`].
+    #[doc(hidden)]
+    pub fn parse_for_tests(text: &str) -> Result<Self, CatalogError> {
+        Self::parse(text)
+    }
+
     /// Parses and validates catalog text. Does **not** check any signature: use it for text
     /// that is already trusted (the built-in catalog); see [`Catalog::load_update`].
     pub(crate) fn parse(text: &str) -> Result<Self, CatalogError> {

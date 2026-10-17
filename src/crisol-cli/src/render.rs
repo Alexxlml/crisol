@@ -1,0 +1,227 @@
+//! How an answer looks on a terminal. Plain text, no colors, no cleverness: it is read by
+//! people and pasted into issues.
+
+use std::fmt::Write as _;
+
+use crisol_protocol::{CheckStatus, Event, Reply, RpcError};
+
+/// The text of a reply. Ends with a newline, or is empty.
+// One flat arm per kind of answer reads better than a function for each.
+#[allow(clippy::too_many_lines)]
+#[must_use]
+pub fn reply(reply: &Reply) -> String {
+    let mut out = String::new();
+    match reply {
+        Reply::Hello(info) => {
+            let _ = writeln!(
+                out,
+                "crisold {} (protocol {}) in {}",
+                info.daemon, info.protocol, info.home
+            );
+        }
+        Reply::Done(info) => {
+            let _ = writeln!(out, "{}", info.message);
+            warnings(&mut out, &info.warnings);
+        }
+        Reply::Status(info) => {
+            if info.services.is_empty() {
+                out.push_str("No services yet. Install nginx with `crisol install nginx`.\n");
+            }
+            let width = info
+                .services
+                .iter()
+                .map(|s| s.name.len())
+                .max()
+                .unwrap_or(0);
+            for service in &info.services {
+                let _ = write!(out, "{:<width$}  {}", service.name, service.state);
+                if let Some(detail) = &service.detail {
+                    let _ = write!(out, "  ({detail})");
+                }
+                out.push('\n');
+            }
+            warnings(&mut out, &info.warnings);
+        }
+        Reply::Installed(info) => {
+            if info.already {
+                let _ = writeln!(
+                    out,
+                    "{} {} was already installed ({})",
+                    info.service, info.version, info.path
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "Installed {} {} in {} ({} downloaded)",
+                    info.service,
+                    info.version,
+                    info.path,
+                    bytes(info.downloaded)
+                );
+            }
+            if info.end_of_life {
+                let _ = writeln!(
+                    out,
+                    "warning: {} {} no longer receives security fixes; use it only for an old project",
+                    info.service, info.version
+                );
+            }
+        }
+        Reply::Removed(info) => {
+            let _ = writeln!(out, "Removed {} {}", info.service, info.version);
+        }
+        Reply::Versions(list) => {
+            out.push_str("Installed:\n");
+            if list.installed.is_empty() {
+                out.push_str("  (nothing yet)\n");
+            }
+            for v in &list.installed {
+                let _ = writeln!(
+                    out,
+                    "  {} {}{}",
+                    v.service,
+                    v.version,
+                    flags(v.recommended, v.end_of_life)
+                );
+            }
+            if !list.available.is_empty() {
+                out.push_str("Available:\n");
+                for v in &list.available {
+                    let _ = writeln!(
+                        out,
+                        "  {} {}{}{}",
+                        v.service,
+                        v.version,
+                        if v.installed { "  [installed]" } else { "" },
+                        flags(v.recommended, v.end_of_life)
+                    );
+                }
+            }
+        }
+        Reply::Used(info) => {
+            let _ = writeln!(
+                out,
+                "{} now selects {} (written to {}){}",
+                info.request,
+                info.selects,
+                info.file,
+                if info.changed {
+                    ""
+                } else {
+                    "; it already said so"
+                }
+            );
+            warnings(&mut out, &info.warnings);
+        }
+        Reply::Sites { sites, warnings: w } => {
+            if sites.is_empty() {
+                out.push_str("No sites. `crisol park` serves every folder in a folder; `crisol link` serves one.\n");
+            }
+            let width = sites.iter().map(|s| s.domain.len()).max().unwrap_or(0);
+            for site in sites {
+                let scheme = if site.secure { "https" } else { "http " };
+                let _ = writeln!(
+                    out,
+                    "{scheme}  {:<width$}  {}  [{}]",
+                    site.domain, site.docroot, site.kind
+                );
+            }
+            warnings(&mut out, w);
+        }
+        Reply::Logs(chunk) => {
+            for line in &chunk.lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        Reply::Doctor { checks } => {
+            for check in checks {
+                let mark = match check.status {
+                    CheckStatus::Ok => "ok     ",
+                    CheckStatus::Warning => "warning",
+                    CheckStatus::Problem => "PROBLEM",
+                };
+                let _ = writeln!(out, "{mark}  {}: {}", check.name, check.detail);
+                if let Some(fix) = &check.fix {
+                    let _ = writeln!(out, "         fix: {fix}");
+                }
+            }
+        }
+    }
+    out
+}
+
+fn flags(recommended: bool, end_of_life: bool) -> String {
+    let mut text = String::new();
+    if recommended {
+        text.push_str("  (recommended)");
+    }
+    if end_of_life {
+        text.push_str("  (end of life)");
+    }
+    text
+}
+
+fn warnings(out: &mut String, list: &[String]) {
+    for warning in list {
+        let _ = writeln!(out, "warning: {warning}");
+    }
+}
+
+/// `1.5 MB`, as people read sizes.
+#[must_use]
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    #[allow(clippy::cast_precision_loss)]
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// An error as the terminal shows it: the sentence, then the command that fixes it.
+#[must_use]
+pub fn error(error: &RpcError) -> String {
+    let mut out = format!("error: {}\n", error.message);
+    if let Some(fix) = &error.fix {
+        let _ = writeln!(out, "  fix: {fix}");
+    }
+    out
+}
+
+/// A progress line for a download, or `None` when it is not worth a line (an event of another
+/// kind, or no news since the last percentage shown).
+#[must_use]
+pub fn progress(event: &Event, last_percent: &mut Option<u64>) -> Option<String> {
+    let Event::Progress { what, done, total } = event else {
+        return None;
+    };
+    match total {
+        Some(total) if *total > 0 => {
+            let percent = done * 100 / total;
+            // One line per ten percent is enough to see it move.
+            if last_percent.is_some_and(|last| percent / 10 <= last / 10) && percent < 100 {
+                return None;
+            }
+            *last_percent = Some(percent);
+            Some(format!("Downloading {what}: {percent}% ({})", bytes(*done)))
+        }
+        _ => {
+            if last_percent.is_some() {
+                return None;
+            }
+            *last_percent = Some(0);
+            Some(format!("Downloading {what}..."))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

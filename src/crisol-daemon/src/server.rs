@@ -4,7 +4,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crisol_core::daemon::Daemon;
 use crisol_core::dns::{DnsServer, Zone};
@@ -97,17 +97,25 @@ pub fn run(options: Options) -> io::Result<()> {
     };
     let served = runtime.block_on(async {
         let mut instance = first;
+        let mut connections = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 connected = instance.connect() => {
                     connected?;
                     let next = create_instance(&pipe, false)?;
                     let connection = std::mem::replace(&mut instance, next);
-                    tokio::spawn(serve(connection, shared.clone()));
+                    connections.spawn(serve(connection, shared.clone()));
                 }
-                _ = &mut done_rx => return Ok::<(), io::Error>(()),
+                _ = &mut done_rx => break,
             }
         }
+        // The answer to `shutdown` is on its way out through a connection: give the clients a
+        // moment to read it and hang up before the runtime goes away with them.
+        let _ = tokio::time::timeout(Duration::from_millis(500), async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await;
+        Ok::<(), io::Error>(())
     });
 
     drop(shared);
