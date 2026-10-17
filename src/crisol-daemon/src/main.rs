@@ -2,11 +2,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::process::ExitCode;
 
 use clap::Parser;
-use crisol_core::config::Config;
 use crisol_core::dns::DEFAULT_DNS_ADDR;
-use crisol_core::ipc::pipe_name;
+use crisol_core::setup::suffix_of;
 use crisol_daemon::{run, DnsOptions, Options, Timing};
-use crisol_platform::{default_deps, resolve_paths, WindowsPrivateDirs};
+use crisol_platform::{default_deps, pipe_name_for_user, resolve_paths, WindowsPrivateDirs};
 
 /// Crisol daemon: keeps services alive and serves the IPC.
 ///
@@ -35,10 +34,10 @@ fn start() -> Result<(), String> {
         .ensure_private_layout(&WindowsPrivateDirs::new())
         .map_err(|e| e.to_string())?;
     let deps = default_deps().map_err(|e| e.to_string())?;
-    let suffix = Config::load_from(&paths)
-        .map_or_else(|_| "test".to_owned(), |loaded| loaded.config.sites.tld);
+    let pipe = pipe_name_for_user(paths.home()).map_err(|e| e.to_string())?;
+    let suffix = suffix_of(&paths);
     let options = Options {
-        pipe: pipe_name(paths.home()),
+        pipe,
         deps,
         timing: Timing::default(),
         dns: Some(DnsOptions {

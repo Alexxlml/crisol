@@ -103,6 +103,14 @@ fn pipe_sddl(sid: &str) -> String {
 /// A connection to the daemon: the protocol client over the two ends of the pipe.
 pub type DaemonConnection = Client<BufReader<File>, File>;
 
+/// The name of the pipe of the daemon of `home` for the account running this process.
+pub fn pipe_name_for_user(home: &Path) -> io::Result<String> {
+    Ok(crisol_core::ipc::pipe_name(
+        home,
+        &crate::private_dir::current_user_sid()?,
+    ))
+}
+
 /// Opens the daemon's pipe `name` and checks who is on the other end.
 ///
 /// `NotFound` means no daemon is running. A pipe whose server runs as another user is refused

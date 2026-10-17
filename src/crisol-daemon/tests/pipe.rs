@@ -55,7 +55,7 @@ fn start_daemon() -> Running {
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     paths.ensure_layout().unwrap();
     fs::create_dir_all(paths.www_dir().join("blog")).unwrap();
-    let pipe = pipe_name(paths.home());
+    let pipe = pipe_name(paths.home(), "S-1-5-21-1-2-3-1001");
     let options = Options {
         paths: paths.clone(),
         deps: deps(),

@@ -13,6 +13,7 @@ struct State {
     created: Vec<PathBuf>,
     exposed: BTreeSet<PathBuf>,
     user_writable: BTreeSet<PathBuf>,
+    foreign: BTreeSet<PathBuf>,
 }
 
 /// Scriptable fake of [`PrivateDirs`]. A folder it creates is private; a path is open to other
@@ -45,6 +46,11 @@ impl FakePrivateDirs {
     /// [`PrivateDirs::is_writable_by_non_administrators`].
     pub fn make_user_writable(&self, path: &Path) {
         self.state().user_writable.insert(path.to_path_buf());
+    }
+
+    /// Makes `path` (and what is inside it) belong to another account.
+    pub fn make_foreign(&self, path: &Path) {
+        self.state().foreign.insert(path.to_path_buf());
     }
 
     /// The folders created through [`PrivateDirs::create_private_dir`], in order.
@@ -80,6 +86,11 @@ impl PrivateDirs for FakePrivateDirs {
             path.is_dir(),
             "S-1-5-21-1-2-3-1001",
         ))
+    }
+
+    fn owned_by_another_account(&self, path: &Path) -> io::Result<bool> {
+        let state = self.state();
+        Ok(path.ancestors().any(|a| state.foreign.contains(a)))
     }
 
     fn is_writable_by_non_administrators(&self, path: &Path) -> io::Result<bool> {

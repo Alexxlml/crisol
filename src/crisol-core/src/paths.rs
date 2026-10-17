@@ -61,6 +61,23 @@ pub enum PathsError {
         /// Underlying I/O error.
         source: io::Error,
     },
+    /// The home exists and belongs to another account of this computer.
+    #[error("{}", other_account_message(path))]
+    OtherAccount {
+        /// The home.
+        path: PathBuf,
+    },
+}
+
+/// The sentence for a home that is another person's. The default home (`C:\Crisol`) is the
+/// same for every account, so on a computer used by two people the second finds the first's.
+fn other_account_message(path: &Path) -> String {
+    format!(
+        "`{}` belongs to another account of this computer. Each person who uses Crisol needs \
+         their own home: set the CRISOL_HOME environment variable to a folder of yours (in cmd: \
+         setx CRISOL_HOME \"%USERPROFILE%\\Crisol\") and open a new terminal",
+        path.display()
+    )
 }
 
 /// Creates folders that only the current user (and the system) can write to, and tells
@@ -78,6 +95,13 @@ pub trait PrivateDirs: Send + Sync {
     /// Whether accounts other than the current user, the system and the administrators can
     /// write in `dir` or in what is created inside it.
     fn is_writable_by_others(&self, dir: &Path) -> io::Result<bool>;
+
+    /// Whether `path` is owned by an ordinary account other than the current user (not the
+    /// system or the administrators, who may own what an installer made). A home like that is
+    /// somebody else's, whatever its permissions say. Platforms without owners say `false`.
+    fn owned_by_another_account(&self, _path: &Path) -> io::Result<bool> {
+        Ok(false)
+    }
 
     /// The stricter rule for what runs with administrator rights (`crisol-elevate`, ADR-0014):
     /// whether **anybody but the administrators, the system and the system's installer** can
@@ -107,6 +131,12 @@ pub enum HomeError {
         /// What to do about it (the exact command, when the platform has one).
         fix: String,
     },
+    /// The home, or a folder in it, belongs to another account of this computer.
+    #[error("{}", other_account_message(path))]
+    OtherAccount {
+        /// The folder that is not this user's.
+        path: PathBuf,
+    },
     /// The permissions of a folder could not be read.
     #[error("cannot check who can write to `{}`: {source}", path.display())]
     Check {
@@ -131,9 +161,14 @@ pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Resu
         paths.etc_dir(),
         paths.certs_dir(),
         paths.shims_dir(),
+        // Where PHP of the projects runs from, if the user parks nothing else.
+        paths.www_dir(),
     ] {
         if !path.exists() {
             continue;
+        }
+        if foreign_owner(dirs, &path)? {
+            return Err(HomeError::OtherAccount { path });
         }
         let open = dirs
             .is_writable_by_others(&path)
@@ -152,6 +187,28 @@ pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Resu
         }
     }
     Ok(())
+}
+
+/// Whether the home that already exists is another account's (reading its owner may itself be
+/// denied: then it is not this user's).
+fn home_is_another_accounts(private: &dyn PrivateDirs, home: &Path) -> bool {
+    match private.owned_by_another_account(home) {
+        Ok(other) => other,
+        Err(e) => e.kind() == io::ErrorKind::PermissionDenied,
+    }
+}
+
+/// Whether the folder is another account's. If its owner cannot even be read because access is
+/// denied, it is not this user's either.
+fn foreign_owner(dirs: &dyn PrivateDirs, path: &Path) -> Result<bool, HomeError> {
+    match dirs.owned_by_another_account(path) {
+        Ok(other) => Ok(other),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(true),
+        Err(source) => Err(HomeError::Check {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 /// The `icacls` command that leaves `path` writable only by the user with SID `user_sid`, the
@@ -404,6 +461,11 @@ impl CrisolPaths {
         let created = private
             .create_private_dir(&self.home)
             .map_err(|e| create(&self.home, e))?;
+        if !created && home_is_another_accounts(private, &self.home) {
+            return Err(PathsError::OtherAccount {
+                path: self.home.clone(),
+            });
+        }
         let security = if created {
             HomeSecurity::Created
         } else if private

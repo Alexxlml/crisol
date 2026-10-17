@@ -164,6 +164,11 @@ struct Running {
 }
 
 fn start_daemon() -> Running {
+    start_daemon_with(Timing::default(), false)
+}
+
+/// `stuck`: Nginx ignores the order to quit, as a service that hangs would.
+fn start_daemon_with(timing: Timing, stuck: bool) -> Running {
     let tmp = TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     paths.ensure_layout().unwrap();
@@ -197,13 +202,13 @@ fn start_daemon() -> Running {
             arch: Arch::X86_64,
         },
     };
-    let pipe = pipe_name(paths.home());
+    let pipe = pipe_name(paths.home(), "S-1-5-21-1-2-3-1001");
     let options = Options {
         paths: paths.clone(),
         deps,
         pipe: pipe.clone(),
         dns: None,
-        timing: Timing::default(),
+        timing,
     };
     let thread = std::thread::spawn(move || run(options));
     let end = Instant::now() + Duration::from_secs(10);
@@ -216,6 +221,7 @@ fn start_daemon() -> Running {
         Arc::clone(&supervisor),
         probe,
         Arc::clone(&driver_stop),
+        stuck,
     ));
     Running {
         _tmp: tmp,
@@ -235,6 +241,7 @@ fn play_services(
     supervisor: Arc<FakeSupervisor>,
     probe: Arc<FakePortProbe>,
     stop: Arc<AtomicBool>,
+    stuck: bool,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut handled: HashSet<ProcessId> = HashSet::new();
@@ -268,6 +275,9 @@ fn play_services(
                 } else if nginx_args == ["-t"] || nginx_args == ["-s", "reload"] {
                     let _ = supervisor.exit(record.process, 0);
                 } else if nginx_args == ["-s", "quit"] {
+                    if stuck {
+                        continue;
+                    }
                     let _ = supervisor.exit(record.process, 0);
                     if let Some(main) = main.take() {
                         let _ = supervisor.exit(main, 0);
@@ -423,5 +433,42 @@ fn several_installations_at_once_all_finish_and_doctor_still_answers() {
         client.call(&Call::Doctor).unwrap(),
         Reply::Doctor { .. }
     ));
+    daemon.shut_down();
+}
+
+#[test]
+fn a_service_that_will_not_stop_does_not_keep_the_daemon_alive() {
+    let timing = Timing {
+        settle: Duration::from_secs(3),
+        exit_margin: Duration::from_millis(500),
+        job_grace: Duration::from_millis(500),
+    };
+    let mut daemon = start_daemon_with(timing, true);
+    let mut client = connect_to_daemon(&daemon.pipe).unwrap();
+    client
+        .call(&Call::Install {
+            service: "nginx".to_owned(),
+            version: "1.28.3".to_owned(),
+        })
+        .unwrap();
+    client.call(&Call::Start { service: None }).unwrap();
+    let alive = daemon.supervisor.alive_pids();
+    assert_ne!(alive, Vec::<u32>::new(), "nginx never started");
+
+    // The stop does not finish by itself; after the cap the daemon kills the group and leaves.
+    let asked = Instant::now();
+    let _ = client.call(&Call::Shutdown);
+    daemon.thread.take().unwrap().join().unwrap().unwrap();
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "left after {:?}",
+        asked.elapsed()
+    );
+    assert!(
+        daemon.supervisor.alive_pids().is_empty(),
+        "the stuck service was left running"
+    );
+    let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
+    assert!(log.contains("did not stop in time"), "{log}");
     daemon.shut_down();
 }

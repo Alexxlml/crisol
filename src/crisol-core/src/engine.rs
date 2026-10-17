@@ -624,6 +624,9 @@ pub fn home_error(error: &HomeError) -> RpcError {
             ),
         )
         .with_fix(fix.clone()),
+        HomeError::OtherAccount { .. } => {
+            RpcError::new(ErrorCode::HomeExposed, error.to_string())
+        }
         HomeError::Check { .. } => RpcError::new(ErrorCode::Io, error.to_string()),
     }
 }

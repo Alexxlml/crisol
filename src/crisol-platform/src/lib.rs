@@ -49,7 +49,9 @@ pub use helper_location::{HelperLocation, HELPER_VERSION};
 #[cfg(windows)]
 pub use hosts_file::{flush_dns, ElevatedHosts, FileHosts};
 #[cfg(windows)]
-pub use ipc::{connect_to_daemon, spawn_daemon, DaemonConnection, PipeSecurity};
+pub use ipc::{
+    connect_to_daemon, pipe_name_for_user, spawn_daemon, DaemonConnection, PipeSecurity,
+};
 #[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]

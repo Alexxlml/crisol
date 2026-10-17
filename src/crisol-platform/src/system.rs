@@ -13,12 +13,12 @@ use std::time::SystemTime;
 
 use crisol_core::ca::load_ca;
 use crisol_core::catalog::{Catalog, Target};
-use crisol_core::config::Config;
 use crisol_core::dns::{status as nrpt_status, NrptStatus};
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::HttpFetcher;
 use crisol_core::hosts::{block_names, HostsFile};
 use crisol_core::paths::CrisolPaths;
+use crisol_core::setup::suffix_of;
 use crisol_core::trust::status as trust_status;
 use crisol_core::userpath::shims_in_path;
 use crisol_protocol::{Check, CheckStatus};
@@ -57,11 +57,6 @@ fn check(name: &str, status: CheckStatus, detail: impl Into<String>, fix: Option
         detail: detail.into(),
         fix: fix.map(str::to_owned),
     }
-}
-
-/// The suffix of the local sites, `test` when the configuration cannot be read.
-fn suffix_of(paths: &CrisolPaths) -> String {
-    Config::load_from(paths).map_or_else(|_| "test".to_owned(), |loaded| loaded.config.sites.tld)
 }
 
 impl SystemChecks for WindowsSystemChecks {

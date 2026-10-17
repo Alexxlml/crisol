@@ -100,6 +100,13 @@ impl PrivateDirs for WindowsPrivateDirs {
         ))
     }
 
+    fn owned_by_another_account(&self, path: &Path) -> io::Result<bool> {
+        Ok(owned_by_other_user(
+            &owner_as_sddl(path)?,
+            &current_user_sid()?,
+        ))
+    }
+
     fn fix_command(&self, path: &Path) -> Option<String> {
         let sid = current_user_sid().ok()?;
         Some(crisol_core::paths::private_acl_fix_command(
@@ -273,6 +280,14 @@ fn is_administrator_trustee(who: &str) -> bool {
 /// check and the project-file owner check (ADR-0008, ADR-0010).
 pub(crate) fn is_trusted_trustee(who: &str, user_sid: &str) -> bool {
     who == user_sid || TRUSTED.contains(&who)
+}
+
+/// Whether the owner in `sddl` is an ordinary account (`S-1-5-21-…`) that is not `user_sid`.
+/// `SYSTEM`, the administrators and the system's installer are not "another account".
+fn owned_by_other_user(sddl: &str, user_sid: &str) -> bool {
+    owner_of(sddl).is_some_and(|owner| {
+        owner.starts_with("S-1-5-21-") && !owner.eq_ignore_ascii_case(user_sid)
+    })
 }
 
 /// The owner in SDDL text that starts with `O:`, up to the next section marker.
@@ -591,6 +606,27 @@ mod tests {
         assert!(dirs.create_private_dir(&private).unwrap());
         assert!(!dirs.is_writable_by_others(&private).unwrap());
         assert!(dirs.is_writable_by_non_administrators(&private).unwrap());
+    }
+
+    #[test]
+    fn only_an_ordinary_account_other_than_the_user_counts_as_another_account() {
+        let other = "O:S-1-5-21-1-2-3-1002G:S-1-5-21-1-2-3-1002D:P(A;OICI;FA;;;SY)";
+        assert!(owned_by_other_user(other, ME));
+        assert!(!owned_by_other_user(other, "S-1-5-21-1-2-3-1002"));
+        let mine = format!("O:{ME}D:P(A;OICI;FA;;;SY)");
+        assert!(!owned_by_other_user(&mine, ME));
+        // What an installer or an elevated process makes is not somebody else's home.
+        for owner in ["BA", "SY", "S-1-5-32-544", "S-1-5-80-956008885-3418522649"] {
+            assert!(
+                !owned_by_other_user(&format!("O:{owner}D:P(A;OICI;FA;;;SY)"), ME),
+                "{owner}"
+            );
+        }
+        // And a folder made by this very test is mine.
+        let tmp = TempDir::new().unwrap();
+        assert!(!WindowsPrivateDirs
+            .owned_by_another_account(tmp.path())
+            .unwrap());
     }
 
     #[test]

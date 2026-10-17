@@ -271,6 +271,14 @@ pub struct SetupReport {
     pub steps: Vec<String>,
 }
 
+/// The suffix of the local sites in this home (`test`): what `crisol.toml` says, or the default
+/// when it cannot be read (the commands that need the suffix do not fail for that).
+#[must_use]
+pub fn suffix_of(paths: &crate::paths::CrisolPaths) -> String {
+    crate::config::Config::load_from(paths)
+        .map_or_else(|_| "test".to_owned(), |loaded| loaded.config.sites.tld)
+}
+
 /// Asks for the one-time installation of the helper and for its removal. The Windows
 /// implementation shows the UAC prompt once for each.
 pub trait SystemSetup: Send + Sync {

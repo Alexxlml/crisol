@@ -89,8 +89,6 @@ pub struct Context {
     pub spawn_daemon: Box<dyn Fn() -> std::io::Result<()>>,
     /// The one-time setup that needs an administrator (the helper and the DNS rule).
     pub setup: Box<dyn SystemSetup>,
-    /// The suffix of the local sites the setup is for (`test`).
-    pub suffix: String,
     /// The sign-in entry that starts the daemon.
     pub autostart: Box<dyn Autostart>,
     /// The `crisold` that entry would start (the one next to this program).
@@ -163,7 +161,7 @@ impl Session<'_> {
 
     fn system(&mut self, action: SystemAction) -> u8 {
         let setup = self.context.setup.as_ref();
-        let suffix = &self.context.suffix;
+        let suffix = &crisol_core::setup::suffix_of(&self.context.paths);
         let outcome = match action {
             SystemAction::Install => setup.install(suffix),
             SystemAction::Uninstall => setup.uninstall(suffix),

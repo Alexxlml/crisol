@@ -11,11 +11,12 @@ use crisol_core::dns::{DnsServer, Zone};
 use crisol_core::engine::{Deps, Engine};
 use crisol_core::paths::CrisolPaths;
 use crisol_platform::PipeSecurity;
+use crisol_protocol::Call;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, watch};
 use tracing::{error, info, warn};
 
-use crate::actor::{self, Input, Timing};
+use crate::actor::{self, Input, Msg, Timing};
 use crate::connection::{serve, Shared};
 use crate::logging;
 
@@ -106,9 +107,11 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
             let _ = done_tx.send(());
         })?;
 
+    let (closing_tx, closing) = watch::channel(false);
     let shared = Shared {
         actor: to_actor,
         events,
+        closing,
     };
     let served = runtime.block_on(async {
         let mut instance = first;
@@ -130,15 +133,28 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
                 _ = &mut done_rx => break,
             }
         }
-        // The answer to `shutdown` is on its way out through a connection: give the clients a
-        // moment to read it and hang up before the runtime goes away with them.
-        let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        // The answer to `shutdown` is on its way out through a connection. Tell the connections
+        // the daemon is leaving: each delivers what is queued for it and ends, and this waits
+        // for them (not a fixed time; the cap is only for a client that takes nothing).
+        let _ = closing_tx.send(true);
+        let _ = tokio::time::timeout(CLOSE_CAP, async {
             while connections.join_next().await.is_some() {}
         })
         .await;
         Ok::<(), io::Error>(())
     });
 
+    if served.is_err() {
+        // The pipe is lost for good: have the actor stop the services and leave, or `join`
+        // below would wait for ever.
+        let (reply, _) = oneshot::channel();
+        let (events, _) = tokio::sync::mpsc::channel(1);
+        let _ = shared.actor.send(Input::Request(Msg {
+            call: Call::Shutdown,
+            reply,
+            events,
+        }));
+    }
     drop(shared);
     dns_stop.store(true, Ordering::Relaxed);
     if let Some(thread) = dns_thread {
@@ -148,6 +164,10 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
     info!("crisold stopped");
     served
 }
+
+/// The longest the daemon waits, once it is leaving, for its connections to deliver what is
+/// queued for them and end.
+const CLOSE_CAP: Duration = Duration::from_secs(5);
 
 /// How many times in a row making the next pipe instance may fail before the daemon gives up.
 const INSTANCE_ATTEMPTS: u32 = 5;

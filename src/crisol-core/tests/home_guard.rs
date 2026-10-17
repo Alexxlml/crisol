@@ -37,6 +37,7 @@ fn home() -> (TempDir, CrisolPaths) {
         paths.etc_dir(),
         paths.certs_dir(),
         paths.shims_dir(),
+        paths.www_dir(),
     ] {
         fs::create_dir_all(dir).unwrap();
     }
@@ -83,6 +84,8 @@ fn an_open_home_or_runtime_folder_is_named_with_the_exact_command_to_close_it() 
         paths.etc_dir(),
         paths.certs_dir(),
         paths.shims_dir(),
+        // Where the PHP of the sites runs from by default.
+        paths.www_dir(),
     ];
     for open in cases {
         let dirs = FakePrivateDirs::new();
@@ -95,7 +98,7 @@ fn an_open_home_or_runtime_folder_is_named_with_the_exact_command_to_close_it() 
                 assert!(fix.contains("/inheritance:r /grant:r"), "{fix}");
                 assert!(fix.contains(&open.display().to_string()), "{fix}");
             }
-            other @ HomeError::Check { .. } => panic!("{other}"),
+            other => panic!("{other}"),
         }
         let text = error.to_string();
         assert!(text.contains(&open.display().to_string()), "{text}");
@@ -240,4 +243,26 @@ fn trusting_the_ca_is_blocked_by_an_open_home() {
     // Closed, it is trusted.
     trust_ca(&store, &ca, &paths, &FakePrivateDirs::new()).unwrap();
     assert_eq!(store.certificates().unwrap().len(), 1);
+}
+
+#[test]
+fn a_home_that_is_another_accounts_says_each_person_needs_their_own() {
+    let (_tmp, paths) = home();
+    let dirs = FakePrivateDirs::new();
+    dirs.make_foreign(paths.home());
+    let error = require_private_home(&paths, &dirs).unwrap_err();
+    assert!(matches!(error, HomeError::OtherAccount { .. }), "{error}");
+    let text = error.to_string();
+    assert!(
+        text.contains("another account") && text.contains("their own home"),
+        "{text}"
+    );
+    assert!(text.contains("CRISOL_HOME"), "{text}");
+    assert!(!text.contains("  "), "{text}");
+
+    // Starting the daemon in it says the same, and creates nothing in it.
+    let before = tree(paths.home());
+    let error = paths.ensure_private_layout(&dirs).unwrap_err();
+    assert!(error.to_string().contains("their own home"), "{error}");
+    assert_eq!(tree(paths.home()), before);
 }

@@ -172,7 +172,7 @@ impl Env {
         let driver_stop = Arc::new(AtomicBool::new(false));
         let driver = Some(play_nginx(supervisor, probe, Arc::clone(&driver_stop)));
         Self {
-            pipe: pipe_name(paths.home()),
+            pipe: pipe_name(paths.home(), "S-1-5-21-1-2-3-1001"),
             _tmp: tmp,
             paths,
             deps,
@@ -213,7 +213,6 @@ impl Env {
                 Ok(())
             }),
             setup: Box::new(SharedSetup(Arc::clone(&self.setup))),
-            suffix: "test".to_owned(),
             autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
             daemon_exe: Some(self.daemon_exe.clone()),
             dirs: self.dirs.clone(),
@@ -520,6 +519,9 @@ fn start_status_restart_and_stop_run_the_web_stack_through_the_daemon() {
     assert!(env
         .failing(&["start", "nginx"])
         .contains("without a service name"));
+    assert!(env
+        .failing(&["start", "web"])
+        .contains("no service called `web`"));
 
     // A second `start` has nothing to do and says the stack is up.
     assert!(env.ok(&["start"]).contains("running"));

@@ -3,10 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crisol_cli::{run, Context, Link, Remote};
-use crisol_core::ipc::pipe_name;
 use crisol_platform::{
-    connect_to_daemon, default_deps, resolve_paths, spawn_daemon, RegistryAutostart,
-    WindowsPrivateDirs, WindowsSetup,
+    connect_to_daemon, default_deps, pipe_name_for_user, resolve_paths, spawn_daemon,
+    RegistryAutostart, WindowsPrivateDirs, WindowsSetup,
 };
 
 fn main() -> ExitCode {
@@ -18,9 +17,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let pipe = pipe_name(paths.home());
-    let suffix = crisol_core::config::Config::load_from(&paths)
-        .map_or_else(|_| "test".to_owned(), |loaded| loaded.config.sites.tld);
+    let pipe = match pipe_name_for_user(paths.home()) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            eprintln!("error: cannot tell which account this is: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     // `crisold.exe` is installed next to `crisol.exe`.
     let daemon = std::env::current_exe()
         .ok()
@@ -40,7 +43,6 @@ fn main() -> ExitCode {
                 .map(|dir| dir.join("crisol-elevate.exe"))
                 .unwrap_or_default(),
         )),
-        suffix,
         autostart: Box::new(RegistryAutostart::new()),
         daemon_exe: daemon.clone(),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),

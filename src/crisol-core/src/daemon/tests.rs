@@ -473,3 +473,49 @@ fn file_operations_work_with_the_daemon_and_with_nothing_running() {
         "no reload without a running stack"
     );
 }
+
+/// Review of phase 8, finding 9: how much does one look at the user's files cost with a lot of
+/// sites? Run it on request: `cargo test -p crisol-core --release watching_ -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check; run it on request"]
+fn watching_two_hundred_sites_costs_little() {
+    let rig = Rig::new();
+    for n in 0..200 {
+        let site = rig.paths.www_dir().join(format!("site-{n:03}"));
+        fs::create_dir_all(site.join("public")).unwrap();
+        fs::write(site.join("composer.json"), "{}").unwrap();
+        if n % 3 == 0 {
+            fs::write(
+                site.join(".php-version"),
+                "8.4
+",
+            )
+            .unwrap();
+        }
+        if n % 5 == 0 {
+            fs::write(
+                site.join(".crisol.toml"),
+                "[php]
+version = \"8.4\"
+",
+            )
+            .unwrap();
+        }
+    }
+    let mut times: Vec<Duration> = (0..21)
+        .map(|_| {
+            let start = Instant::now();
+            let _ = rig.daemon.watch_fingerprint();
+            start.elapsed()
+        })
+        .collect();
+    times.sort();
+    println!(
+        "watch_fingerprint with 200 sites: median {:?}, slowest {:?}, fastest {:?}",
+        times[times.len() / 2],
+        times[times.len() - 1],
+        times[0]
+    );
+    // Generous: the decision threshold is a few tens of milliseconds, every two seconds.
+    assert!(times[times.len() / 2] < Duration::from_millis(200));
+}

@@ -286,10 +286,11 @@ impl Daemon {
     }
 
     /// Nginx and the pools start and stop together for now; a service named on its own is
-    /// either unknown or told to be handled with the rest.
+    /// either unknown or told to be handled with the rest. (There is no "web" alias: the whole
+    /// stack is what a command without a service name means.)
     fn require_whole_stack(&self, service: Option<&str>) -> Result<(), RpcError> {
         let Some(name) = service else { return Ok(()) };
-        if !self.service_list().iter().any(|s| s.name == name) && name != "web" {
+        if !self.service_list().iter().any(|s| s.name == name) {
             return Err(RpcError::new(
                 ErrorCode::NotFound,
                 format!("there is no service called `{name}`; `crisol status` lists them"),

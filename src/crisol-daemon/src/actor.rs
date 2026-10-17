@@ -66,7 +66,7 @@ pub struct Msg {
     /// Where the outcome goes.
     pub reply: oneshot::Sender<Result<Reply, RpcError>>,
     /// Where the events of this call go (the progress of an installation).
-    pub events: tokio::sync::mpsc::UnboundedSender<Event>,
+    pub events: tokio::sync::mpsc::Sender<Event>,
 }
 
 /// A long operation, queued for the worker.
@@ -74,7 +74,7 @@ struct Job {
     call: Call,
     label: String,
     reply: oneshot::Sender<Result<Reply, RpcError>>,
-    events: tokio::sync::mpsc::UnboundedSender<Event>,
+    events: tokio::sync::mpsc::Sender<Event>,
 }
 
 /// A long operation that ended.
@@ -192,7 +192,8 @@ fn spawn_worker(
                     events: mine,
                 } = job;
                 let mut emit = |event: Event| {
-                    let _ = mine.send(event.clone());
+                    // A client that does not read loses progress, not the daemon its memory.
+                    let _ = mine.try_send(event.clone());
                     let _ = events.send(event);
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| engine.handle(&call, &mut emit)))
@@ -254,7 +255,8 @@ impl Ctx<'_> {
         }
         let mut emit = |event: Event| {
             log_event(&event);
-            let _ = mine.send(event.clone());
+            // A client that does not read loses progress, not the daemon its memory.
+            let _ = mine.try_send(event.clone());
             let _ = self.events.send(event);
         };
         let outcome = self.daemon.handle(&call, Instant::now(), &mut emit);
@@ -282,7 +284,7 @@ impl Ctx<'_> {
         &mut self,
         call: Call,
         reply: oneshot::Sender<Result<Reply, RpcError>>,
-        events: tokio::sync::mpsc::UnboundedSender<Event>,
+        events: tokio::sync::mpsc::Sender<Event>,
     ) {
         let label = match &call {
             Call::Install { service, version } => format!("installing {service} {version}"),
