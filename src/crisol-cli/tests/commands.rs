@@ -615,11 +615,7 @@ fn an_open_home_blocks_start_and_the_error_carries_the_fix() {
 fn the_first_command_without_a_daemon_makes_the_home_private() {
     // A new user whose first command is `install` or `park`: the home does not exist yet and
     // must be born private, not inherit the open permissions of the drive it is on.
-    for args in [
-        vec!["install", "php", "8.4"],
-        vec!["park", "PARKED"],
-        vec!["sites"],
-    ] {
+    for args in [vec!["install", "php", "8.4"], vec!["park", "PARKED"]] {
         let env = Env::new(&[("php", "8.4.26")]);
         fs::remove_dir_all(env.paths.home()).unwrap();
         let folder = env.paths.home().with_file_name("elsewhere");
@@ -637,6 +633,35 @@ fn the_first_command_without_a_daemon_makes_the_home_private() {
         );
         assert!(!env.daemon_running());
     }
+}
+
+#[test]
+fn commands_that_only_look_do_not_make_the_home_and_say_it_is_not_there() {
+    let env = Env::new(&[("php", "8.4.26")]);
+    fs::remove_dir_all(env.paths.home()).unwrap();
+    for args in [["list"], ["sites"], ["status"]] {
+        let said = env.failing(&args);
+        assert!(said.contains("no Crisol home in"), "{args:?}: {said}");
+        assert!(
+            said.contains("first `crisol install` or `crisol start`"),
+            "{said}"
+        );
+    }
+    assert!(env
+        .failing(&["logs", "nginx"])
+        .contains("no Crisol home in"));
+    // `doctor` is a warning, not a failure: a computer that never used Crisol is not broken.
+    let doctor = env.ok(&["doctor"]);
+    assert!(
+        doctor.contains("warning") && doctor.contains("no Crisol home"),
+        "{doctor}"
+    );
+    assert!(!env.paths.home().exists(), "none of them made it");
+    assert_eq!(env.dirs.created(), Vec::<std::path::PathBuf>::new());
+
+    // The first command that writes does make it, private.
+    env.ok(&["install", "php", "8.4"]);
+    assert_eq!(env.dirs.created(), [env.paths.home().to_path_buf()]);
 }
 
 // ---- logs and doctor ------------------------------------------------------------------------

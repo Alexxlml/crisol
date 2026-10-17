@@ -246,7 +246,7 @@ impl Session<'_> {
         }
         let mut link = match link {
             Some(link) => link,
-            None => self.local()?,
+            None => self.local(call)?,
         };
         // The handshake: same protocol on both sides, or nothing is sent.
         let hello = Call::Hello {
@@ -259,12 +259,15 @@ impl Session<'_> {
         }
     }
 
-    fn local(&self) -> Result<Box<dyn Link>, RpcError> {
+    fn local(&self, call: &Call) -> Result<Box<dyn Link>, RpcError> {
         let deps =
             (self.context.deps)().map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
         let engine = Engine::new(self.context.paths.clone(), deps);
-        // The first command of a new user may be this one: the home must be born private.
-        engine.prepare_home()?;
+        // The first command of a new user may be this one: the home must be born private. The
+        // commands that only look do not make it.
+        if call.writes() {
+            engine.prepare_home()?;
+        }
         Ok(Box::new(Local(Daemon::new(engine))))
     }
 

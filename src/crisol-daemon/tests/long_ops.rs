@@ -436,13 +436,9 @@ fn several_installations_at_once_all_finish_and_doctor_still_answers() {
     daemon.shut_down();
 }
 
-#[test]
-fn a_service_that_will_not_stop_does_not_keep_the_daemon_alive() {
-    let timing = Timing {
-        settle: Duration::from_secs(3),
-        exit_margin: Duration::from_millis(500),
-        job_grace: Duration::from_millis(500),
-    };
+/// Starts Nginx, asks the daemon to shut down while Nginx ignores the order to quit, and gives
+/// back how long the daemon took to leave.
+fn shut_down_with_a_stuck_nginx(timing: Timing, unkillable: bool) -> (Running, Duration) {
     let mut daemon = start_daemon_with(timing, true);
     let mut client = connect_to_daemon(&daemon.pipe).unwrap();
     client
@@ -454,21 +450,55 @@ fn a_service_that_will_not_stop_does_not_keep_the_daemon_alive() {
     client.call(&Call::Start { service: None }).unwrap();
     let alive = daemon.supervisor.alive_pids();
     assert_ne!(alive, Vec::<u32>::new(), "nginx never started");
-    // A stuck service: it does not obey the order to quit and, after the grace period, ignores
-    // the kill as well, so its own stop (grace plus kill wait) outlasts the daemon's cap.
-    for record in daemon.supervisor.spawned() {
-        daemon.supervisor.make_unkillable(record.group);
+    if unkillable {
+        for record in daemon.supervisor.spawned() {
+            daemon.supervisor.make_unkillable(record.group);
+        }
     }
-
-    // The stop does not finish by itself; after the cap the daemon kills the group and leaves.
     let asked = Instant::now();
     let _ = client.call(&Call::Shutdown);
     daemon.thread.take().unwrap().join().unwrap().unwrap();
+    (daemon, asked.elapsed())
+}
+
+#[test]
+fn a_service_that_will_not_stop_is_killed_by_the_daemon_and_the_daemon_leaves() {
+    // The cap of the daemon (settle + margin = 1.7 s) comes before the service gives up on its
+    // own graceful stop and kills its group (2 s): what ends the stuck Nginx is the daemon.
+    let timing = Timing {
+        settle: Duration::from_millis(1500),
+        exit_margin: Duration::from_millis(200),
+        job_grace: Duration::from_millis(300),
+    };
+    let (mut daemon, took) = shut_down_with_a_stuck_nginx(timing, false);
+    assert!(took < Duration::from_secs(10), "left after {took:?}");
+    let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
+    assert!(log.contains("did not stop in time"), "{log}");
     assert!(
-        asked.elapsed() < Duration::from_secs(10),
-        "left after {:?}",
-        asked.elapsed()
+        !log.contains("killed after"),
+        "the service killed itself first; the daemon's cut did not come before: {log}"
     );
+    let alive = daemon.supervisor.alive_pids();
+    assert_eq!(
+        alive,
+        Vec::<u32>::new(),
+        "the stuck service was left running"
+    );
+    daemon.shut_down();
+}
+
+#[test]
+fn a_service_that_cannot_even_be_killed_still_lets_the_daemon_leave() {
+    // It ignores the kill as well, so its own stop outlasts the daemon's cap; the daemon leaves
+    // anyway and says so. (A real process cannot ignore its group being closed; this is for
+    // whatever else could keep the daemon from ending.)
+    let timing = Timing {
+        settle: Duration::from_secs(3),
+        exit_margin: Duration::from_millis(500),
+        job_grace: Duration::from_millis(500),
+    };
+    let (mut daemon, took) = shut_down_with_a_stuck_nginx(timing, true);
+    assert!(took < Duration::from_secs(10), "left after {took:?}");
     let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
     assert!(log.contains("did not stop in time"), "{log}");
     daemon.shut_down();

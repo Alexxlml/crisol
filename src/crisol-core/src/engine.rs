@@ -151,6 +151,11 @@ impl Engine {
         call: &Call,
         events: &mut dyn FnMut(Event),
     ) -> Option<Result<Reply, RpcError>> {
+        if !call.writes() && !self.paths.home().exists() {
+            if let Some(answer) = self.no_home_yet(call) {
+                return Some(answer);
+            }
+        }
         Some(match call {
             Call::List { available } => self.list(*available),
             Call::Install { service, version } => self.install(service, version, events),
@@ -181,6 +186,37 @@ impl Engine {
             | Call::Shutdown
             | Call::Subscribe => return None,
         })
+    }
+
+    /// What the operations that only look say when there is no home yet: so, and where, and
+    /// that the first `install` or `start` makes it. `doctor` takes it as a warning (a computer
+    /// where Crisol has not been used is not a broken one). `None` for the calls that are not
+    /// about files.
+    /// The sentence for a home that is not there yet.
+    #[must_use]
+    pub fn no_home_message(&self) -> String {
+        format!(
+            "there is no Crisol home in {} yet; it is created with the first `crisol install` or `crisol start`",
+            self.paths.home().display()
+        )
+    }
+
+    fn no_home_yet(&self, call: &Call) -> Option<Result<Reply, RpcError>> {
+        let message = self.no_home_message();
+        match call {
+            Call::Doctor => Some(Ok(Reply::Doctor {
+                checks: vec![Check {
+                    name: "home".to_owned(),
+                    status: CheckStatus::Warning,
+                    detail: message,
+                    fix: None,
+                }],
+            })),
+            Call::List { .. } | Call::Sites | Call::Logs { .. } => {
+                Some(Err(RpcError::new(ErrorCode::NotFound, message)))
+            }
+            _ => None,
+        }
     }
 
     fn load_config(&self) -> Result<Config, RpcError> {

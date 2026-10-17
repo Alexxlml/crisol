@@ -170,6 +170,26 @@ impl Call {
         }
     }
 
+    /// Whether the operation writes in the Crisol home (so the home must exist, and be private,
+    /// before it runs). The others only look, and answer on a home that is not there yet.
+    #[must_use]
+    pub fn writes(&self) -> bool {
+        matches!(
+            self,
+            Self::Install { .. }
+                | Self::Uninstall { .. }
+                | Self::Use { .. }
+                | Self::Park { .. }
+                | Self::Unpark { .. }
+                | Self::Link { .. }
+                | Self::Unlink { .. }
+                | Self::Secure { .. }
+                | Self::Unsecure { .. }
+                | Self::Start { .. }
+                | Self::Restart { .. }
+        )
+    }
+
     /// Whether the operation needs the daemon (it acts on running services, or is about the
     /// connection itself). The others only change files.
     #[must_use]
