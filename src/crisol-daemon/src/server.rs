@@ -137,10 +137,16 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
         // the daemon is leaving: each delivers what is queued for it and ends, and this waits
         // for them (not a fixed time; the cap is only for a client that takes nothing).
         let _ = closing_tx.send(true);
+        // The instance that was waiting for a client is let go while the runtime still runs:
+        // cancelling its pending connection is completed by the runtime, and a runtime that is
+        // dropped first would leave the pipe instance open until the process ends.
+        drop(instance);
         let _ = tokio::time::timeout(CLOSE_CAP, async {
             while connections.join_next().await.is_some() {}
         })
         .await;
+        // A turn of the runtime for those cancellations to complete.
+        tokio::time::sleep(Duration::from_millis(20)).await;
         Ok::<(), io::Error>(())
     });
 

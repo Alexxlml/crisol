@@ -217,8 +217,8 @@ impl Env {
             daemon_exe: Some(self.daemon_exe.clone()),
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
-            follow_every: Duration::from_millis(50),
-            follow_rounds: Some(3),
+            follow_every: Duration::from_millis(25),
+            follow_rounds: Some(40),
         }
     }
 
@@ -238,8 +238,11 @@ impl Env {
     fn ok(&self, args: &[&str]) -> String {
         let (code, out, err) = self.run(args);
         assert_eq!(
-            code, 0,
-            "crisol {args:?} failed\nstdout: {out}\nstderr: {err}"
+            code,
+            0,
+            "crisol {args:?} failed\nstdout: {out}\nstderr: {err}\nprobe now: {:?} slot: {}",
+            connect_to_daemon(&self.pipe).map(|_| ()),
+            self.daemon.lock().unwrap().is_some()
         );
         out
     }
