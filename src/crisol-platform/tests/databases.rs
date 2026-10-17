@@ -421,3 +421,58 @@ fn mongodb_starts_on_the_loopback_makes_its_data_and_restarts_over_it() {
     run_and_wait(&mut world, DbKind::Mongodb);
     stop_and_wait(&mut world, DbKind::Mongodb);
 }
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mariadb-10.11.19-winx64.zip and mariadb-11.8.9-winx64.zip (Windows)"]
+fn two_series_of_one_database_keep_their_data_apart_and_switching_loses_nothing() {
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let config = |pin: &str| {
+        format!("[services.mariadb]\nenabled = true\nport = 19309\nversion = \"{pin}\"\n")
+    };
+    let mut world = world(&config("10.11"));
+    install_from_downloads(&world.paths, "mariadb", "10.11.19");
+    install_from_downloads(&world.paths, "mariadb", "11.8.9");
+    let kind = DbKind::Mariadb;
+
+    // 10.11 makes a table.
+    run_and_wait(&mut world, kind);
+    world.sql(kind, "10.11.19", 19309, "CREATE DATABASE old_one; CREATE TABLE old_one.t (n INT); INSERT INTO old_one.t VALUES (10)");
+    stop_and_wait(&mut world, kind);
+
+    // The pin moves to 11.8: a new, empty series; the old one is not opened by the new server.
+    fs::write(world.paths.config_file(), config("11.8")).unwrap();
+    run_and_wait(&mut world, kind);
+    assert_eq!(
+        world.sql(
+            kind,
+            "11.8.9",
+            19309,
+            "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'old_one'"
+        ),
+        "0"
+    );
+    world.sql(kind, "11.8.9", 19309, "CREATE DATABASE new_one");
+    stop_and_wait(&mut world, kind);
+
+    // Back to 10.11: its data is as it was, and 11.8's database is not in it.
+    fs::write(world.paths.config_file(), config("10.11")).unwrap();
+    run_and_wait(&mut world, kind);
+    assert_eq!(
+        world.sql(kind, "10.11.19", 19309, "SELECT n FROM old_one.t"),
+        "10"
+    );
+    assert_eq!(
+        world.sql(
+            kind,
+            "10.11.19",
+            19309,
+            "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'new_one'"
+        ),
+        "0"
+    );
+    stop_and_wait(&mut world, kind);
+    assert!(world.paths.data_for("mariadb", "10.11").unwrap().is_dir());
+    assert!(world.paths.data_for("mariadb", "11.8").unwrap().is_dir());
+}
