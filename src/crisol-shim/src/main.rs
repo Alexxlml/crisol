@@ -280,7 +280,7 @@ fn sync_globals(paths: &CrisolPaths) {
     let Ok(me) = std::env::current_exe() else {
         return;
     };
-    match sync_global_shims(paths, &me) {
+    match sync_global_shims(paths, &me, &crisol_platform::is_system_program) {
         Ok(done) => {
             for (name, why) in done.skipped {
                 report(&format!("warning: no command `{name}`: {why}"));

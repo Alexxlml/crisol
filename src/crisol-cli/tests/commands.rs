@@ -256,6 +256,7 @@ impl Env {
             daemon_exe: Some(self.daemon_exe.clone()),
             user_path: Box::new(SharedUserPath(Arc::clone(&self.user_path))),
             shim_exe: Some(self.shim_exe.clone()),
+            is_system_program: Box::new(|name| name == "ping"),
             env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
@@ -977,8 +978,14 @@ fn shims_sync_gives_a_command_to_each_global_program_and_install_and_remove_foll
     let global = env.paths.node_global("24.22.0").unwrap();
     fs::create_dir_all(&global).unwrap();
     fs::write(global.join("tsc.cmd"), "@echo off").unwrap();
+    fs::write(global.join("ping.cmd"), "@echo off").unwrap();
 
     let out = env.ok(&["shims", "sync"]);
+    assert!(
+        out.contains("no command `ping`: Windows has a program"),
+        "{out}"
+    );
+    assert!(!env.paths.shims_dir().join("ping.exe").exists());
     assert!(
         out.contains("up to date") && out.contains("added: tsc"),
         "{out}"

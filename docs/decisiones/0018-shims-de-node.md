@@ -42,7 +42,8 @@ Desinstalar una versión de Node **no** borra su carpeta global (son datos del u
 - los nombres se anotan en `shims/.crisol-globals`: un archivo con ese nombre que no esté en la lista no se sobrescribe ni se borra;
 - se ofrece un comando por cada programa de **cualquier** versión de Node instalada, y desaparece cuando ninguna lo tiene;
 - ejecutado como `tsc`, el shim busca la versión de Node del directorio, el `tsc.cmd` de su carpeta global y lo ejecuta (con el Node de esa versión primero en el `PATH`); si el programa solo está en otra versión, lo dice y dice cuál (`crisol use node 24.22.0` o instalarlo aquí);
-- un nombre que no es un comando de Crisol y no está en la lista no hace nada.
+- un nombre que no es un comando de Crisol y no está en la lista no hace nada;
+- un programa llamado como uno de Windows (`ping`, `find`, `more`… en `System32` o en la carpeta de Windows) **no** recibe comando, porque `shims/` va primero en el `PATH` y lo taparía; el aviso lo dice.
 
 Los nombres de Crisol (`php`, `node`, `npm`, `npx`, `composer`, `corepack`, `pnpm`, `pnpx`, `yarn`, `yarnpkg`) nunca son programas globales.
 

@@ -34,6 +34,23 @@ pub fn system_directory() -> io::Result<PathBuf> {
     Ok(PathBuf::from(String::from_utf16_lossy(&buffer[..length])))
 }
 
+/// Whether Windows itself has a program called `name` (`ping`, `find`, `more`…): an executable
+/// or script of that name in `System32` or in the Windows folder. A global npm program with that
+/// name must not get a command in the shims folder, which comes first in the `PATH`.
+#[must_use]
+pub fn is_system_program(name: &str) -> bool {
+    let Ok(system) = system_directory() else {
+        // Not knowing is not a reason to let a program take the place of one of Windows.
+        return true;
+    };
+    let folders = [Some(system.clone()), system.parent().map(Path::to_path_buf)];
+    folders.into_iter().flatten().any(|folder| {
+        ["exe", "com", "cmd", "bat"]
+            .iter()
+            .any(|extension| folder.join(format!("{name}.{extension}")).is_file())
+    })
+}
+
 /// `C:\Program Files`, from the known-folder API (not from `%ProgramFiles%`).
 pub fn program_files_directory() -> io::Result<PathBuf> {
     // SAFETY: `FOLDERID_ProgramFiles` is a valid folder id; no token and no flags.
@@ -83,6 +100,16 @@ pub fn helper_exe_in(program_files: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_programs_of_windows_are_reserved_and_other_names_are_not() {
+        for name in ["ping", "find", "more", "notepad", "cmd"] {
+            assert!(is_system_program(name), "{name}");
+        }
+        for name in ["tsc", "semver", "crisol-no-such-program"] {
+            assert!(!is_system_program(name), "{name}");
+        }
+    }
 
     #[test]
     fn the_paths_are_built_from_the_directory_they_are_given() {

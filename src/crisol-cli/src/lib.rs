@@ -102,6 +102,8 @@ pub struct Context {
     pub user_path: Box<dyn UserPath>,
     /// The `crisol-shim` that `shims install` copies (the one next to this program).
     pub shim_exe: Option<PathBuf>,
+    /// Whether Windows has a program with that name (a command of the shims would hide it).
+    pub is_system_program: Box<dyn Fn(&str) -> bool>,
     /// The environment of this process, to tell which shell this is.
     pub env: EnvLookup,
     /// Judges who can write to the programs before they are registered or launched.
@@ -215,11 +217,15 @@ impl Session<'_> {
             Err(code) => return code,
         };
         let folder = self.context.paths.shims_dir().display().to_string();
-        let done =
-            match shimsetup::install_shims(&self.context.paths, &exe, self.context.dirs.as_ref()) {
-                Ok(done) => done,
-                Err(error) => return self.shims_error(&error),
-            };
+        let done = match shimsetup::install_shims(
+            &self.context.paths,
+            &exe,
+            self.context.dirs.as_ref(),
+            self.context.is_system_program.as_ref(),
+        ) {
+            Ok(done) => done,
+            Err(error) => return self.shims_error(&error),
+        };
         let mut text = format!(
             "{} shim(s) written and {} already up to date in {folder}",
             done.written.len(),
@@ -261,11 +267,15 @@ impl Session<'_> {
             Ok(exe) => exe,
             Err(code) => return code,
         };
-        let done =
-            match shimsetup::sync_globals(&self.context.paths, &exe, self.context.dirs.as_ref()) {
-                Ok(done) => done,
-                Err(error) => return self.shims_error(&error),
-            };
+        let done = match shimsetup::sync_globals(
+            &self.context.paths,
+            &exe,
+            self.context.dirs.as_ref(),
+            self.context.is_system_program.as_ref(),
+        ) {
+            Ok(done) => done,
+            Err(error) => return self.shims_error(&error),
+        };
         let mut text = String::from("The commands of the global programs are up to date");
         text.push_str(&globals_text(&done.added, &done.removed, &done.skipped));
         let skipped: Vec<_> = done

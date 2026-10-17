@@ -159,8 +159,13 @@ pub fn installed_under(paths: &CrisolPaths, name: &str) -> Vec<String> {
 
 /// Makes the shims of the global programs match what the installed Node versions have: one for
 /// every program of any of them, none for a program that is gone. `shim` is the program that is
-/// copied (`crisol-shim`).
-pub fn sync_global_shims(paths: &CrisolPaths, shim: &Path) -> io::Result<GlobalSync> {
+/// copied (`crisol-shim`). `reserved` says which names belong to the system (`ping`): they get
+/// no command, because the shims folder comes first in the `PATH` and would hide it.
+pub fn sync_global_shims(
+    paths: &CrisolPaths,
+    shim: &Path,
+    reserved: &dyn Fn(&str) -> bool,
+) -> io::Result<GlobalSync> {
     let program = fs::read(shim)?;
     let dir = paths.shims_dir();
     let mut wanted = BTreeSet::new();
@@ -170,7 +175,13 @@ pub fn sync_global_shims(paths: &CrisolPaths, shim: &Path) -> io::Result<GlobalS
             continue;
         };
         for name in global_commands(&prefix) {
-            if valid_name(&name) {
+            if valid_name(&name) && reserved(&name) {
+                skipped.push((
+                    name,
+                    "Windows has a program with that name, and a command of the shims would hide it"
+                        .to_owned(),
+                ));
+            } else if valid_name(&name) {
                 wanted.insert(name);
             } else if !SHIM_COMMANDS.contains(&name.to_ascii_lowercase().as_str()) {
                 skipped.push((name, "the name cannot be a command of the shims".to_owned()));

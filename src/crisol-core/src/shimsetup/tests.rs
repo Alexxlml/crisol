@@ -19,7 +19,7 @@ fn home() -> (TempDir, CrisolPaths, PathBuf) {
 fn installing_copies_the_shim_once_per_command_and_removing_takes_them_back() {
     let (_tmp, paths, exe) = home();
     let dirs = FakePrivateDirs::new();
-    let done = install_shims(&paths, &exe, &dirs).unwrap();
+    let done = install_shims(&paths, &exe, &dirs, &|_| false).unwrap();
     assert_eq!(done.written.len(), SHIM_COMMANDS.len());
     for name in [
         "node.exe",
@@ -32,7 +32,7 @@ fn installing_copies_the_shim_once_per_command_and_removing_takes_them_back() {
     }
     assert!(shims_present(&paths).iter().all(|(_, there)| *there));
 
-    let again = install_shims(&paths, &exe, &dirs).unwrap();
+    let again = install_shims(&paths, &exe, &dirs, &|_| false).unwrap();
     assert!(again.written.is_empty() && again.failed.is_empty());
     assert_eq!(again.unchanged.len(), SHIM_COMMANDS.len());
 
@@ -48,7 +48,7 @@ fn a_shim_program_other_accounts_can_replace_is_not_copied_anywhere() {
     let (tmp, paths, exe) = home();
     let dirs = FakePrivateDirs::new();
     dirs.expose(tmp.path());
-    let error = install_shims(&paths, &exe, &dirs).unwrap_err();
+    let error = install_shims(&paths, &exe, &dirs, &|_| false).unwrap_err();
     assert!(matches!(
         error,
         ShimsError::Program(ProgramError::Exposed { .. })
@@ -58,6 +58,7 @@ fn a_shim_program_other_accounts_can_replace_is_not_copied_anywhere() {
         &paths,
         &tmp.path().join("none.exe"),
         &FakePrivateDirs::new(),
+        &|_| false,
     );
     assert!(matches!(
         missing,

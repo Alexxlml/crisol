@@ -99,7 +99,7 @@ fn syncing_makes_one_shim_per_program_of_any_installed_version_and_lists_them() 
     install_global(&paths, "24.22.0", "npm");
     install_global(&paths, "24.22.0", "bad name");
 
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert_eq!(names(&done.added), ["pm2", "tsc"]);
     assert_eq!(done.removed, Vec::<String>::new());
     assert_eq!(done.skipped.len(), 1, "{:?}", done.skipped);
@@ -113,7 +113,7 @@ fn syncing_makes_one_shim_per_program_of_any_installed_version_and_lists_them() 
     assert_eq!(shimmed_globals(&paths), ["pm2", "tsc"]);
 
     // Doing it again changes nothing.
-    let again = sync_global_shims(&paths, &shim).unwrap();
+    let again = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert!(again.added.is_empty() && again.removed.is_empty());
 }
 
@@ -122,14 +122,14 @@ fn a_program_that_is_gone_from_every_version_loses_its_shim_and_the_list_goes_wh
     let (_tmp, paths, shim) = home();
     install_global(&paths, "24.22.0", "tsc");
     install_global(&paths, "22.23.3", "tsc");
-    sync_global_shims(&paths, &shim).unwrap();
+    sync_global_shims(&paths, &shim, &|_| false).unwrap();
 
     uninstall_global(&paths, "24.22.0", "tsc");
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert!(done.removed.is_empty(), "Node 22 still has it");
 
     uninstall_global(&paths, "22.23.3", "tsc");
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert_eq!(names(&done.removed), ["tsc"]);
     assert!(!paths.shims_dir().join("tsc.exe").exists());
     assert!(!paths.shims_dir().join(MANIFEST).exists());
@@ -140,7 +140,7 @@ fn a_program_that_is_gone_from_every_version_loses_its_shim_and_the_list_goes_wh
 fn a_program_of_a_node_version_that_is_not_installed_has_no_shim() {
     let (_tmp, paths, shim) = home();
     install_global(&paths, "20.20.2", "gulp");
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert_eq!(done.added, Vec::<String>::new());
 }
 
@@ -153,7 +153,7 @@ fn a_file_with_that_name_that_is_not_ours_is_never_overwritten_or_deleted() {
     install_global(&paths, "24.22.0", "tsc");
     install_global(&paths, "24.22.0", "pm2");
 
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert_eq!(names(&done.added), ["pm2"]);
     assert_eq!(done.skipped[0].0, "tsc");
     assert!(done.skipped[0].1.contains("not Crisol's"));
@@ -161,7 +161,7 @@ fn a_file_with_that_name_that_is_not_ours_is_never_overwritten_or_deleted() {
 
     // Not in the list, so it is not removed when the program goes either.
     uninstall_global(&paths, "24.22.0", "tsc");
-    sync_global_shims(&paths, &shim).unwrap();
+    sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert!(mine.is_file());
 }
 
@@ -169,9 +169,9 @@ fn a_file_with_that_name_that_is_not_ours_is_never_overwritten_or_deleted() {
 fn a_new_shim_program_replaces_the_copies_of_the_old_one() {
     let (tmp, paths, shim) = home();
     install_global(&paths, "24.22.0", "tsc");
-    sync_global_shims(&paths, &shim).unwrap();
+    sync_global_shims(&paths, &shim, &|_| false).unwrap();
     fs::write(&shim, b"MZ shim two").unwrap();
-    let done = sync_global_shims(&paths, &shim).unwrap();
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
     assert!(done.added.is_empty(), "it was already there");
     assert_eq!(
         fs::read(paths.shims_dir().join("tsc.exe")).unwrap(),
@@ -184,7 +184,7 @@ fn a_new_shim_program_replaces_the_copies_of_the_old_one() {
 fn removing_takes_the_listed_shims_and_nothing_else() {
     let (_tmp, paths, shim) = home();
     install_global(&paths, "24.22.0", "tsc");
-    sync_global_shims(&paths, &shim).unwrap();
+    sync_global_shims(&paths, &shim, &|_| false).unwrap();
     let stranger = paths.shims_dir().join("my-tool.exe");
     fs::write(&stranger, "x").unwrap();
 
@@ -211,4 +211,17 @@ fn a_program_is_found_only_under_the_version_that_has_it_and_the_message_says_wh
     );
     let gone = not_installed_message(&paths, "gulp", "24.22.0");
     assert!(gone.contains("is gone now"), "{gone}");
+}
+
+#[test]
+fn a_program_called_like_a_windows_program_gets_no_command() {
+    let (_tmp, paths, shim) = home();
+    install_global(&paths, "24.22.0", "ping");
+    install_global(&paths, "24.22.0", "tsc");
+    let done = sync_global_shims(&paths, &shim, &|name| name == "ping").unwrap();
+    assert_eq!(names(&done.added), ["tsc"]);
+    assert_eq!(done.skipped.len(), 1);
+    assert_eq!(done.skipped[0].0, "ping");
+    assert!(done.skipped[0].1.contains("Windows has a program"));
+    assert!(!paths.shims_dir().join("ping.exe").exists());
 }

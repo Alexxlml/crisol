@@ -69,7 +69,9 @@ pub use root_certs::WindowsRootCertificates;
 #[cfg(windows)]
 pub use system::{default_deps, WindowsSystemChecks};
 #[cfg(windows)]
-pub use system_paths::{restrict_dll_search, system_directory, HELPER_EXE, HELPER_FOLDER};
+pub use system_paths::{
+    is_system_program, restrict_dll_search, system_directory, HELPER_EXE, HELPER_FOLDER,
+};
 #[cfg(windows)]
 pub use trust_store::WindowsTrustStore;
 #[cfg(windows)]
@@ -83,6 +85,13 @@ use std::path::PathBuf;
 #[allow(clippy::unnecessary_wraps)]
 pub fn survive_ctrl_c() -> std::io::Result<()> {
     Ok(())
+}
+
+/// Whether the system has a program called `name`. Off Windows nothing is reserved.
+#[cfg(not(windows))]
+#[must_use]
+pub fn is_system_program(_name: &str) -> bool {
+    false
 }
 
 use crisol_core::{CrisolPaths, PathsError};

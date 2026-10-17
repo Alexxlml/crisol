@@ -58,11 +58,12 @@ pub fn install_shims(
     paths: &CrisolPaths,
     shim_exe: &Path,
     dirs: &dyn PrivateDirs,
+    reserved: &dyn Fn(&str) -> bool,
 ) -> Result<ShimsInstalled, ShimsError> {
     require_trusted_program(shim_exe, dirs)?;
     let done = install_shim_files(paths, shim_exe, dirs)?;
     // The shims of the global programs are copies of the same program: they follow it.
-    let globals = sync_global_shims(paths, shim_exe)?;
+    let globals = sync_global_shims(paths, shim_exe, reserved)?;
     Ok(ShimsInstalled {
         globals_added: globals.added,
         globals_removed: globals.removed,
@@ -83,9 +84,10 @@ pub fn sync_globals(
     paths: &CrisolPaths,
     shim_exe: &Path,
     dirs: &dyn PrivateDirs,
+    reserved: &dyn Fn(&str) -> bool,
 ) -> Result<GlobalSync, ShimsError> {
     require_trusted_program(shim_exe, dirs)?;
-    Ok(sync_global_shims(paths, shim_exe)?)
+    Ok(sync_global_shims(paths, shim_exe, reserved)?)
 }
 
 /// Removes the shims (and the folder, if that leaves it empty). Returns the file names.

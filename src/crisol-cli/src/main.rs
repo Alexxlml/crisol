@@ -49,6 +49,7 @@ fn main() -> ExitCode {
         shim_exe: std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|dir| dir.join("crisol-shim.exe"))),
+        is_system_program: Box::new(crisol_platform::is_system_program),
         env: Box::new(|name| std::env::var(name).ok()),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {
