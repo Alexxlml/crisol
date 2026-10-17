@@ -21,6 +21,7 @@ use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
 use crisol_core::trust::status as trust_status;
 use crisol_core::userpath::shims_in_path;
+use crisol_core::web::TcpConfigProbe;
 use crisol_protocol::{Check, CheckStatus};
 
 use crate::{
@@ -43,6 +44,7 @@ pub fn default_deps() -> io::Result<Deps> {
         env: Arc::new(|name| std::env::var(name).ok()),
         system: Arc::new(WindowsSystemChecks),
         roots: Arc::new(WindowsRootCertificates),
+        config_probe: Arc::new(TcpConfigProbe),
         catalog,
         target,
     })

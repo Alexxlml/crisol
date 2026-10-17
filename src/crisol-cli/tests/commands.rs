@@ -36,6 +36,7 @@ use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
+use crisol_core::web::AlwaysEffective;
 use crisol_daemon::{run as run_daemon, Options, Timing};
 use crisol_platform::connect_to_daemon;
 use crisol_protocol::{Check, CheckStatus};
@@ -163,6 +164,7 @@ impl Env {
                 fix: None,
             }])),
             roots: Arc::new(NoRoots),
+            config_probe: Arc::new(AlwaysEffective),
             catalog,
             target: Target {
                 os: Os::Windows,

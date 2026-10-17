@@ -13,6 +13,7 @@ use crate::paths::fake::FakePrivateDirs;
 use crate::ports::fake::FakePortProbe;
 use crate::process::fake::FakeSupervisor;
 use crate::project::TrustAllOwners;
+use crate::web::AlwaysEffective;
 
 const WINDOWS: Target = Target {
     os: Os::Windows,
@@ -89,6 +90,7 @@ impl Rig {
             env: Arc::new(|_| None),
             system,
             roots: Arc::new(NoRoots),
+            config_probe: Arc::new(AlwaysEffective),
             catalog,
             target: WINDOWS,
         };

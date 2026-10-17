@@ -22,6 +22,7 @@ use crisol_core::paths::CrisolPaths;
 use crisol_core::ports::fake::FakePortProbe;
 use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::project::TrustAllOwners;
+use crisol_core::web::AlwaysEffective;
 use crisol_daemon::{run, Options, Timing};
 use crisol_platform::{connect_to_daemon, DaemonConnection};
 use crisol_protocol::{Call, ClientError, ErrorCode, Event, Reply, PROTOCOL_VERSION};
@@ -44,6 +45,7 @@ fn deps() -> Deps {
         env: Arc::new(|_| None),
         system: Arc::new(NoSystemChecks),
         roots: Arc::new(NoRoots),
+        config_probe: Arc::new(AlwaysEffective),
         catalog: Catalog::embedded().unwrap(),
         target: Target {
             os: Os::Windows,

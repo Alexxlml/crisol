@@ -32,6 +32,7 @@ use crisol_core::ports::PortOwner;
 use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
+use crisol_core::web::AlwaysEffective;
 use crisol_daemon::{run, Options, Timing};
 use crisol_platform::connect_to_daemon;
 use crisol_protocol::{Call, ClientError, ErrorCode, Event, Reply};
@@ -198,6 +199,7 @@ fn start_daemon_with(timing: Timing, stuck: bool) -> Running {
         env: Arc::new(|_| None),
         system: Arc::new(NoSystemChecks),
         roots: Arc::new(NoRoots),
+        config_probe: Arc::new(AlwaysEffective),
         catalog,
         target: Target {
             os: Os::Windows,

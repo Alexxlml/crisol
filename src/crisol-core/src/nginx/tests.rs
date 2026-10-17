@@ -383,11 +383,9 @@ fn writing_creates_the_files_and_the_folders_nginx_needs() {
 }
 
 #[test]
-fn writing_again_changes_nothing_and_a_new_site_changes_only_its_own_file() {
+fn writing_again_changes_nothing_and_a_new_site_changes_its_own_file_and_the_main_one() {
     let (_tmp, paths) = temp_home();
     written(&paths, &["a"]);
-    let nginx_conf = paths.etc_for("nginx").unwrap().join("nginx.conf");
-    let stamp = fs::metadata(&nginx_conf).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     assert_eq!(written(&paths, &["a"]).changed, Vec::<PathBuf>::new());
@@ -397,15 +395,8 @@ fn writing_again_changes_nothing_and_a_new_site_changes_only_its_own_file() {
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(
-        names,
-        ["b.conf"],
-        "only the new site: the others are the same text"
-    );
-    assert_eq!(
-        fs::metadata(&nginx_conf).unwrap().modified().unwrap(),
-        stamp
-    );
+    // The site `a` is the same text; `nginx.conf` carries the token of the configuration.
+    assert_eq!(names, ["nginx.conf", "b.conf"]);
 }
 
 #[test]
@@ -1089,7 +1080,8 @@ fn every_listen_is_duplicated_on_ipv6_loopback_including_the_default_servers_and
             main.contains(&format!("listen [::1]:{port} ssl default_server;")),
             "{main}"
         );
-        assert!(main.contains("default_server;\n        server_name _;\n        return 444;"));
+        assert!(main.contains("default_server;\n        server_name _;\n"));
+        assert!(main.contains("location / {\n            return 444;"));
         // The secured site's HTTPS block takes the HTTPS port, its redirect the HTTP one.
         let conf = &rendered.files["sites/shop.conf"];
         assert!(
@@ -1154,4 +1146,50 @@ fn mailpit_is_a_name_of_nginx_that_forwards_with_the_name_the_browser_used() {
     });
     assert!(!refused.files.contains_key("sites/_mail.conf"));
     assert_eq!(refused.warnings.len(), 1, "{:?}", refused.warnings);
+}
+
+#[test]
+fn the_default_server_answers_a_token_to_this_computer_only_and_the_token_follows_the_configuration(
+) {
+    let (_tmp, paths) = temp_home();
+    let render_for = |names: &[&str]| {
+        let sites: Vec<Site> = names
+            .iter()
+            .map(|n| site(n, "docs", DocRoot::Root, SiteKind::Parked))
+            .collect();
+        let entries: Vec<NginxSite<'_>> = sites
+            .iter()
+            .map(|site| NginxSite { site, php: None })
+            .collect();
+        let pools = PhpPools::default();
+        let nginx_dir = paths.bin_for("nginx", "1.28.3").unwrap();
+        render(&NginxInput {
+            paths: &paths,
+            nginx_dir: &nginx_dir,
+            http_port: 19080,
+            sites: &entries,
+            pools: &pools,
+            tls: None,
+            mail: None,
+        })
+    };
+    let one = render_for(&["a"]);
+    let same = render_for(&["a"]);
+    let two = render_for(&["a", "b"]);
+    assert_eq!(one.token, same.token);
+    assert_ne!(one.token, two.token);
+    assert_eq!(one.token.len(), 16);
+
+    let main = &one.files["nginx.conf"];
+    let path = probe_path(&one.token);
+    let block = format!(
+        "location = {path} {{\n            allow 127.0.0.1;\n            allow ::1;\n            deny all;\n            return 204;"
+    );
+    assert!(main.contains(&block), "{main}");
+    // The token is not in the files that decide it.
+    assert!(one
+        .files
+        .iter()
+        .filter(|(n, _)| *n != "nginx.conf")
+        .all(|(_, t)| !t.contains(&one.token)));
 }

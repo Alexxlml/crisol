@@ -506,6 +506,10 @@ impl Daemon {
             ));
         }
         if self.wanted && self.stack.as_ref().is_some_and(|s| !s.is_stopped()) {
+            // A change to the user's files that the watch has not seen yet is applied now, so
+            // that the answer is given only when the running Nginx serves what the files say
+            // (V2 of the manual verification of phase 9).
+            self.refresh(now, events);
             return Ok(done("The web stack is already running", false));
         }
         let (stack, config, plan) = self.build()?;
@@ -630,7 +634,8 @@ impl Daemon {
             deps.probe.clone(),
             deps.dirs.clone(),
         )
-        .with_root_certificates(deps.roots.clone());
+        .with_root_certificates(deps.roots.clone())
+        .with_config_probe(deps.config_probe.clone());
         Ok((stack, config, plan))
     }
 
@@ -747,6 +752,9 @@ fn changes_sites(call: &Call) -> bool {
             | Call::Secure { .. }
             | Call::Unsecure { .. }
             | Call::Use { .. }
+            // Mailpit's name (`mail.<tld>`) is served by Nginx only while it is enabled.
+            | Call::Enable { .. }
+            | Call::Disable { .. }
     )
 }
 

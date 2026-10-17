@@ -1,5 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -16,6 +17,7 @@ use crate::ports::PortOwner;
 use crate::process::fake::FakeSupervisor;
 use crate::process::ProcessId;
 use crate::project::TrustAllOwners;
+use crate::web::ConfigProbe;
 
 const HTTP: u16 = 19080;
 
@@ -26,7 +28,17 @@ struct Rig {
     supervisor: Arc<FakeSupervisor>,
     probe: Arc<FakePortProbe>,
     dirs: Arc<FakePrivateDirs>,
+    /// What the probe of the configuration answers: whether Nginx already runs the new one.
+    effective: Arc<AtomicBool>,
     t0: Instant,
+}
+
+struct Flag(Arc<AtomicBool>);
+
+impl ConfigProbe for Flag {
+    fn is_effective(&self, _http_port: u16, _token: &str) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
 }
 
 impl Rig {
@@ -49,6 +61,7 @@ impl Rig {
         let supervisor = Arc::new(FakeSupervisor::new());
         let probe = Arc::new(FakePortProbe::new());
         let dirs = Arc::new(FakePrivateDirs::new());
+        let effective = Arc::new(AtomicBool::new(true));
         let deps = Deps {
             supervisor: supervisor.clone(),
             probe: probe.clone(),
@@ -58,6 +71,7 @@ impl Rig {
             env: Arc::new(|_| None),
             system: Arc::new(NoSystemChecks),
             roots: Arc::new(NoRoots),
+            config_probe: Arc::new(Flag(effective.clone())),
             catalog: Catalog::parse("schema = 1\nserial = 1\n").unwrap(),
             target: Target {
                 os: Os::Windows,
@@ -72,6 +86,7 @@ impl Rig {
             supervisor,
             probe,
             dirs,
+            effective,
             t0: Instant::now(),
         }
     }
@@ -872,4 +887,78 @@ fn changing_php_in_the_file_regenerates_the_ini_and_restarts_only_its_pool() {
     rig.tick(6000);
     assert_eq!(rig.service_state("php-8.4.26").as_deref(), Some("running"));
     assert_eq!(rig.php_cgi_spawns(), 8, "{:?}", rig.state());
+}
+
+#[test]
+fn a_reload_is_done_only_when_nginx_answers_for_the_new_configuration() {
+    let mut rig = Rig::new();
+    rig.start_running();
+    rig.effective.store(false, Ordering::SeqCst);
+    let project = rig.paths.home().join("elsewhere");
+    fs::create_dir_all(&project).unwrap();
+    rig.call(
+        &Call::Link {
+            name: "extra".to_owned(),
+            path: project.display().to_string(),
+            docroot: None,
+        },
+        1000,
+    )
+    .unwrap();
+    rig.tick(1100);
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(1200);
+    let (reload, args) = rig.controls().pop().unwrap();
+    assert_eq!(args, ["-s", "reload"]);
+    rig.supervisor.exit(reload, 0).unwrap();
+
+    // The signal was sent, but the old workers still answer: not done, not settled.
+    let events = rig.tick(1300);
+    assert!(!events.contains(&Event::Reloaded), "{events:?}");
+    assert!(!rig.daemon.settled());
+    let events = rig.tick(3000);
+    assert!(!events.contains(&Event::Reloaded), "{events:?}");
+    assert!(!rig.daemon.settled());
+
+    // The new workers take over.
+    rig.effective.store(true, Ordering::SeqCst);
+    let events = rig.tick(3200);
+    assert!(events.contains(&Event::Reloaded), "{events:?}");
+    assert!(rig.daemon.settled());
+}
+
+#[test]
+fn a_reload_that_never_shows_says_so_after_a_few_seconds_and_goes_on() {
+    let mut rig = Rig::new();
+    rig.start_running();
+    rig.effective.store(false, Ordering::SeqCst);
+    let project = rig.paths.home().join("elsewhere");
+    fs::create_dir_all(&project).unwrap();
+    rig.call(
+        &Call::Link {
+            name: "extra".to_owned(),
+            path: project.display().to_string(),
+            docroot: None,
+        },
+        1000,
+    )
+    .unwrap();
+    rig.tick(1100);
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(1200);
+    let (reload, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(reload, 0).unwrap();
+    rig.tick(1300);
+
+    let events = rig.tick(7000);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ReloadFailed { reason } if reason.contains("old configuration")
+        )),
+        "{events:?}"
+    );
+    assert!(rig.daemon.settled());
 }

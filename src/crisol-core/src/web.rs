@@ -27,6 +27,8 @@
 //! ([`PhpPools::ensure`]), whatever its position in version order.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -37,8 +39,8 @@ use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
 use crate::manage::InstalledVersion;
 use crate::nginx::{
-    config_differs, render, stage_nginx_config, write_nginx_config, MailRoute, NginxError,
-    NginxInput, NginxSite, NginxTls, PhpPools,
+    config_differs, probe_path, render, stage_nginx_config, write_nginx_config, MailRoute,
+    NginxError, NginxInput, NginxSite, NginxTls, PhpPools,
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phppool::{pool_spec, service_name};
@@ -63,6 +65,54 @@ const RELOAD_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a pool that no site uses keeps running after the reload that stops sending it
 /// requests: the old Nginx workers finish what they were doing.
 const RETIRE_GRACE: Duration = Duration::from_secs(5);
+
+/// How long, after `nginx -s reload` returned, Crisol waits for Nginx to run the new
+/// configuration before it says it did not notice (V2 of the manual verification of phase 9: a
+/// request right after the signal still reached the old workers).
+const EFFECTIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Asks a running Nginx whether it already runs a configuration.
+pub trait ConfigProbe: Send + Sync {
+    /// Whether the Nginx listening on `http_port` answers to the path of `token`
+    /// ([`probe_path`]): only workers that read that configuration do.
+    fn is_effective(&self, http_port: u16, token: &str) -> bool;
+}
+
+/// A probe that always says yes: for tests with no Nginx behind them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AlwaysEffective;
+
+impl ConfigProbe for AlwaysEffective {
+    fn is_effective(&self, _http_port: u16, _token: &str) -> bool {
+        true
+    }
+}
+
+/// The probe over a plain connection to `127.0.0.1`: one short request, short timeouts, so that
+/// asking never holds the daemon.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TcpConfigProbe;
+
+impl ConfigProbe for TcpConfigProbe {
+    fn is_effective(&self, http_port: u16, token: &str) -> bool {
+        const STEP: Duration = Duration::from_millis(200);
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, http_port));
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, STEP) else {
+            return false;
+        };
+        let _ = stream.set_read_timeout(Some(STEP));
+        let _ = stream.set_write_timeout(Some(STEP));
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            probe_path(token)
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            return false;
+        }
+        let mut head = [0_u8; 12];
+        stream.read_exact(&mut head).is_ok() && head.starts_with(b"HTTP/1.1 204")
+    }
+}
 
 /// How long a restarted pool waits for its ports to be free before it starts anyway.
 const RESTART_WAIT: Duration = Duration::from_secs(5);
@@ -300,6 +350,8 @@ enum Phase {
     Test,
     /// `nginx -s reload` is running.
     Reload,
+    /// The signal was sent; waiting for the new workers to answer for the new configuration.
+    Effective,
 }
 
 struct Reload {
@@ -310,6 +362,8 @@ struct Reload {
     tested: Option<Desired>,
     /// This round is the first start of Nginx, not a reload.
     then_start: bool,
+    /// The token of the configuration that was reloaded ([`Phase::Effective`]).
+    token: Option<String>,
 }
 
 struct Pool {
@@ -341,6 +395,8 @@ pub struct WebStack {
     supervisor: Arc<dyn ProcessSupervisor>,
     probe: Arc<dyn PortProbe>,
     dirs: Arc<dyn PrivateDirs>,
+    /// Tells when a reload has taken effect.
+    config_probe: Arc<dyn ConfigProbe>,
     /// The system's root certificates, for `etc/php/cacert.pem`.
     roots: Arc<dyn RootCertificates>,
     nginx: Option<Service>,
@@ -397,6 +453,7 @@ impl WebStack {
             probe,
             dirs,
             roots: Arc::new(NoRoots),
+            config_probe: Arc::new(AlwaysEffective),
             nginx: None,
             pools: BTreeMap::new(),
             awaiting: BTreeSet::new(),
@@ -418,6 +475,14 @@ impl WebStack {
     #[must_use]
     pub fn with_root_certificates(mut self, roots: Arc<dyn RootCertificates>) -> Self {
         self.roots = roots;
+        self
+    }
+
+    /// How to tell that Nginx runs a new configuration after a reload. Without this a reload
+    /// counts as done when the signal was sent.
+    #[must_use]
+    pub fn with_config_probe(mut self, probe: Arc<dyn ConfigProbe>) -> Self {
+        self.config_probe = probe;
         self
     }
 
@@ -1011,6 +1076,7 @@ impl WebStack {
                 helper: None,
                 tested: None,
                 then_start: false,
+                token: None,
             });
         }
     }
@@ -1113,11 +1179,16 @@ impl WebStack {
             return;
         };
         let (phase, since, helper) = (reload.phase, reload.since, reload.helper);
+        if phase == Phase::Effective {
+            self.tick_effective(now, events);
+            return;
+        }
         if now.saturating_duration_since(since) >= RELOAD_STEP_TIMEOUT {
             let reason = match phase {
                 Phase::Pools => "the new PHP pools did not come up in time".to_owned(),
                 Phase::Test => "`nginx -t` did not finish in time".to_owned(),
                 Phase::Reload => "`nginx -s reload` did not finish in time".to_owned(),
+                Phase::Effective => unreachable!("the wait for the effect has its own limit"),
             };
             self.fail_reload(reason, now, events);
             return;
@@ -1130,6 +1201,7 @@ impl WebStack {
                     self.begin_test(false, now, events);
                 }
             }
+            Phase::Effective => {}
             Phase::Test | Phase::Reload => {
                 let Some((group, process)) = helper else {
                     return;
@@ -1141,9 +1213,7 @@ impl WebStack {
                         if phase == Phase::Test {
                             self.promote(now, events);
                         } else {
-                            self.reload = None;
-                            events.push(WebEvent::Reloaded);
-                            self.finish_reload_round(now, true);
+                            self.signal_sent(now, events);
                         }
                     }
                     _ => {
@@ -1164,6 +1234,50 @@ impl WebStack {
                     }
                 }
             }
+        }
+    }
+
+    /// `nginx -s reload` returned: the signal is sent, not applied. The round ends when Nginx
+    /// answers for the new configuration (or after [`EFFECTIVE_TIMEOUT`]).
+    fn signal_sent(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
+        let token = self.reload.as_mut().and_then(|r| r.token.take());
+        match token {
+            Some(token) if !self.config_probe.is_effective(self.http_port, &token) => {
+                if let Some(reload) = self.reload.as_mut() {
+                    reload.phase = Phase::Effective;
+                    reload.since = now;
+                    reload.token = Some(token);
+                }
+            }
+            _ => {
+                self.reload = None;
+                events.push(WebEvent::Reloaded);
+                self.finish_reload_round(now, true);
+            }
+        }
+    }
+
+    fn tick_effective(&mut self, now: Instant, events: &mut Vec<WebEvent>) {
+        let Some(reload) = self.reload.as_ref() else {
+            return;
+        };
+        let token = reload.token.clone().unwrap_or_default();
+        let waited = now.saturating_duration_since(reload.since);
+        if !self.running {
+            self.cancel_reload();
+        } else if self.config_probe.is_effective(self.http_port, &token) {
+            self.reload = None;
+            events.push(WebEvent::Reloaded);
+            self.finish_reload_round(now, true);
+        } else if waited >= EFFECTIVE_TIMEOUT {
+            self.reload = None;
+            events.push(WebEvent::ReloadFailed {
+                reason: format!(
+                    "Nginx was told to reload but still answered with the old configuration after {} s; a request right now may reach the old sites",
+                    EFFECTIVE_TIMEOUT.as_secs()
+                ),
+            });
+            self.finish_reload_round(now, true);
         }
     }
 
@@ -1204,6 +1318,7 @@ impl WebStack {
                     helper: None,
                     tested: None,
                     then_start,
+                    token: None,
                 });
                 self.fail_reload(
                     format!("could not prepare the configuration: {e}"),
@@ -1224,6 +1339,7 @@ impl WebStack {
                     helper: Some(helper),
                     tested: Some(desired),
                     then_start,
+                    token: None,
                 });
             }
             Err(reason) => {
@@ -1233,6 +1349,7 @@ impl WebStack {
                     helper: None,
                     tested: None,
                     then_start,
+                    token: None,
                 });
                 self.fail_reload(reason, now, events);
             }
@@ -1285,6 +1402,7 @@ impl WebStack {
                 phase: Phase::Test,
                 since: now,
                 then_start: reload.then_start,
+                token: None,
             });
             self.fail_reload(
                 format!("could not write the configuration: {e}"),
@@ -1301,6 +1419,10 @@ impl WebStack {
         let Ok(main) = self.main_conf() else {
             return;
         };
+        let token = {
+            let entries = tested.entries();
+            render(&self.input(&tested, &entries)).token
+        };
         match self.run_nginx(&main, &["-s", "reload"]) {
             Ok(helper) => {
                 self.reload = Some(Reload {
@@ -1309,6 +1431,7 @@ impl WebStack {
                     helper: Some(helper),
                     tested: None,
                     then_start: false,
+                    token: Some(token),
                 });
             }
             Err(reason) => {
@@ -1318,6 +1441,7 @@ impl WebStack {
                     helper: None,
                     tested: None,
                     then_start: false,
+                    token: None,
                 });
                 self.fail_reload(reason, now, events);
             }

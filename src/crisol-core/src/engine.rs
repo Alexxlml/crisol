@@ -42,6 +42,7 @@ use crate::shims::{shim_file_name, SHIM_COMMANDS};
 use crate::sites::{
     discover, link, park, set_secure, unlink, unpark, Site, SiteKind, SitesError, SitesFile,
 };
+use crate::web::ConfigProbe;
 
 /// Checks that depend on the operating system, for `doctor`. The Windows implementation (the
 /// PATH, the privileged helper, the NRPT rule, `hosts`, the trust store) is in
@@ -90,6 +91,8 @@ pub struct Deps {
     pub system: Arc<dyn SystemChecks>,
     /// The root certificates the system trusts, for the CA bundle of PHP.
     pub roots: Arc<dyn RootCertificates>,
+    /// Tells when a reload of Nginx has taken effect.
+    pub config_probe: Arc<dyn ConfigProbe>,
     /// What can be installed.
     pub catalog: Catalog,
     /// The platform to install for.

@@ -36,7 +36,16 @@ http {
         listen 127.0.0.1:80 default_server;
         listen [::1]:80 default_server;
         server_name _;
-        return 444;
+        # Whether Nginx runs this configuration yet (the name changes with it).
+        location = /.crisol-config-b3329334f8521e40 {
+            allow 127.0.0.1;
+            allow ::1;
+            deny all;
+            return 204;
+        }
+        location / {
+            return 444;
+        }
     }
 
     include "<home>/etc/nginx/sites/*.conf";

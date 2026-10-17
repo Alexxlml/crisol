@@ -36,7 +36,16 @@ http {
         listen 127.0.0.1:80 default_server;
         listen [::1]:80 default_server;
         server_name _;
-        return 444;
+        # Whether Nginx runs this configuration yet (the name changes with it).
+        location = /.crisol-config-4ec46e00a2805905 {
+            allow 127.0.0.1;
+            allow ::1;
+            deny all;
+            return 204;
+        }
+        location / {
+            return 444;
+        }
     }
 
     # Any host that is not a site, over HTTPS: refuse the handshake.
