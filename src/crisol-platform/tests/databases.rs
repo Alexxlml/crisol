@@ -489,13 +489,7 @@ fn resp(port: u16, args: &[&str]) -> String {
         .unwrap();
     let mut command = format!("*{}\r\n", args.len());
     for arg in args {
-        let _ = write!(
-            command,
-            "${}
-{arg}
-",
-            arg.len()
-        );
+        let _ = write!(command, "${}\r\n{arg}\r\n", arg.len());
     }
     stream.write_all(command.as_bytes()).unwrap();
     let mut buffer = [0_u8; 256];
