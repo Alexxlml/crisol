@@ -200,8 +200,14 @@ fn a_second_daemon_for_the_same_home_does_not_start() {
         dns: None,
         timing: Timing::default(),
     };
-    let error = run(options).unwrap_err();
-    assert!(error.to_string().contains("already be running"), "{error}");
+    // Not a failure: it leaves, with exit code 0, and says why in the log.
+    run(options).unwrap();
+    let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.ends_with("INFO another crisold is already running for this home; leaving")),
+        "{log}"
+    );
     // The first one is not disturbed.
     assert!(daemon.connect().call(&Call::Sites).is_ok());
     daemon.shut_down();

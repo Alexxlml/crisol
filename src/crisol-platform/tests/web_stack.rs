@@ -730,3 +730,105 @@ fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_bo
         std::panic::resume_unwind(panic);
     }
 }
+
+/// Review of the manual verification of phase 8, M2: Nginx took about 5 s to stop. How long does
+/// `nginx -s quit` take, with nothing connected and with a browser's keep-alive connection open?
+/// Prints the times and the path the stop took (`StopPath`).
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with Nginx 1.28.3 (Windows); prints the times"]
+fn stopping_nginx_with_and_without_a_keep_alive_connection_open() {
+    use crisol_core::service::ServiceEvent;
+    let _ports = ports();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
+    let mut config = Config::default();
+    config.services.nginx.http_port = HTTP;
+    let catalog = Catalog::embedded().unwrap();
+    let nobody = |_: &str| None;
+    let fs_site = paths.www_dir().join("plain");
+    fs::create_dir_all(&fs_site).unwrap();
+    fs::write(fs_site.join("index.html"), "plain").unwrap();
+    let plan = plan_web(
+        &paths,
+        &config,
+        &SitesFile::default(),
+        &catalog,
+        &TrustAllOwners,
+        &nobody,
+    );
+    let mut run = Run {
+        stack: WebStack::new(
+            paths.clone(),
+            &config,
+            nginx_dir,
+            Arc::new(JobObjectSupervisor::new()),
+            Arc::new(WindowsPortProbe::new()),
+            Arc::new(WindowsPrivateDirs),
+        ),
+        events: Vec::new(),
+    };
+    run.stack.apply(&plan, Instant::now()).unwrap();
+
+    for mode in ["idle", "keep-alive", "preconnect", "half a request"] {
+        let keep_alive = mode == "keep-alive";
+        let started = run.stack.start(Instant::now());
+        run.events.extend(started);
+        run.tick_until("nginx to run", |r| {
+            r.stack.nginx_state() == Some(&crisol_core::service::ServiceState::Running)
+        });
+        // The browser's habit: one request, the connection left open.
+        let mut held = None;
+        if keep_alive {
+            let mut stream = TcpStream::connect(("127.0.0.1", HTTP)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            write!(
+                stream,
+                "GET / HTTP/1.1\r\nHost: plain.test\r\nConnection: keep-alive\r\n\r\n"
+            )
+            .unwrap();
+            let mut buffer = [0_u8; 512];
+            let read = stream.read(&mut buffer).unwrap();
+            assert!(String::from_utf8_lossy(&buffer[..read]).contains("plain"));
+            held = Some(stream);
+        }
+        // Browsers also open sockets ahead of need and send nothing, or send half a request.
+        let mut extra = Vec::new();
+        if mode == "preconnect" {
+            extra.push(TcpStream::connect(("127.0.0.1", HTTP)).unwrap());
+        }
+        if mode == "half a request" {
+            let mut stream = TcpStream::connect(("127.0.0.1", HTTP)).unwrap();
+            write!(
+                stream,
+                "GET / HTTP/1.1
+Host: plain.test
+"
+            )
+            .unwrap();
+            extra.push(stream);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        run.events.clear();
+        let asked = Instant::now();
+        let stopped = run.stack.stop(asked);
+        run.events.extend(stopped);
+        run.tick_until("nginx to stop", |r| r.stack.is_stopped());
+        let took = asked.elapsed();
+        let path: Vec<_> = run
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                WebEvent::Service {
+                    name,
+                    event: ServiceEvent::StopPath { ordered, took },
+                } if name == "nginx" => Some((*ordered, *took)),
+                _ => None,
+            })
+            .collect();
+        println!("{mode}: stop took {took:?}; path {path:?}");
+        drop((held, extra));
+    }
+}

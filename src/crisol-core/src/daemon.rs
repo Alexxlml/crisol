@@ -573,6 +573,18 @@ fn map_event(event: WebEvent) -> Option<Event> {
                     detail,
                 }
             }
+            crate::service::ServiceEvent::StopPath { ordered, took } => Event::ServiceState {
+                service: name,
+                state: "stopping".to_owned(),
+                detail: Some(if ordered {
+                    format!("left in order after {:.1} s", took.as_secs_f32())
+                } else {
+                    format!(
+                        "did not leave in order; its processes were killed after {:.1} s",
+                        took.as_secs_f32()
+                    )
+                }),
+            },
             _ => return None,
         },
         WebEvent::ReloadStarted => Event::ReloadStarted,

@@ -78,12 +78,10 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
     // The pipe comes first: if another daemon has it, nothing else is started.
     let first = {
         let _enter = runtime.enter();
-        create_instance(&pipe, true).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("another crisold may already be running ({e})"),
-            )
-        })?
+        match first_instance(&pipe)? {
+            Some(first) => first,
+            None => return Ok(()),
+        }
     };
 
     let dns_stop = Arc::new(AtomicBool::new(false));
@@ -170,6 +168,31 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
     info!("crisold stopped");
     served
 }
+
+/// The first instance of the pipe, or `None` when another daemon of this home already has it.
+///
+/// `first_pipe_instance` fails when the pipe exists (access denied, or all instances busy). That
+/// is not a failure: the daemon started at sign-in finds it when the user started one first, and
+/// has no console to say so on, so the log is where it is written.
+fn first_instance(pipe: &str) -> io::Result<Option<NamedPipeServer>> {
+    match create_instance(pipe, true) {
+        Ok(first) => Ok(Some(first)),
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(ERROR_ACCESS_DENIED | ERROR_PIPE_BUSY)
+            ) =>
+        {
+            info!("another crisold is already running for this home; leaving");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What Windows says when the first instance of a pipe cannot be made because it exists.
+const ERROR_ACCESS_DENIED: i32 = 5;
+const ERROR_PIPE_BUSY: i32 = 231;
 
 /// The longest the daemon waits, once it is leaving, for its connections to deliver what is
 /// queued for them and end.

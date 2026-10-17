@@ -231,6 +231,17 @@ fn the_launcher_refuses_a_bad_suffix_or_a_missing_program_before_any_prompt() {
     assert!(error.to_string().contains("next to crisol.exe"), "{error}");
 }
 
+/// The command a refused program carries.
+fn fix_of(error: &io::Error) -> String {
+    match error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ProgramError>())
+    {
+        Some(ProgramError::Exposed { fix, .. }) => fix.clone(),
+        other => panic!("not a refused program: {other:?}"),
+    }
+}
+
 #[test]
 fn a_program_other_accounts_can_replace_is_not_installed() {
     let (_tmp, program_files, source, dirs) = world();
@@ -243,7 +254,7 @@ fn a_program_other_accounts_can_replace_is_not_installed() {
             .is_some_and(<dyn std::error::Error + Send + Sync>::is::<ProgramError>),
         "{error}"
     );
-    assert!(error.to_string().contains("icacls"), "{error}");
+    assert!(fix_of(&error).contains("(OI)(CI)"), "{error}");
     assert!(!program_files.join("Crisol").exists(), "nothing was made");
 }
 
@@ -269,5 +280,9 @@ fn the_launcher_shows_no_prompt_for_a_program_others_can_replace() {
         .install("test")
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-    assert!(error.to_string().contains("icacls"), "{error}");
+    assert!(fix_of(&error).starts_with("icacls "), "{error}");
+    assert!(
+        !error.to_string().contains("icacls"),
+        "one line, the fix apart: {error}"
+    );
 }

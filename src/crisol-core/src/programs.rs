@@ -27,8 +27,7 @@ pub enum ProgramError {
     /// The program, or the folder it is in, can be written by other accounts.
     #[error(
         "`{}` can be modified by other accounts of this computer, and Crisol would run \
-         `{}` with your rights (or an administrator's), so it will not. Remove their write \
-         access: {fix}",
+         `{}` with your rights (or an administrator's), so it will not",
         path.display(), program.display()
     )]
     Exposed {
@@ -57,8 +56,11 @@ pub fn require_trusted_program(program: &Path, dirs: &dyn PrivateDirs) -> Result
             path: program.to_path_buf(),
         });
     }
+    // The folder first: it is what is named and fixed (with inheritance, so the program and
+    // whatever else is beside it are closed at once). A DLL left next to the program would be
+    // loaded by it, so closing only the file would leave the door open.
     let folder = program.parent().filter(|p| !p.as_os_str().is_empty());
-    for path in std::iter::once(program).chain(folder) {
+    for path in folder.into_iter().chain(std::iter::once(program)) {
         let open = dirs
             .is_writable_by_others(path)
             .map_err(|source| ProgramError::Check {
@@ -125,10 +127,25 @@ mod tests {
         let (_dir, exe) = program();
         let dirs = FakePrivateDirs::new();
         dirs.expose(exe.parent().unwrap());
-        match require_trusted_program(&exe, &dirs) {
-            Err(ProgramError::Exposed { fix, .. }) => assert!(fix.contains("icacls"), "{fix}"),
-            other => panic!("{other:?}"),
-        }
+        let error = require_trusted_program(&exe, &dirs).unwrap_err();
+        let ProgramError::Exposed { path, fix, .. } = &error else {
+            panic!("{error:?}")
+        };
+        // The folder is named first, with the fix that inherits.
+        assert_eq!(path, exe.parent().unwrap());
+        assert!(
+            fix.starts_with("icacls ") && fix.contains("(OI)(CI)"),
+            "{fix}"
+        );
+        assert!(
+            fix.contains(&exe.parent().unwrap().display().to_string()),
+            "{fix}"
+        );
+        // One line for the message, the command apart.
+        assert!(!error.to_string().contains("icacls"), "{error}");
+        let rpc = program_error(&error);
+        assert_eq!(rpc.fix.as_deref(), Some(fix.as_str()));
+        assert!(!rpc.message.contains('\n'), "{rpc:?}");
         // Open only the file: still refused.
         let (_dir, exe) = program();
         let dirs = FakePrivateDirs::new();

@@ -299,6 +299,15 @@ struct Pool {
     service: Service,
 }
 
+/// How long `nginx -s quit` is given before Nginx is killed. A quit takes under a second with
+/// idle or keep-alive connections, but a browser's pre-opened socket that never sends anything
+/// (or half a request) holds it until the grace ends: measured 4.6 s with the default of 4.5 s
+/// (`stopping_nginx_with_and_without_a_keep_alive_connection_open`, review of the manual
+/// verification of phase 8, M2). This is a development server; a request cut after two seconds
+/// of waiting costs nothing, so the kill comes sooner. `keepalive_timeout` is not the cause and
+/// is left at 65 s.
+const NGINX_STOP_GRACE: Duration = Duration::from_secs(2);
+
 /// Nginx and the PHP pools, running (or ready to).
 pub struct WebStack {
     paths: CrisolPaths,
@@ -654,7 +663,10 @@ impl WebStack {
             .process(control(&[]).cwd(&self.nginx_dir).log_file(log))
             .health(HealthCheck::Ports(ports.clone()))
             .graceful_stop(control(&["-s", "quit"]))
-            .policy(LifecyclePolicy::default());
+            .policy(LifecyclePolicy {
+                stop_grace: NGINX_STOP_GRACE,
+                ..LifecyclePolicy::default()
+            });
         for port in ports {
             spec = spec.port(port);
         }

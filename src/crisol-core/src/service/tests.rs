@@ -721,6 +721,13 @@ fn a_graceful_stop_asks_nicely_and_waits_for_the_tree_to_go() {
     rig.supervisor.exit(process, 0).unwrap(); // nginx quit by itself
     let events = rig.tick(now + 2000);
     assert_eq!(changes(&events), [ServiceState::Stopped]);
+    assert!(
+        events.contains(&ServiceEvent::StopPath {
+            ordered: true,
+            took: Duration::from_millis(1000)
+        }),
+        "the way out is reported: {events:?}"
+    );
     assert_eq!(
         rig.supervisor.group_count(),
         0,
@@ -751,8 +758,15 @@ fn a_stop_that_is_not_obeyed_is_killed_after_the_grace_period() {
         ServiceState::Stopping,
         "confirmed on the next check"
     );
-    rig.tick(now + 4650);
+    let events = rig.tick(now + 4650);
     assert_eq!(rig.state(), ServiceState::Stopped);
+    assert!(
+        events.contains(&ServiceEvent::StopPath {
+            ordered: false,
+            took: Duration::from_millis(4650)
+        }),
+        "the kill is reported: {events:?}"
+    );
     assert_eq!(rig.supervisor.alive_pids(), Vec::<u32>::new());
 }
 

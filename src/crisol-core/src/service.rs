@@ -341,6 +341,14 @@ pub enum ServiceEvent {
         /// Workers alive (all of them).
         expected: usize,
     },
+    /// How a stop ended, just before the service is `Stopped`: on its own after the graceful
+    /// command, or by the kill after the grace period ran out.
+    StopPath {
+        /// The processes left by themselves, without being killed.
+        ordered: bool,
+        /// Time from the request to the last process gone.
+        took: Duration,
+    },
 }
 
 /// Why a command was refused.
@@ -916,6 +924,12 @@ impl Service {
             Err(e) => (1, Some(e.to_string())),
         };
         if remaining == 0 {
+            if let Some(stopping) = &self.stopping {
+                self.events.push(ServiceEvent::StopPath {
+                    ordered: stopping.killed.is_none(),
+                    took: now.saturating_duration_since(stopping.requested),
+                });
+            }
             self.finish_stop();
             return;
         }

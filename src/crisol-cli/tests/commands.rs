@@ -770,9 +770,17 @@ fn a_crisold_other_accounts_could_replace_is_neither_registered_nor_launched() {
     env.dirs.expose(env.daemon_exe.parent().unwrap());
     let refused = env.failing(&["autostart", "on"]);
     assert!(
-        refused.contains("will not") && refused.contains("icacls"),
+        refused.contains("will not") && refused.contains("  fix: icacls "),
         "{refused}"
     );
+    // The folder is named, and the command that closes it with everything inside is apart.
+    let folder = env.daemon_exe.parent().unwrap().display().to_string();
+    let sentence = refused.lines().next().unwrap();
+    assert!(
+        sentence.contains(&folder) && !sentence.contains("icacls"),
+        "{refused}"
+    );
+    assert!(refused.contains("(OI)(CI)"), "{refused}");
     assert!(env.autostart.current().unwrap().is_none());
     // `start` would have to launch the daemon: it does not, and says the same.
     let refused = env.failing(&["start"]);

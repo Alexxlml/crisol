@@ -454,6 +454,11 @@ fn a_service_that_will_not_stop_does_not_keep_the_daemon_alive() {
     client.call(&Call::Start { service: None }).unwrap();
     let alive = daemon.supervisor.alive_pids();
     assert_ne!(alive, Vec::<u32>::new(), "nginx never started");
+    // A stuck service: it does not obey the order to quit and, after the grace period, ignores
+    // the kill as well, so its own stop (grace plus kill wait) outlasts the daemon's cap.
+    for record in daemon.supervisor.spawned() {
+        daemon.supervisor.make_unkillable(record.group);
+    }
 
     // The stop does not finish by itself; after the cap the daemon kills the group and leaves.
     let asked = Instant::now();
@@ -463,10 +468,6 @@ fn a_service_that_will_not_stop_does_not_keep_the_daemon_alive() {
         asked.elapsed() < Duration::from_secs(10),
         "left after {:?}",
         asked.elapsed()
-    );
-    assert!(
-        daemon.supervisor.alive_pids().is_empty(),
-        "the stuck service was left running"
     );
     let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
     assert!(log.contains("did not stop in time"), "{log}");

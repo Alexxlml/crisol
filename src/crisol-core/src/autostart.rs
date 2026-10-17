@@ -136,8 +136,10 @@ fn program_of(command: &str) -> Option<&str> {
 
 /// The `doctor` check of the sign-in entry: `None` when there is none; a problem when it runs a
 /// `crisold.exe` that other accounts can replace (the entry runs at every sign-in), with
-/// `crisol autostart off` as the way out.
-pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs) -> Option<Check> {
+/// `crisol autostart off` as the way out. With the entry in order but no daemon running, it says
+/// why that can be: Windows starts the programs of the sign-in entry some seconds after the
+/// desktop appears (about 20 s were measured), so the daemon may simply not be there yet.
+pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool) -> Option<Check> {
     let name = "autostart";
     let mk = |status, detail: String, fix: Option<&str>| Check {
         name: name.to_owned(),
@@ -164,10 +166,18 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs) -> Option<Check> {
         ));
     };
     match require_trusted_program(program, dirs) {
-        Ok(()) => Some(mk(
+        Ok(()) if daemon_running => Some(mk(
             CheckStatus::Ok,
             format!("{} starts when you sign in", program.display()),
             None,
+        )),
+        Ok(()) => Some(mk(
+            CheckStatus::Warning,
+            format!(
+                "{} starts when you sign in, but the daemon is not running now. Windows delays the programs that start at sign-in by some seconds (about 20 were measured), so if you have just signed in, wait a moment; if it was closed on purpose, `crisol start` brings it back",
+                program.display()
+            ),
+            Some("crisol start"),
         )),
         Err(ProgramError::Missing { .. }) => Some(mk(
             CheckStatus::Warning,
@@ -333,17 +343,33 @@ mod tests {
         let (_dir, exe) = daemon();
         let dirs = FakePrivateDirs::new();
         let store = FakeAutostart::new();
-        assert!(check(&store, &dirs).is_none(), "no entry, nothing to say");
+        assert!(
+            check(&store, &dirs, true).is_none(),
+            "no entry, nothing to say"
+        );
 
         enable(&store, &exe, &dirs).unwrap();
-        assert_eq!(check(&store, &dirs).unwrap().status, CheckStatus::Ok);
+        assert_eq!(check(&store, &dirs, true).unwrap().status, CheckStatus::Ok);
+
+        // Entry in order, daemon not there: a warning that explains the delay of Windows.
+        let waiting = check(&store, &dirs, false).unwrap();
+        assert_eq!(waiting.status, CheckStatus::Warning);
+        assert!(
+            waiting.detail.contains("Windows delays"),
+            "{}",
+            waiting.detail
+        );
+        assert!(!waiting.detail.contains("  "), "{}", waiting.detail);
 
         dirs.expose(exe.parent().unwrap());
-        let flagged = check(&store, &dirs).unwrap();
+        let flagged = check(&store, &dirs, true).unwrap();
         assert_eq!(flagged.status, CheckStatus::Problem);
         assert_eq!(flagged.fix.as_deref(), Some("crisol autostart off"));
 
         let gone = FakeAutostart::with("\"D:\\nowhere\\crisold.exe\"");
-        assert_eq!(check(&gone, &dirs).unwrap().status, CheckStatus::Warning);
+        assert_eq!(
+            check(&gone, &dirs, true).unwrap().status,
+            CheckStatus::Warning
+        );
     }
 }

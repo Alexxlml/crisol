@@ -69,9 +69,12 @@ impl SystemChecks for WindowsSystemChecks {
             hosts_check(),
             trust_check(paths),
         ];
+        let daemon_running = crate::pipe_name_for_user(paths.home())
+            .is_ok_and(|name| crate::connect_to_daemon(&name).is_ok());
         checks.extend(crisol_core::autostart::check(
             &RegistryAutostart::new(),
             &WindowsPrivateDirs::new(),
+            daemon_running,
         ));
         checks
     }

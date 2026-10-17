@@ -179,6 +179,14 @@ impl Session<'_> {
                 EXIT_OK
             }
             Err(error) => {
+                // A program that others could replace is told like in `autostart on`: the
+                // sentence, and the command that closes the folder apart.
+                if let Some(program) = error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<crisol_core::programs::ProgramError>())
+                {
+                    return self.fail(&program_error(program));
+                }
                 let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
                     ErrorCode::NotAvailable
                 } else {
