@@ -505,6 +505,14 @@ pub fn new_series_notice(paths: &CrisolPaths, plan: &DbPlan) -> Option<String> {
 pub trait MongoAdmin: Send + Sync {
     /// Makes the administrator through the localhost exception.
     fn create_root_user(&self, port: u16, password: &Secret) -> Result<(), String>;
+    /// A port nobody listens on, chosen by the system: for the server that only exists to make
+    /// the administrator, so that nothing else knows where to find it.
+    fn free_port(&self) -> Result<u16, String> {
+        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .and_then(|listener| listener.local_addr())
+            .map(|address| address.port())
+            .map_err(|e| e.to_string())
+    }
     /// Shuts the server down: logged in as the administrator, or with no login if the server was
     /// made before there were passwords.
     fn shutdown(&self, port: u16, password: Option<&Secret>) -> Result<(), String>;
@@ -542,7 +550,26 @@ enum Phase {
         since: Instant,
     },
     Running(Box<Service>),
+    /// MongoDB's first start: a server on a port the system picked, only to make the
+    /// administrator (Y1 of the review of phase 9).
+    FirstUser {
+        service: Box<Service>,
+        port: u16,
+        step: FirstUser,
+    },
 }
+
+/// Where the first start of MongoDB is.
+#[derive(Debug, Clone, Copy)]
+enum FirstUser {
+    /// Waiting for the server, then making the user; `attempts` have been refused so far.
+    Waiting { attempts: u32 },
+    /// The user exists and the server was asked to leave.
+    Leaving { since: Instant },
+}
+
+/// How long the temporary MongoDB may take to leave before it is killed.
+const FIRST_USER_LEAVE: Duration = Duration::from_secs(45);
 
 /// One database: initializes its data the first time, then runs it.
 pub struct DbService {
@@ -554,8 +581,6 @@ pub struct DbService {
     /// The password of this run, if the service has one. Never printed (`Secret`).
     secret: Option<Secret>,
     mongo: Arc<dyn MongoAdmin>,
-    /// Tries made at the first user of MongoDB.
-    first_user_attempts: u32,
 }
 
 impl std::fmt::Debug for DbService {
@@ -583,7 +608,6 @@ impl DbService {
             state: ServiceState::Stopped,
             secret: None,
             mongo: Arc::new(WireMongoAdmin),
-            first_user_attempts: 0,
         }
     }
 
@@ -674,7 +698,6 @@ impl DbService {
         }
         let initializes = !self.plan.data.is_dir()
             && self.plan.kind.descriptor().initializer != Initializer::None;
-        self.first_user_attempts = 0;
         let prepared =
             write_ini(&self.plan).and_then(|()| self.choose_secret(!self.plan.data.is_dir()));
         if let Err(e) = prepared {
@@ -699,6 +722,13 @@ impl DbService {
     fn launch(&mut self, now: Instant, events: &mut Vec<ServiceEvent>) {
         if let Err(e) = specs::write_runtime_files(&self.plan, self.secret.as_ref()) {
             self.fail(e.to_string(), events);
+            return;
+        }
+        if self.plan.kind == DbKind::Mongodb
+            && self.secret.is_some()
+            && self.plan.secret_path(".pending").is_file()
+        {
+            self.begin_first_user(now, events);
             return;
         }
         let mut service = Service::new(
@@ -783,7 +813,7 @@ impl DbService {
                     self.change(ServiceState::Stopped, &mut events);
                 }
             }
-            Phase::Initializing { .. } => {
+            Phase::Initializing { .. } | Phase::FirstUser { .. } => {
                 self.close_phase();
                 self.change(ServiceState::Stopped, &mut events);
             }
@@ -863,6 +893,9 @@ impl DbService {
     /// Ends an initialization (killing it and deleting its staging folder and the files it was
     /// given) and forgets the phase.
     fn close_phase(&mut self) {
+        if let Phase::FirstUser { service, .. } = &mut self.phase {
+            service.abort();
+        }
         if let Phase::Initializing { group, .. } = self.phase {
             let _ = self.supervisor.kill_group(group);
             let _ = self.supervisor.close_group(group);
@@ -883,13 +916,11 @@ impl DbService {
                 match self.state {
                     ServiceState::Stopped => self.phase = Phase::Idle,
                     // MariaDB has taken its password: the file that carried it is not needed.
-                    ServiceState::Running => {
-                        specs::remove_first_launch_file(&self.plan);
-                        self.make_first_user(&mut events);
-                    }
+                    ServiceState::Running => specs::remove_first_launch_file(&self.plan),
                     _ => {}
                 }
             }
+            Phase::FirstUser { .. } => self.tick_first_user(now, &mut events),
             Phase::Initializing {
                 group,
                 process,
@@ -947,29 +978,112 @@ impl DbService {
     /// the generated password, the way the localhost exception allows. Until it is done the
     /// service is open to whoever asks first, for the moment this takes. A server that refuses
     /// it is a failed start, and says so.
-    fn make_first_user(&mut self, events: &mut Vec<ServiceEvent>) {
-        let pending = self.plan.secret_path(".pending");
-        let (true, Some(secret)) = (pending.is_file(), self.secret.clone()) else {
+    /// MongoDB with an empty data folder lets the first program that asks make the first user
+    /// (the localhost exception). So it is first started on a port the system picks, with the
+    /// login on, only to make the administrator; then it is asked to leave and the real start,
+    /// on the port of `crisol.toml`, finds the user already there.
+    fn begin_first_user(&mut self, now: Instant, events: &mut Vec<ServiceEvent>) {
+        let port = match self.mongo.free_port() {
+            Ok(port) => port,
+            Err(why) => {
+                self.fail(
+                    format!("no port to make the administrator of MongoDB on ({why})"),
+                    events,
+                );
+                return;
+            }
+        };
+        let mut temporary = self.plan.clone();
+        temporary.port = port;
+        let mut service = Service::new(
+            service_spec(&temporary, self.secret.as_ref(), &self.mongo),
+            self.supervisor.clone(),
+            self.ports.clone(),
+        );
+        // What the temporary server reports is not about the service the user asked for.
+        let _ = service.start(now);
+        self.change(ServiceState::Starting, events);
+        self.phase = Phase::FirstUser {
+            service: Box::new(service),
+            port,
+            step: FirstUser::Waiting { attempts: 0 },
+        };
+    }
+
+    fn tick_first_user(&mut self, now: Instant, events: &mut Vec<ServiceEvent>) {
+        let Phase::FirstUser {
+            mut service,
+            port,
+            step,
+        } = std::mem::replace(&mut self.phase, Phase::Idle)
+        else {
             return;
         };
-        match self.mongo.create_root_user(self.plan.port, &secret) {
-            Ok(()) => secrets::remove_file(&pending),
-            Err(why) => {
-                self.first_user_attempts += 1;
-                if self.first_user_attempts >= FIRST_USER_ATTEMPTS {
-                    if let Phase::Running(service) = &mut self.phase {
-                        service.abort();
+        let _ = service.tick(now);
+        let inner = service.state().clone();
+        let next = match step {
+            FirstUser::Waiting { attempts } => match inner {
+                ServiceState::Running => {
+                    let made = self
+                        .secret
+                        .as_ref()
+                        .map_or(Err("there is no password".to_owned()), |secret| {
+                            self.mongo.create_root_user(port, secret)
+                        });
+                    match made {
+                        Ok(()) => {
+                            secrets::remove_file(&self.plan.secret_path(".pending"));
+                            let _ = service.stop(now);
+                            FirstUser::Leaving { since: now }
+                        }
+                        Err(why) if attempts + 1 >= FIRST_USER_ATTEMPTS => {
+                            service.abort();
+                            self.discard_new_data(&why, events);
+                            return;
+                        }
+                        Err(_) => FirstUser::Waiting {
+                            attempts: attempts + 1,
+                        },
                     }
-                    self.fail(
-                        format!(
-                            "the administrator of MongoDB could not be made ({why}); stop it, delete {} and start it again",
-                            self.plan.data.display()
-                        ),
-                        events,
-                    );
                 }
+                ServiceState::Failed(_) | ServiceState::Stopped => {
+                    service.abort();
+                    self.discard_new_data("the temporary server did not start", events);
+                    return;
+                }
+                _ => step,
+            },
+            FirstUser::Leaving { since } => {
+                let gone = matches!(inner, ServiceState::Stopped | ServiceState::Failed(_));
+                if gone || now.saturating_duration_since(since) >= FIRST_USER_LEAVE {
+                    service.abort();
+                    // The user exists: the real start.
+                    self.launch(now, events);
+                    return;
+                }
+                step
             }
-        }
+        };
+        self.phase = Phase::FirstUser {
+            service,
+            port,
+            step: next,
+        };
+    }
+
+    /// The administrator of a new MongoDB could not be made: its data folder has nothing else in
+    /// it, so it is deleted, with the password and the marker, and the next start begins again.
+    fn discard_new_data(&mut self, why: &str, events: &mut Vec<ServiceEvent>) {
+        let _ = fs::remove_dir_all(&self.plan.data);
+        secrets::remove_file(&self.plan.secret_path(".pending"));
+        secrets::remove_file(&self.plan.secret_path(""));
+        self.secret = None;
+        self.fail(
+            format!(
+                "the administrator of MongoDB could not be made ({why}); the empty data folder was deleted, so the next start begins from scratch"
+            ),
+            events,
+        );
     }
 
     /// The initializer succeeded: the staging folder becomes the data.

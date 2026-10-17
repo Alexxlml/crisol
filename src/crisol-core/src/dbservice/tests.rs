@@ -526,8 +526,9 @@ fn mongodb_mailpit_and_meilisearch_start_straight_from_an_empty_folder_on_this_c
         mongo.windows(2).any(|w| w == ["--bind_ip", "127.0.0.1"]),
         "{mongo:?}"
     );
+    // A new MongoDB first starts on a port the system picks, only to make its user.
     assert!(
-        mongo.windows(2).any(|w| w == ["--port", "19017"]),
+        mongo.iter().any(|a| a == "--port") && !mongo.windows(2).any(|w| w == ["--port", "19017"]),
         "{mongo:?}"
     );
     assert!(
@@ -1005,6 +1006,9 @@ struct FakeMongo {
     refuse_users: std::sync::atomic::AtomicBool,
 }
 
+/// The port the system "picks" for the temporary server of the first start.
+const TEMPORARY: u16 = 19999;
+
 impl MongoAdmin for FakeMongo {
     fn create_root_user(&self, port: u16, password: &Secret) -> Result<(), String> {
         if self.refuse_users.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1015,6 +1019,10 @@ impl MongoAdmin for FakeMongo {
             .unwrap()
             .push((port, password.expose().to_owned()));
         Ok(())
+    }
+
+    fn free_port(&self) -> Result<u16, String> {
+        Ok(TEMPORARY)
     }
 
     fn shutdown(&self, port: u16, password: Option<&Secret>) -> Result<(), String> {
@@ -1033,69 +1041,135 @@ fn mongo_rig() -> (Rig, Arc<FakeMongo>) {
     (rig, Arc::new(FakeMongo::default()))
 }
 
+/// Goes through the first start: the temporary server makes the user and leaves, and the real
+/// one comes up on the port of `crisol.toml`. Returns the service running.
+fn mongo_running(rig: &Rig, admin: &Arc<FakeMongo>) -> DbService {
+    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
+    db.start(rig.at(0));
+    rig.listen(TEMPORARY);
+    db.tick(rig.at(1200));
+    // The temporary server was asked to leave: it does.
+    rig.supervisor.exit(rig.last_process(), 0).unwrap();
+    rig.ports.release(TEMPORARY);
+    db.tick(rig.at(1500));
+    db.tick(rig.at(1700));
+    rig.listen(19017);
+    db.tick(rig.at(2200));
+    assert_eq!(*db.state(), ServiceState::Running);
+    db
+}
+
 #[test]
-fn mongodb_starts_with_auth_and_its_first_user_is_made_once_with_the_generated_password() {
+fn the_first_user_of_mongodb_is_made_on_a_port_the_system_picked_and_then_it_starts_for_real() {
     let (rig, admin) = mongo_rig();
     let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
     db.start(rig.at(0));
     let password = password_of(&rig, DbKind::Mongodb);
-    let spawned = rig.supervisor.spawned();
-    let args = words(&spawned[0].spec);
+
+    // The first server is the temporary one: login on, the picked port, not the real one.
+    let first = rig.supervisor.spawned();
+    assert_eq!(first.len(), 1);
+    let args = words(&first[0].spec);
     assert!(args.contains(&"--auth".to_owned()), "{args:?}");
+    assert!(
+        args.windows(2).any(|w| w == ["--port", "19999"]),
+        "the temporary server is on the port the system picked: {args:?}"
+    );
     assert!(
         !args.iter().any(|a| a.contains(&password)),
         "the password is in the command line"
     );
     let pending = rig.plan(DbKind::Mongodb).secret_path(".pending");
     assert!(pending.is_file(), "the first user is owed until it exists");
+    assert_eq!(*db.state(), ServiceState::Starting);
 
-    rig.listen(19017);
+    rig.listen(TEMPORARY);
     db.tick(rig.at(1200));
-    db.tick(rig.at(1500));
     assert_eq!(
         *admin.users.lock().unwrap(),
-        [(19017, password)],
-        "made once, with the generated password"
+        [(TEMPORARY, password.clone())],
+        "made once, on the temporary port, with the generated password"
     );
     assert!(!pending.exists());
+    assert_eq!(rig.supervisor.spawned().len(), 1, "waiting for it to leave");
+
+    // It leaves; the real start follows, on the real port and with the login.
+    rig.supervisor.exit(rig.last_process(), 0).unwrap();
+    rig.ports.release(TEMPORARY);
+    db.tick(rig.at(1500));
+    db.tick(rig.at(1700));
+    let spawned = rig.supervisor.spawned();
+    assert_eq!(spawned.len(), 2);
+    let args = words(&spawned[1].spec);
+    assert!(
+        args.windows(2).any(|w| w == ["--port", "19017"]),
+        "{args:?}"
+    );
+    assert!(args.contains(&"--auth".to_owned()), "{args:?}");
+    assert_eq!(*db.state(), ServiceState::Starting);
+    rig.listen(19017);
+    db.tick(rig.at(2200));
+    assert_eq!(*db.state(), ServiceState::Running);
+    assert_eq!(admin.users.lock().unwrap().len(), 1, "no second first user");
 }
 
 #[test]
-fn a_mongodb_that_refuses_its_first_user_is_a_failed_start_that_says_so() {
+fn a_mongodb_that_refuses_its_first_user_leaves_nothing_behind_and_says_so() {
     let (rig, admin) = mongo_rig();
     admin
         .refuse_users
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let mut db = rig.service(DbKind::Mongodb).with_mongo(admin);
     db.start(rig.at(0));
-    rig.listen(19017);
+    let plan = rig.plan(DbKind::Mongodb);
+    // The data folder a first start makes (the fake server makes none).
+    fs::create_dir_all(&plan.data).unwrap();
+    rig.listen(TEMPORARY);
     for step in 0..10 {
         db.tick(rig.at(1200 + step * 100));
     }
     match db.state() {
         ServiceState::Failed(FailureReason::Internal(why)) => {
             assert!(why.contains("administrator"), "{why}");
+            assert!(why.contains("deleted"), "{why}");
         }
         other => panic!("{other:?}"),
     }
-}
+    assert!(!plan.data.exists(), "the empty data folder is deleted");
+    assert!(!plan.secret_path(".pending").exists());
+    assert!(
+        !plan.secret_path("").exists(),
+        "the next start makes a new password"
+    );
+    // Nothing is running any more: the temporary server was killed.
+    assert_eq!(rig.supervisor.spawned().len(), 1);
 
+    // Asking again starts from scratch, with a new password.
+    db.start(rig.at(5000));
+    assert!(plan.secret_path(".pending").is_file());
+}
 #[test]
 fn stopping_mongodb_asks_it_to_shut_down_logged_in_and_data_without_a_password_asks_without() {
     let (rig, admin) = mongo_rig();
-    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
-    db.start(rig.at(0));
+    let mut db = mongo_running(&rig, &admin);
     let password = password_of(&rig, DbKind::Mongodb);
-    rig.listen(19017);
-    db.tick(rig.at(1200));
-    db.stop(rig.at(2000));
-    // The hook runs in a thread of its own.
+    db.stop(rig.at(9000));
+    // The hook runs in a thread of its own. The first shutdown was the temporary server's.
     let end = Instant::now() + Duration::from_secs(5);
-    while admin.shutdowns.lock().unwrap().is_empty() {
+    while !admin
+        .shutdowns
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(p, _)| *p == 19017)
+    {
         assert!(Instant::now() < end, "the shutdown was never asked for");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(*admin.shutdowns.lock().unwrap(), [(19017, Some(password))]);
+    assert_eq!(
+        *admin.shutdowns.lock().unwrap(),
+        [(TEMPORARY, Some(password.clone())), (19017, Some(password))]
+    );
 
     // Data made before there were passwords: no secret, no --auth, no login.
     let (rig, admin) = mongo_rig();

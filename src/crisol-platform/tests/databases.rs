@@ -945,3 +945,39 @@ fn mongodb_gets_a_new_password_while_running_and_still_stops_by_its_own_command(
     let stopped = stop_and_wait(&mut world, DbKind::Mongodb);
     assert!(stopped < Duration::from_secs(25), "{stopped:?}");
 }
+
+#[test]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with mongodb-windows-x86_64-8.0.34.zip (Windows); very big"]
+fn mongodb_first_user_is_made_before_the_real_port_ever_opens() {
+    use crisol_core::mongowire::{self, MongoError};
+    let _ports = PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut world = world("[services.mongodb]\nenabled = true\nport = 19017\n");
+    install_from_downloads(&world.paths, "mongodb", "8.0.34");
+    world.stack.start(DbKind::Mongodb, Instant::now()).unwrap();
+    // As soon as anything answers on the real port, the localhost exception must be gone: the
+    // first user was made on the temporary port of the first start.
+    let end = Instant::now() + Duration::from_secs(120);
+    loop {
+        let _ = world.stack.tick(Instant::now());
+        if std::net::TcpStream::connect(("127.0.0.1", 19017)).is_ok() {
+            break;
+        }
+        assert!(Instant::now() < end, "the real port never opened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    match mongowire::list_databases_without_login(19017) {
+        Err(MongoError::Server { code, .. }) => assert_eq!(code, 13),
+        other => panic!("the first user was still open when the real port opened: {other:?}"),
+    }
+    world.tick_until("mongodb to run", 60, |w| {
+        w.state(DbKind::Mongodb) == Some(ServiceState::Running)
+    });
+    assert!(!world
+        .paths
+        .secrets_dir()
+        .join("mongodb-8.0.pending")
+        .exists());
+    stop_and_wait(&mut world, DbKind::Mongodb);
+}
