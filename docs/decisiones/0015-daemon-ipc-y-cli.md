@@ -26,3 +26,15 @@ La Fase 8 une todo lo anterior en un proceso residente (`crisold`), un contrato 
 - El protocolo tiene ya los puntos de extensión para las Fases 9 a 11 (servicios de bases de datos entran en `Status`/`Start` sin cambiar la forma de nada; `Event::Log` y `Event::Progress` ya existen).
 - Pendiente a propósito (no están en el plan de la Fase 8): comandos de `trust`/`untrust` de la CA, instalar los *shims* y agregarlos al PATH desde el CLI, `repair`, y que `start`/`stop` de un servicio suelto tengan sentido cuando haya más de uno (hoy Nginx y los pools son una unidad). Las comprobaciones de `doctor` ya lo reflejan sin dar comandos que no existen.
 - Verificación manual con administrador pendiente: `crisol system install` y `uninstall` reales (UAC, `Program Files`, NRPT, `hosts`), el respondedor DNS en `127.77.0.53:53` dentro del daemon real, y `crisol start` con Nginx y PHP reales.
+
+## Corrección (2026-10-16, revisión de la Fase 8)
+
+Decidida por el propietario a partir de `claude/revisiones/2026-10-16-opus-fase8.md`. Pendiente de implementar.
+
+- **Punto 6:** `crisol stop` detiene **solo los servicios**. El daemon sigue corriendo y cerrarlo es explícito (`crisol stop --daemon` o `crisol shutdown`). Desaparece `--keep-daemon`.
+- **Punto 9, qué se confía:** además de lo dicho, antes del UAC de `system install`, de `autostart on` y de lanzar `crisold`, se comprueba que el ejecutable y su carpeta no los pueden escribir otras cuentas. El proceso elevado repite la comprobación y lee el programa de origen una sola vez. Las versiones publicadas llevan firma Authenticode, que se comprueba antes del UAC. No se fija un hash al compilar.
+- **Registro:** el daemon usa `tracing` (convención del proyecto) con hora legible, desde antes de la Fase 9.
+- **Robustez del daemon:**
+  - un error al aceptar una conexión no lo cierra;
+  - las operaciones largas del `Engine` corren fuera del hilo-actor, de modo que los servicios se siguen supervisando y `status` responde durante una instalación;
+  - el nombre del pipe incluye el SID del usuario.
