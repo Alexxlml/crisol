@@ -503,16 +503,19 @@ fn meilisearch_indexes_a_document_and_keeps_it_across_a_restart() {
 
 #[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS with mongodb-windows-x86_64-8.0.34.zip (Windows); very big"]
-fn mongodb_starts_on_the_loopback_makes_its_data_and_restarts_over_it() {
+fn mongodb_asks_for_a_login_shuts_down_by_its_own_command_and_restarts_over_its_data() {
+    use crisol_core::mongowire::{self, MongoError};
     let _ports = PORTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut world = world("[services.mongodb]\nenabled = true\nport = 19017\n");
+    let mut world = world(
+        "[services.mongodb]
+enabled = true
+port = 19017
+",
+    );
     install_from_downloads(&world.paths, "mongodb", "8.0.34");
     run_and_wait(&mut world, DbKind::Mongodb);
-    // There is no client in the archive (`mongosh` is a separate download): the port, the log and
-    // the data say it is up.
-    std::net::TcpStream::connect(("127.0.0.1", 19017)).unwrap();
     let data = world.paths.data_for("mongodb", "8.0").unwrap();
     assert!(
         data.join("WiredTiger").is_file(),
@@ -531,11 +534,46 @@ fn mongodb_starts_on_the_loopback_makes_its_data_and_restarts_over_it() {
             .all(|l| l.contains("127.0.0.1")),
         "{netstat}"
     );
-    println!(
-        "mongodb: stop took {:?}",
-        stop_and_wait(&mut world, DbKind::Mongodb)
-    );
+
+    // The first user was made and the login is on: nothing is listed without it (code 13), and
+    // the generated password logs in.
+    let secrets = world.paths.secrets_dir();
+    let password = fs::read_to_string(secrets.join("mongodb-8.0")).unwrap();
+    let password = password.trim();
+    assert!(!secrets.join("mongodb-8.0.pending").exists());
+    match mongowire::list_databases_without_login(19017) {
+        Err(MongoError::Server { code, .. }) => assert_eq!(code, 13),
+        other => panic!("a MongoDB with no login answered: {other:?}"),
+    }
+    assert!(matches!(
+        mongowire::shutdown(19017, "not-the-password"),
+        Err(MongoError::Auth(_))
+    ));
+    std::net::TcpStream::connect(("127.0.0.1", 19017)).expect("a wrong password stops nothing");
+
+    // Stopped by its own command: it goes within seconds, well before the grace period, and its
+    // log says it was asked.
+    let stopped_in = stop_and_wait(&mut world, DbKind::Mongodb);
+    println!("mongodb: stop took {stopped_in:?}");
+    assert!(stopped_in < Duration::from_secs(25), "{stopped_in:?}");
+    let log = fs::read_to_string(world.paths.runtime_log("mongodb").unwrap()).unwrap_or_default();
+    let asked: Vec<&str> = log
+        .lines()
+        .filter(|l| l.to_lowercase().contains("shutdown"))
+        .collect();
+    println!("mongodb log, shutdown lines: {}", asked.len());
+    assert!(!asked.is_empty(), "the log never mentions a shutdown");
+
+    // Over the same data, with the same password and no second first user.
     run_and_wait(&mut world, DbKind::Mongodb);
+    assert_eq!(
+        fs::read_to_string(secrets.join("mongodb-8.0")).unwrap(),
+        password
+    );
+    assert!(matches!(
+        mongowire::list_databases_without_login(19017),
+        Err(MongoError::Server { code: 13, .. })
+    ));
     stop_and_wait(&mut world, DbKind::Mongodb);
 }
 

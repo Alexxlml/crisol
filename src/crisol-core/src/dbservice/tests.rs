@@ -995,3 +995,122 @@ fn the_credentials_are_the_lines_a_project_needs_in_its_env() {
         password_of(&rig, DbKind::Postgres)
     )));
 }
+
+// ---- MongoDB: its own user and its own shutdown ------------------------------------------
+
+#[derive(Default)]
+struct FakeMongo {
+    users: std::sync::Mutex<Vec<(u16, String)>>,
+    shutdowns: std::sync::Mutex<Vec<(u16, Option<String>)>>,
+    refuse_users: std::sync::atomic::AtomicBool,
+}
+
+impl MongoAdmin for FakeMongo {
+    fn create_root_user(&self, port: u16, password: &Secret) -> Result<(), String> {
+        if self.refuse_users.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("not authorized".to_owned());
+        }
+        self.users
+            .lock()
+            .unwrap()
+            .push((port, password.expose().to_owned()));
+        Ok(())
+    }
+
+    fn shutdown(&self, port: u16, password: Option<&Secret>) -> Result<(), String> {
+        self.shutdowns
+            .lock()
+            .unwrap()
+            .push((port, password.map(|p| p.expose().to_owned())));
+        Ok(())
+    }
+}
+
+fn mongo_rig() -> (Rig, Arc<FakeMongo>) {
+    let mut rig = Rig::new();
+    rig.config.services.mongodb.port = 19017;
+    rig.install("mongodb", "8.0.34");
+    (rig, Arc::new(FakeMongo::default()))
+}
+
+#[test]
+fn mongodb_starts_with_auth_and_its_first_user_is_made_once_with_the_generated_password() {
+    let (rig, admin) = mongo_rig();
+    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
+    db.start(rig.at(0));
+    let password = password_of(&rig, DbKind::Mongodb);
+    let spawned = rig.supervisor.spawned();
+    let args = words(&spawned[0].spec);
+    assert!(args.contains(&"--auth".to_owned()), "{args:?}");
+    assert!(
+        !args.iter().any(|a| a.contains(&password)),
+        "the password is in the command line"
+    );
+    let pending = rig.plan(DbKind::Mongodb).secret_path(".pending");
+    assert!(pending.is_file(), "the first user is owed until it exists");
+
+    rig.listen(19017);
+    db.tick(rig.at(1200));
+    db.tick(rig.at(1500));
+    assert_eq!(
+        *admin.users.lock().unwrap(),
+        [(19017, password)],
+        "made once, with the generated password"
+    );
+    assert!(!pending.exists());
+}
+
+#[test]
+fn a_mongodb_that_refuses_its_first_user_is_a_failed_start_that_says_so() {
+    let (rig, admin) = mongo_rig();
+    admin
+        .refuse_users
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin);
+    db.start(rig.at(0));
+    rig.listen(19017);
+    for step in 0..10 {
+        db.tick(rig.at(1200 + step * 100));
+    }
+    match db.state() {
+        ServiceState::Failed(FailureReason::Internal(why)) => {
+            assert!(why.contains("administrator"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn stopping_mongodb_asks_it_to_shut_down_logged_in_and_data_without_a_password_asks_without() {
+    let (rig, admin) = mongo_rig();
+    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
+    db.start(rig.at(0));
+    let password = password_of(&rig, DbKind::Mongodb);
+    rig.listen(19017);
+    db.tick(rig.at(1200));
+    db.stop(rig.at(2000));
+    // The hook runs in a thread of its own.
+    let end = Instant::now() + Duration::from_secs(5);
+    while admin.shutdowns.lock().unwrap().is_empty() {
+        assert!(Instant::now() < end, "the shutdown was never asked for");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*admin.shutdowns.lock().unwrap(), [(19017, Some(password))]);
+
+    // Data made before there were passwords: no secret, no --auth, no login.
+    let (rig, admin) = mongo_rig();
+    fs::create_dir_all(rig.plan(DbKind::Mongodb).data).unwrap();
+    let mut db = rig.service(DbKind::Mongodb).with_mongo(admin.clone());
+    db.start(rig.at(0));
+    let args = words(&rig.supervisor.spawned()[0].spec);
+    assert!(!args.contains(&"--auth".to_owned()), "{args:?}");
+    rig.listen(19017);
+    db.tick(rig.at(1200));
+    db.stop(rig.at(2000));
+    let end = Instant::now() + Duration::from_secs(5);
+    while admin.shutdowns.lock().unwrap().is_empty() {
+        assert!(Instant::now() < end, "the shutdown was never asked for");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*admin.shutdowns.lock().unwrap(), [(19017, None)]);
+}

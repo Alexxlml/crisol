@@ -17,10 +17,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{DbError, DbKind, DbPlan, Initializer};
+use std::sync::Arc;
+
+use super::{DbError, DbKind, DbPlan, Initializer, MongoAdmin};
 use crate::process::ProcessSpec;
 use crate::secrets::{self, Secret};
-use crate::service::{HealthCheck, HealthCommand, LifecyclePolicy, ServiceSpec};
+use crate::service::{HealthCheck, HealthCommand, LifecyclePolicy, ServiceSpec, StopHook};
 
 /// A path as it goes between the quotes of a `my.ini` value (forward slashes).
 fn quote(path: &Path) -> Result<String, DbError> {
@@ -311,12 +313,46 @@ pub fn init_spec(plan: &DbPlan, secret: Option<&Secret>) -> ProcessSpec {
 
 /// The long-running service.
 #[must_use]
-pub fn service_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
+pub fn service_spec(
+    plan: &DbPlan,
+    secret: Option<&Secret>,
+    mongo: &Arc<dyn MongoAdmin>,
+) -> ServiceSpec {
     match plan.kind {
         DbKind::Mysql | DbKind::Mariadb => mysql_spec(plan, secret),
         DbKind::Postgres => postgres_spec(plan),
+        DbKind::Mongodb => mongo_spec(plan, secret, mongo),
         _ => simple_spec(plan, secret),
     }
+}
+
+/// MongoDB: with `--auth` when there is a password, and stopped by its own `shutdown` command
+/// (the group is killed only if it does not answer).
+fn mongo_spec(plan: &DbPlan, secret: Option<&Secret>, mongo: &Arc<dyn MongoAdmin>) -> ServiceSpec {
+    let mut process = ProcessSpec::new(program(plan, plan.kind.descriptor().server))
+        .cwd(&plan.data)
+        .log_file(&plan.runtime_log)
+        .arg("--dbpath")
+        .arg(&plan.data)
+        .args(["--bind_ip", "127.0.0.1", "--port", &plan.port.to_string()]);
+    if secret.is_some() {
+        process = process.arg("--auth");
+    }
+    let (admin, port, secret) = (Arc::clone(mongo), plan.port, secret.cloned());
+    ServiceSpec::new(plan.name())
+        .process(process)
+        .port(plan.port)
+        .health(HealthCheck::Ports(vec![plan.port]))
+        .stop_hook(StopHook::new(move || {
+            // The answer does not matter: if it fails, the group is killed after the grace.
+            let _ = admin.shutdown(port, secret.as_ref());
+        }))
+        .policy(LifecyclePolicy {
+            startup_timeout: Duration::from_secs(60),
+            // A clean shutdown checkpoints the data.
+            stop_grace: Duration::from_secs(30),
+            ..LifecyclePolicy::default()
+        })
 }
 
 fn mysql_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
@@ -406,14 +442,6 @@ fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
         .cwd(data)
         .log_file(&plan.runtime_log);
     match plan.kind {
-        DbKind::Mongodb => {
-            process = process.arg("--dbpath").arg(data).args([
-                "--bind_ip",
-                "127.0.0.1",
-                "--port",
-                &plan.port.to_string(),
-            ]);
-        }
         DbKind::Mailpit => {
             process = process
                 .args(["--listen", &format!("127.0.0.1:{}", plan.port)])
@@ -464,7 +492,7 @@ fn simple_spec(plan: &DbPlan, secret: Option<&Secret>) -> ServiceSpec {
                 // Lua is off by default, and Laravel's queues use it.
                 .arg("--lua");
         }
-        DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres => {}
+        DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres | DbKind::Mongodb => {}
     }
     let ports: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
     let mut spec = ServiceSpec::new(plan.name())
@@ -559,12 +587,23 @@ pub fn credentials(plan: &DbPlan, secret: Option<&Secret>) -> Credentials {
             ));
         }
         DbKind::Mongodb => {
+            let user = crate::mongowire::ADMIN_USER;
             lines.push(pair("MONGODB_HOST", "127.0.0.1"));
             lines.push(pair("MONGODB_PORT", &port));
+            lines.push(pair("MONGODB_USERNAME", user));
+            lines.push(pair("MONGODB_PASSWORD", password.as_deref().unwrap_or("")));
+            lines.push(pair(
+                "MONGODB_URI",
+                &match &password {
+                    Some(password) => {
+                        format!("mongodb://{user}:{password}@127.0.0.1:{port}/?authSource=admin")
+                    }
+                    None => format!("mongodb://127.0.0.1:{port}"),
+                },
+            ));
         }
     }
-    if password.is_none() && matches!(plan.kind.auth(), super::Auth::Stored | super::Auth::Applied)
-    {
+    if password.is_none() && plan.kind.auth() != super::Auth::None {
         notes.push(format!(
             "this {} was made before Crisol generated passwords and has none. To give it one, \
              stop it, delete {} and start it again: that makes it new (the data in it is lost).",

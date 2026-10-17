@@ -18,6 +18,7 @@ pub mod install;
 pub mod ipc;
 pub mod log;
 pub mod manage;
+pub mod mongowire;
 pub mod nginx;
 pub mod paths;
 pub mod phpini;

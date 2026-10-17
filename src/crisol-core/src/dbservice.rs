@@ -69,6 +69,9 @@ pub enum Auth {
     Stored,
     /// It is given to the server every time it starts (Redis, Garnet, Meilisearch).
     Applied,
+    /// It is stored in the data, but the server makes the data itself: the account is made
+    /// through the server the first time it runs (MongoDB).
+    Created,
 }
 
 /// What differs between the services, as data: one entry each.
@@ -143,7 +146,7 @@ static MONGODB: Descriptor = descriptor!(
     None,
     2,
     Initializer::None,
-    Auth::None,
+    Auth::Created,
     None
 );
 static MAILPIT: Descriptor = descriptor!(
@@ -401,6 +404,37 @@ pub fn connection_details(
     Ok(credentials(&plan, secret.as_ref()))
 }
 
+/// What Crisol asks of a running MongoDB besides starting it: to make its first user, and to shut
+/// it down by talking to it. A trait so that the tests do not need a server.
+pub trait MongoAdmin: Send + Sync {
+    /// Makes the administrator through the localhost exception.
+    fn create_root_user(&self, port: u16, password: &Secret) -> Result<(), String>;
+    /// Shuts the server down: logged in as the administrator, or with no login if the server was
+    /// made before there were passwords.
+    fn shutdown(&self, port: u16, password: Option<&Secret>) -> Result<(), String>;
+}
+
+/// [`MongoAdmin`] over TCP ([`crate::mongowire`]).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WireMongoAdmin;
+
+impl MongoAdmin for WireMongoAdmin {
+    fn create_root_user(&self, port: u16, password: &Secret) -> Result<(), String> {
+        crate::mongowire::create_root_user(port, password.expose()).map_err(|e| e.to_string())
+    }
+
+    fn shutdown(&self, port: u16, password: Option<&Secret>) -> Result<(), String> {
+        match password {
+            Some(password) => crate::mongowire::shutdown(port, password.expose()),
+            None => crate::mongowire::shutdown_without_login(port),
+        }
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// How many times the first user is tried before the start is given up.
+const FIRST_USER_ATTEMPTS: u32 = 5;
+
 /// How long the initializer may take.
 const INIT_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -423,6 +457,9 @@ pub struct DbService {
     state: ServiceState,
     /// The password of this run, if the service has one. Never printed (`Secret`).
     secret: Option<Secret>,
+    mongo: Arc<dyn MongoAdmin>,
+    /// Tries made at the first user of MongoDB.
+    first_user_attempts: u32,
 }
 
 impl std::fmt::Debug for DbService {
@@ -449,7 +486,16 @@ impl DbService {
             phase: Phase::Idle,
             state: ServiceState::Stopped,
             secret: None,
+            mongo: Arc::new(WireMongoAdmin),
+            first_user_attempts: 0,
         }
+    }
+
+    /// Talks to MongoDB through `admin` instead of over TCP (tests).
+    #[must_use]
+    pub fn with_mongo(mut self, admin: Arc<dyn MongoAdmin>) -> Self {
+        self.mongo = admin;
+        self
     }
 
     /// The plan it runs.
@@ -501,12 +547,21 @@ impl DbService {
     /// new one only when that data is about to be made; data made before passwords existed has
     /// none and runs as it was made. A service that is given its password at every start gets
     /// one the first time and keeps it.
-    fn choose_secret(&mut self, will_initialize: bool) -> Result<(), DbError> {
+    fn choose_secret(&mut self, will_make_data: bool) -> Result<(), DbError> {
         let file = self.plan.secret_path("");
         self.secret = match self.plan.kind.auth() {
             Auth::None => None,
-            Auth::Stored if will_initialize => Some(self.new_secret()?),
-            Auth::Stored => secrets::read_secret(&file)?,
+            Auth::Stored if will_make_data => Some(self.new_secret()?),
+            // The account is made after the first run: until then a marker says it is owed.
+            Auth::Created if will_make_data => {
+                let new = self.new_secret()?;
+                secrets::write_file(
+                    &self.plan.secret_path(".pending"),
+                    "the first user is owed\n",
+                )?;
+                Some(new)
+            }
+            Auth::Stored | Auth::Created => secrets::read_secret(&file)?,
             Auth::Applied => match secrets::read_secret(&file)? {
                 Some(existing) => Some(existing),
                 None => Some(self.new_secret()?),
@@ -523,7 +578,9 @@ impl DbService {
         }
         let initializes = !self.plan.data.is_dir()
             && self.plan.kind.descriptor().initializer != Initializer::None;
-        let prepared = write_ini(&self.plan).and_then(|()| self.choose_secret(initializes));
+        self.first_user_attempts = 0;
+        let prepared =
+            write_ini(&self.plan).and_then(|()| self.choose_secret(!self.plan.data.is_dir()));
         if let Err(e) = prepared {
             self.fail(e.to_string(), &mut events);
             return events;
@@ -549,7 +606,7 @@ impl DbService {
             return;
         }
         let mut service = Service::new(
-            service_spec(&self.plan, self.secret.as_ref()),
+            service_spec(&self.plan, self.secret.as_ref(), &self.mongo),
             self.supervisor.clone(),
             self.ports.clone(),
         );
@@ -670,7 +727,10 @@ impl DbService {
                 match self.state {
                     ServiceState::Stopped => self.phase = Phase::Idle,
                     // MariaDB has taken its password: the file that carried it is not needed.
-                    ServiceState::Running => specs::remove_first_launch_file(&self.plan),
+                    ServiceState::Running => {
+                        specs::remove_first_launch_file(&self.plan);
+                        self.make_first_user(&mut events);
+                    }
                     _ => {}
                 }
             }
@@ -725,6 +785,35 @@ impl DbService {
             }
         }
         events
+    }
+
+    /// MongoDB is running for the first time with its data empty: makes the administrator with
+    /// the generated password, the way the localhost exception allows. Until it is done the
+    /// service is open to whoever asks first, for the moment this takes. A server that refuses
+    /// it is a failed start, and says so.
+    fn make_first_user(&mut self, events: &mut Vec<ServiceEvent>) {
+        let pending = self.plan.secret_path(".pending");
+        let (true, Some(secret)) = (pending.is_file(), self.secret.clone()) else {
+            return;
+        };
+        match self.mongo.create_root_user(self.plan.port, &secret) {
+            Ok(()) => secrets::remove_file(&pending),
+            Err(why) => {
+                self.first_user_attempts += 1;
+                if self.first_user_attempts >= FIRST_USER_ATTEMPTS {
+                    if let Phase::Running(service) = &mut self.phase {
+                        service.abort();
+                    }
+                    self.fail(
+                        format!(
+                            "the administrator of MongoDB could not be made ({why}); stop it, delete {} and start it again",
+                            self.plan.data.display()
+                        ),
+                        events,
+                    );
+                }
+            }
+        }
     }
 
     /// The initializer succeeded: the staging folder becomes the data.

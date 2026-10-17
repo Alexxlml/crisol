@@ -113,6 +113,37 @@ pub enum HealthCheck {
     Command(HealthCommand),
 }
 
+/// Something to do, in a thread of its own, when the service is asked to stop: for a server that
+/// is shut down by talking to it (MongoDB's `shutdown` command) and not by running a program.
+#[derive(Clone)]
+pub struct StopHook(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+impl StopHook {
+    /// A hook that runs `action`.
+    pub fn new(action: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(action))
+    }
+
+    fn run(&self) {
+        let action = std::sync::Arc::clone(&self.0);
+        std::thread::spawn(move || action());
+    }
+}
+
+impl fmt::Debug for StopHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StopHook")
+    }
+}
+
+impl PartialEq for StopHook {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for StopHook {}
+
 /// Everything needed to run one service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceSpec {
@@ -124,8 +155,11 @@ pub struct ServiceSpec {
     pub ports: Vec<u16>,
     /// Readiness check.
     pub health: HealthCheck,
-    /// Command that asks the service to stop by itself; `None` kills it right away.
+    /// Command that asks the service to stop by itself; `None` kills it right away (unless
+    /// there is a [`StopHook`]).
     pub graceful_stop: Option<ProcessSpec>,
+    /// Asks the service to stop by talking to it, in a thread of its own.
+    pub stop_hook: Option<StopHook>,
     /// Timing and restart behaviour.
     pub policy: LifecyclePolicy,
     /// The processes are interchangeable workers of a pool, restarted one by one.
@@ -142,6 +176,7 @@ impl ServiceSpec {
             ports: Vec::new(),
             health: HealthCheck::None,
             graceful_stop: None,
+            stop_hook: None,
             policy: LifecyclePolicy::default(),
             pool: false,
         }
@@ -179,6 +214,13 @@ impl ServiceSpec {
     #[must_use]
     pub fn graceful_stop(mut self, command: ProcessSpec) -> Self {
         self.graceful_stop = Some(command);
+        self
+    }
+
+    /// Sets something to do, in a thread of its own, when the service is asked to stop.
+    #[must_use]
+    pub fn stop_hook(mut self, hook: StopHook) -> Self {
+        self.stop_hook = Some(hook);
         self
     }
 
@@ -887,6 +929,7 @@ impl Service {
             helper: None,
             killed: None,
         };
+        let hooked = self.spec.stop_hook.as_ref().map(StopHook::run).is_some();
         let graceful = self.spec.graceful_stop.clone().and_then(|command| {
             let group = self
                 .supervisor
@@ -901,6 +944,8 @@ impl Service {
         });
         if let Some(group) = graceful {
             stopping.helper = Some(group);
+        } else if hooked {
+            // The hook is asking; the grace period is the wait for the group to go.
         } else {
             // No graceful command, or it would not start: go straight to the kill.
             self.kill_run();
