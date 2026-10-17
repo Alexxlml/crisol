@@ -21,7 +21,10 @@ crisol-platform.workspace = true
 crisol-protocol.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+time = { workspace = true, features = ["formatting", "local-offset", "macros"] }
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

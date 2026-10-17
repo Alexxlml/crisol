@@ -14,6 +14,7 @@
 
 mod actor;
 mod connection;
+mod logging;
 mod server;
 
 pub use actor::Timing;

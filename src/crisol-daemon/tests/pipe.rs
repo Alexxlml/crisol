@@ -141,6 +141,30 @@ fn a_client_says_hello_asks_and_the_daemon_leaves_when_told_to() {
     daemon.shut_down();
     // Gone: nobody listens any more.
     assert!(connect_to_daemon(&daemon.pipe).is_err());
+
+    // The daemon told its story in `logs/crisold/runtime.log`, one line each, with a time a
+    // person can read (not seconds since 1970).
+    let log = fs::read_to_string(daemon.paths.runtime_log("crisold").unwrap()).unwrap();
+    let first = log.lines().next().unwrap();
+    assert!(
+        first.contains("INFO crisold ") && first.contains("starting in"),
+        "{log}"
+    );
+    assert!(
+        first.starts_with(char::is_numeric) && first.as_bytes()[4] == b'-',
+        "{first}"
+    );
+    assert!(
+        log.lines().any(|l| l.ends_with("INFO shutting down")),
+        "{log}"
+    );
+    assert!(
+        log.lines()
+            .last()
+            .unwrap()
+            .ends_with("INFO crisold stopped"),
+        "{log}"
+    );
 }
 
 #[test]

@@ -20,6 +20,7 @@ use crisol_core::daemon::Daemon;
 use crisol_core::engine::Engine;
 use crisol_protocol::{Call, DoneInfo, ErrorCode, Event, Reply, RpcError};
 use tokio::sync::{broadcast, oneshot};
+use tracing::{info, warn};
 
 /// How often the services are advanced when nobody is asking for anything.
 const TICK: Duration = Duration::from_millis(150);
@@ -102,7 +103,6 @@ pub fn run(
     messages: &Receiver<Input>,
     inbox: Sender<Input>,
     events: &broadcast::Sender<Event>,
-    log: &mut dyn FnMut(&str),
     timing: Timing,
 ) {
     let jobs = spawn_worker(daemon.engine().clone(), events.clone(), inbox);
@@ -121,7 +121,6 @@ pub fn run(
                     daemon: &mut daemon,
                     events,
                     waiters: &mut waiters,
-                    log: &mut *log,
                     jobs: jobs.as_ref(),
                     busy: &mut busy,
                     timing,
@@ -132,14 +131,14 @@ pub fn run(
                 if let Some(at) = busy.iter().position(|label| *label == done.label) {
                     busy.remove(at);
                 }
-                log(&format!("{}: finished", done.label));
+                info!("{}: finished", done.label);
                 let _ = done.reply.send(done.outcome);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         for event in daemon.tick(Instant::now()) {
-            log_event(&event, log);
+            log_event(&event);
             let _ = events.send(event);
         }
         release(&mut daemon, &mut waiters, timing.settle);
@@ -151,7 +150,7 @@ pub fn run(
             let since = *quiet_since.get_or_insert(now);
             if busy.is_empty() || now >= since + timing.job_grace {
                 if !busy.is_empty() {
-                    log("leaving with a long operation still running");
+                    warn!("leaving with a long operation still running");
                 }
                 break;
             }
@@ -159,7 +158,7 @@ pub fn run(
         // The services did not stop in time: kill them rather than leave a daemon that no
         // longer answers anybody and never ends.
         if shutdown_at.is_some_and(|at| now >= at + timing.settle + timing.exit_margin) {
-            log("the services did not stop in time; killing them and leaving");
+            warn!("the services did not stop in time; killing them and leaving");
             daemon.abort();
             for waiter in waiters.drain(..) {
                 let _ = waiter.reply.send(Ok(Reply::Done(DoneInfo {
@@ -224,7 +223,6 @@ struct Ctx<'a> {
     daemon: &'a mut Daemon,
     events: &'a broadcast::Sender<Event>,
     waiters: &'a mut Vec<Waiter>,
-    log: &'a mut dyn FnMut(&str),
     jobs: Option<&'a Sender<Job>>,
     busy: &'a mut Vec<String>,
     timing: Timing,
@@ -255,7 +253,7 @@ impl Ctx<'_> {
             }
         }
         let mut emit = |event: Event| {
-            log_event(&event, &mut *self.log);
+            log_event(&event);
             let _ = mine.send(event.clone());
             let _ = self.events.send(event);
         };
@@ -291,7 +289,7 @@ impl Ctx<'_> {
             Call::Uninstall { service, version } => format!("removing {service} {version}"),
             _ => "doctor".to_owned(),
         };
-        (self.log)(&format!("{label}: queued"));
+        info!("{label}: queued");
         let job = Job {
             call,
             label: label.clone(),
@@ -381,22 +379,22 @@ fn finish(daemon: &mut Daemon, call: &Call, first: Reply) -> Result<Reply, RpcEr
     }
 }
 
-fn log_event(event: &Event, log: &mut dyn FnMut(&str)) {
+fn log_event(event: &Event) {
     match event {
         Event::ServiceState {
             service,
             state,
             detail,
-        } => log(&format!(
+        } => info!(
             "{service}: {state}{}",
             detail
                 .as_ref()
                 .map_or_else(String::new, |d| format!(" ({d})"))
-        )),
-        Event::ReloadFailed { reason } => log(&format!("reload failed: {reason}")),
-        Event::Blocked { reason } => log(&format!("blocked: {reason}")),
-        Event::Reloaded => log("nginx reloaded"),
-        Event::ShuttingDown => log("shutting down"),
+        ),
+        Event::ReloadFailed { reason } => warn!("reload failed: {reason}"),
+        Event::Blocked { reason } => warn!("blocked: {reason}"),
+        Event::Reloaded => info!("nginx reloaded"),
+        Event::ShuttingDown => info!("shutting down"),
         _ => {}
     }
 }
