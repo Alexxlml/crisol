@@ -102,6 +102,9 @@ fn every_call_survives_a_round_trip_and_names_itself() {
             from: Some(1234),
         },
         Call::Doctor,
+        Call::Credentials {
+            service: "mysql".to_owned(),
+        },
         Call::Subscribe,
     ];
     let mut names = std::collections::BTreeSet::new();
@@ -114,7 +117,7 @@ fn every_call_survives_a_round_trip_and_names_itself() {
     }
     assert_eq!(
         names.len(),
-        20,
+        21,
         "every operation has its own name: {names:?}"
     );
 }
@@ -341,7 +344,7 @@ fn only_the_calls_about_running_services_need_the_daemon() {
 #[test]
 fn version_is_not_empty() {
     assert_ne!(VERSION, "");
-    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
 }
 
 // ---- the client over plain buffers -------------------------------------------------------

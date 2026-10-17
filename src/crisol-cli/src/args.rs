@@ -147,6 +147,12 @@ pub enum Command {
     },
     /// Checks the installation and says what to fix.
     Doctor,
+    /// The databases and other services: what a project needs to connect to them.
+    Db {
+        /// `credentials <service>`.
+        #[command(subcommand)]
+        action: DbAction,
+    },
     /// Sets up (or removes) the names of the local sites: needs your administrator rights, once.
     System {
         /// `install` or `uninstall`.
@@ -181,6 +187,18 @@ pub enum AutostartAction {
     Off,
     /// Say whether it does.
     Status,
+}
+
+/// What `crisol db` does.
+#[derive(Debug, Subcommand)]
+pub enum DbAction {
+    /// Shows what a project needs to connect to a service, as lines for its `.env`: the user,
+    /// the host, the port and the password Crisol generated for it (`mysql`, `postgresql`,
+    /// `redis`, `meilisearch`, …).
+    Credentials {
+        /// The service.
+        service: String,
+    },
 }
 
 /// What a command comes to: one call, or following a log.
@@ -314,6 +332,9 @@ impl Command {
                 }
             }
             Self::Doctor => Call::Doctor,
+            Self::Db {
+                action: DbAction::Credentials { service },
+            } => Call::Credentials { service },
             Self::Autostart { action } => return Plan::Autostart(action),
             Self::System { action } => return Plan::System(action),
         };

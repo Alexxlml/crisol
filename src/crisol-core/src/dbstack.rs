@@ -15,11 +15,12 @@ use std::time::Instant;
 use crisol_protocol::{ErrorCode, RpcError};
 
 use crate::config::Config;
-use crate::dbservice::{plan, DbError, DbKind, DbService};
+use crate::dbservice::{plan, Auth, DbError, DbKind, DbService};
 use crate::engine::home_error;
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::ports::PortProbe;
 use crate::process::ProcessSupervisor;
+use crate::secrets::{self, SecretsError};
 use crate::service::{ServiceEvent, ServiceState};
 
 /// Events of the databases, with the name of the service each came from.
@@ -93,6 +94,25 @@ impl DbStack {
             DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
             other => RpcError::new(ErrorCode::Io, other.to_string()),
         })?;
+        // The passwords live in `secrets/`, a private folder (ADR-0006, ADR-0008): if other
+        // accounts can write in it, none is read from it or put in it.
+        if kind.auth() != Auth::None {
+            secrets::ensure_dir(&self.paths, self.dirs.as_ref()).map_err(|e| match e {
+                SecretsError::Exposed(path) => RpcError::new(
+                    ErrorCode::HomeExposed,
+                    format!(
+                        "`{}` can be modified by other accounts of this computer, so the passwords in it cannot be trusted",
+                        path.display()
+                    ),
+                )
+                .with_fix(
+                    self.dirs
+                        .fix_command(&path)
+                        .unwrap_or_else(|| format!("remove the write access of other accounts on `{}`", path.display())),
+                ),
+                other => RpcError::new(ErrorCode::Io, other.to_string()),
+            })?;
+        }
         let mut service = DbService::new(plan, self.supervisor.clone(), self.ports.clone());
         let events = tagged(kind.service(), service.start(now));
         self.services.insert(kind, service);

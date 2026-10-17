@@ -134,6 +134,14 @@ pub fn reply(reply: &Reply) -> String {
                 out.push('\n');
             }
         }
+        Reply::Credentials(info) => {
+            for line in &info.lines {
+                let _ = writeln!(out, "{}={}", line.key, line.value);
+            }
+            for note in &info.notes {
+                let _ = writeln!(out, "# {note}");
+            }
+        }
         Reply::Doctor { checks } => {
             for check in checks {
                 let mark = match check.status {

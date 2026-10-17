@@ -257,6 +257,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "crisol-protocol",
+ "getrandom 0.4.3",
  "insta",
  "minisign-verify",
  "rcgen",

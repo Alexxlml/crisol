@@ -664,6 +664,35 @@ fn commands_that_only_look_do_not_make_the_home_and_say_it_is_not_there() {
     assert_eq!(env.dirs.created(), [env.paths.home().to_path_buf()]);
 }
 
+#[test]
+fn db_credentials_shows_the_env_lines_of_a_service_and_says_what_is_missing() {
+    let env = Env::new(&[("mysql", "8.4.11")]);
+    assert!(env
+        .failing(&["db", "credentials", "mysql"])
+        .contains("crisol install mysql"));
+    env.ok(&["install", "mysql"]);
+    let shown = env.ok(&["db", "credentials", "mysql"]);
+    for line in [
+        "DB_CONNECTION=mysql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT=3306",
+        "DB_USERNAME=root",
+        "DB_PASSWORD=",
+    ] {
+        assert!(shown.lines().any(|l| l == line), "{line}: {shown}");
+    }
+    // The password is generated when the data is made, which has not happened yet.
+    let json = env.ok(&["--json", "db", "credentials", "mysql"]);
+    let value: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    assert_eq!(
+        (&value["type"], &value["service"]),
+        (&"credentials".into(), &"mysql".into())
+    );
+    assert!(env
+        .failing(&["db", "credentials", "nginx"])
+        .contains("has no credentials"));
+}
+
 // ---- logs and doctor ------------------------------------------------------------------------
 
 #[test]

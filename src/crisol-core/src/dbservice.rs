@@ -1,31 +1,36 @@
-//! MySQL, MariaDB and PostgreSQL as services (F9.1, F9.2, F9.5; ADR-0006, ADR-0007, ADR-0016),
-//! and the simpler data services that follow the same pattern (F9.4): MongoDB, Mailpit and
-//! Meilisearch. They have no initializer (their data folder is made empty), no configuration file
-//! of ours (everything goes in the command line) and no graceful-stop command; they listen on
-//! `127.0.0.1` only and send nothing to anybody (ADR-0004: Meilisearch's analytics and Mailpit's
-//! update check are switched off).
+//! The data services as services (F9; ADR-0006, ADR-0007, ADR-0016, ADR-0017): MySQL, MariaDB,
+//! PostgreSQL, MongoDB, Mailpit, Meilisearch, Redis, Garnet and Memcached.
 //!
-//! What a database service needs besides a [`Service`]:
+//! What each needs besides a [`Service`]:
 //!
-//! - a **configuration** Crisol writes (`etc/<service>/<series>/my.ini`): it listens on
-//!   `127.0.0.1` only, on the port of `crisol.toml`, with the data and the log inside the home;
-//!   the user's own settings go in `etc/<service>/overrides/*.ini` and are never touched;
+//! - a **configuration** Crisol writes (`etc/<service>/<series>/my.ini`, `postgresql.conf`), or a
+//!   command line, that makes it listen on `127.0.0.1` only, on the port of `crisol.toml`, with
+//!   the data and the log inside the home; the user's own settings go in
+//!   `etc/<service>/overrides/` and are never touched;
 //! - its **data**, apart for each series (`data/mysql/8.4/`, `data/mariadb/11.8/`), so two
 //!   versions never share (and never corrupt) a data directory (F9.5);
-//! - **one-time initialization** of that directory. It is done into `<series>.init` and moved to
-//!   its place only when the initializer succeeded, so a failed or interrupted initialization
-//!   never leaves a half-made data directory that would pass for a good one;
-//! - a **graceful stop** (`mysqladmin shutdown`), because killing a database is a recovery at
-//!   the next start.
+//! - **one-time initialization** of that directory when a program makes it. It is done into
+//!   `<series>.init` and moved to its place only when the initializer succeeded, so a failed or
+//!   interrupted initialization never leaves a half-made data directory that would pass for a
+//!   good one;
+//! - a **password**. `127.0.0.1` keeps the network out, not the other accounts of this computer,
+//!   and a database superuser can run programs as whoever runs the server. So when the data is
+//!   made, a random password is generated and kept in `secrets/` ([`crate::secrets`]); it never
+//!   goes into `crisol.toml`, a configuration anyone could share, a command line, or a log. Each
+//!   service takes it the way it can without showing it: a file read once at initialization
+//!   (PostgreSQL `--pwfile`, MySQL/MariaDB `--init-file`), a private configuration file (Redis,
+//!   Garnet), or the environment of the process (Meilisearch);
+//! - a **graceful stop** where one exists, because killing a database is a recovery at the next
+//!   start.
 //!
-//! The root account has **no password and can only be reached from this computer**
-//! (`bind-address = 127.0.0.1`), as ADR-0006 says: nothing here puts a secret in a file.
 //! [`DbService`] is the state machine that goes from "stopped" through initialization (when the
 //! data directory is new) to a running [`Service`]; like `Service`, it never blocks and is
 //! advanced with [`tick`](DbService::tick).
 
+mod specs;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,14 +39,155 @@ use crate::manage::{list_installed, InstalledVersion};
 use crate::paths::{CrisolPaths, PathsError};
 use crate::ports::PortProbe;
 use crate::process::{
-    ExitReason, GroupId, GroupOptions, ProcessId, ProcessSpec, ProcessStatus, ProcessSupervisor,
+    ExitReason, GroupId, GroupOptions, ProcessId, ProcessStatus, ProcessSupervisor,
 };
-use crate::service::{
-    FailureReason, HealthCheck, HealthCommand, LifecyclePolicy, Service, ServiceEvent, ServiceSpec,
-    ServiceState,
-};
+use crate::secrets::{self, Secret, SecretsError};
+use crate::service::{FailureReason, Service, ServiceEvent, ServiceState};
 
-/// The database servers.
+pub use specs::{credentials, init_spec, render_ini, service_spec, write_ini, Credentials};
+
+/// How the data of a service is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Initializer {
+    /// Nobody: the folder is made empty and the server fills it.
+    None,
+    /// `mysqld --initialize-insecure`, with an `--init-file` that sets the password.
+    Mysqld,
+    /// `mariadb-install-db`; the password is set by an `--init-file` on the first launch.
+    MariadbInstall,
+    /// `initdb --pwfile`.
+    Initdb,
+}
+
+/// Where the password of a service lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Auth {
+    /// The service has no password to give (Mailpit, Memcached).
+    None,
+    /// It is stored in the data when that is made (MySQL, MariaDB, PostgreSQL): generated at
+    /// initialization, and data made before passwords existed has none.
+    Stored,
+    /// It is given to the server every time it starts (Redis, Garnet, Meilisearch).
+    Applied,
+}
+
+/// What differs between the services, as data: one entry each.
+struct Descriptor {
+    service: &'static str,
+    /// The server, relative to the install folder.
+    server: &'static str,
+    /// The configuration file Crisol generates, if the service reads one.
+    config_file: Option<&'static str>,
+    /// How many numbers of a version decide whether two data directories are compatible.
+    series_parts: usize,
+    initializer: Initializer,
+    auth: Auth,
+    enabled: fn(&Config) -> bool,
+    port: fn(&Config) -> u16,
+    extra_port: Option<fn(&Config) -> u16>,
+    pinned: fn(&Config) -> Option<&str>,
+}
+
+macro_rules! descriptor {
+    ($field:ident, $service:literal, $server:literal, $config_file:expr, $parts:literal,
+     $init:expr, $auth:expr, $extra:expr) => {
+        Descriptor {
+            service: $service,
+            server: $server,
+            config_file: $config_file,
+            series_parts: $parts,
+            initializer: $init,
+            auth: $auth,
+            enabled: |c: &Config| c.services.$field.enabled,
+            port: |c: &Config| c.services.$field.port,
+            extra_port: $extra,
+            pinned: |c: &Config| c.services.$field.version.as_deref(),
+        }
+    };
+}
+
+static MYSQL: Descriptor = descriptor!(
+    mysql,
+    "mysql",
+    "bin/mysqld.exe",
+    Some("my.ini"),
+    2,
+    Initializer::Mysqld,
+    Auth::Stored,
+    None
+);
+static MARIADB: Descriptor = descriptor!(
+    mariadb,
+    "mariadb",
+    "bin/mariadbd.exe",
+    Some("my.ini"),
+    2,
+    Initializer::MariadbInstall,
+    Auth::Stored,
+    None
+);
+static POSTGRES: Descriptor = descriptor!(
+    postgresql,
+    "postgresql",
+    "bin/postgres.exe",
+    Some("postgresql.conf"),
+    1,
+    Initializer::Initdb,
+    Auth::Stored,
+    None
+);
+static MONGODB: Descriptor = descriptor!(
+    mongodb,
+    "mongodb",
+    "bin/mongod.exe",
+    None,
+    2,
+    Initializer::None,
+    Auth::None,
+    None
+);
+static MAILPIT: Descriptor = descriptor!(
+    mailpit,
+    "mailpit",
+    "mailpit.exe",
+    None,
+    1,
+    Initializer::None,
+    Auth::None,
+    Some(|c: &Config| c.services.mailpit.smtp_port)
+);
+static MEILISEARCH: Descriptor = descriptor!(
+    meilisearch,
+    "meilisearch",
+    "meilisearch-windows-amd64.exe",
+    None,
+    2,
+    Initializer::None,
+    Auth::Applied,
+    None
+);
+static REDIS: Descriptor = descriptor!(
+    redis,
+    "redis",
+    "redis-server.exe",
+    None,
+    2,
+    Initializer::None,
+    Auth::Applied,
+    None
+);
+static GARNET: Descriptor = descriptor!(
+    garnet,
+    "garnet",
+    "net10.0/GarnetServer.exe",
+    None,
+    2,
+    Initializer::None,
+    Auth::Applied,
+    None
+);
+
+/// The data services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbKind {
     /// Oracle's MySQL.
@@ -75,20 +221,24 @@ impl DbKind {
         Self::Garnet,
     ];
 
+    fn descriptor(self) -> &'static Descriptor {
+        match self {
+            Self::Mysql => &MYSQL,
+            Self::Mariadb => &MARIADB,
+            Self::Postgres => &POSTGRES,
+            Self::Mongodb => &MONGODB,
+            Self::Mailpit => &MAILPIT,
+            Self::Meilisearch => &MEILISEARCH,
+            Self::Redis => &REDIS,
+            Self::Garnet => &GARNET,
+        }
+    }
+
     /// The name of the service (`mysql`, `mariadb`): in the catalog, in `crisol.toml` and in
     /// every folder.
     #[must_use]
     pub fn service(self) -> &'static str {
-        match self {
-            Self::Mysql => "mysql",
-            Self::Mariadb => "mariadb",
-            Self::Postgres => "postgresql",
-            Self::Mongodb => "mongodb",
-            Self::Mailpit => "mailpit",
-            Self::Meilisearch => "meilisearch",
-            Self::Redis => "redis",
-            Self::Garnet => "garnet",
-        }
+        self.descriptor().service
     }
 
     /// The kind a service name means.
@@ -97,89 +247,22 @@ impl DbKind {
         Self::ALL.into_iter().find(|k| k.service() == name)
     }
 
-    /// The server, relative to the install folder.
-    fn server(self) -> &'static str {
-        match self {
-            Self::Mysql => "bin/mysqld.exe",
-            Self::Mariadb => "bin/mariadbd.exe",
-            Self::Postgres => "bin/postgres.exe",
-            Self::Mongodb => "bin/mongod.exe",
-            Self::Mailpit => "mailpit.exe",
-            Self::Meilisearch => "meilisearch-windows-amd64.exe",
-            Self::Redis => "redis-server.exe",
-            Self::Garnet => "net10.0/GarnetServer.exe",
-        }
-    }
-
-    /// The configuration file Crisol generates, if the service reads one.
-    fn config_file(self) -> Option<&'static str> {
-        match self {
-            Self::Mysql | Self::Mariadb => Some("my.ini"),
-            Self::Postgres => Some("postgresql.conf"),
-            Self::Mongodb | Self::Mailpit | Self::Meilisearch | Self::Redis | Self::Garnet => None,
-        }
-    }
-
-    /// Whether the data folder is made by a program (and so atomically, in a staging folder);
-    /// the others start from an empty folder.
-    fn has_initializer(self) -> bool {
-        matches!(self, Self::Mysql | Self::Mariadb | Self::Postgres)
-    }
-
-    /// The program that creates the data directory of MariaDB (MySQL initializes itself).
-    fn installer(self) -> Option<&'static str> {
-        match self {
-            Self::Mariadb => Some("bin/mariadb-install-db.exe"),
-            _ => None,
-        }
+    /// Where its password lives.
+    #[must_use]
+    pub fn auth(self) -> Auth {
+        self.descriptor().auth
     }
 
     /// Whether `crisol.toml` enables it.
     #[must_use]
     pub fn enabled(self, config: &Config) -> bool {
-        match self {
-            Self::Mysql => config.services.mysql.enabled,
-            Self::Mariadb => config.services.mariadb.enabled,
-            Self::Postgres => config.services.postgresql.enabled,
-            Self::Mongodb => config.services.mongodb.enabled,
-            Self::Mailpit => config.services.mailpit.enabled,
-            Self::Meilisearch => config.services.meilisearch.enabled,
-            Self::Redis => config.services.redis.enabled,
-            Self::Garnet => config.services.garnet.enabled,
-        }
+        (self.descriptor().enabled)(config)
     }
 
     /// The port it listens on.
     #[must_use]
     pub fn port(self, config: &Config) -> u16 {
-        match self {
-            Self::Mysql => config.services.mysql.port,
-            Self::Mariadb => config.services.mariadb.port,
-            Self::Postgres => config.services.postgresql.port,
-            Self::Mongodb => config.services.mongodb.port,
-            Self::Mailpit => config.services.mailpit.port,
-            Self::Meilisearch => config.services.meilisearch.port,
-            Self::Redis => config.services.redis.port,
-            Self::Garnet => config.services.garnet.port,
-        }
-    }
-
-    /// A second port the service listens on (Mailpit's SMTP).
-    fn extra_port(self, config: &Config) -> Option<u16> {
-        (self == Self::Mailpit).then_some(config.services.mailpit.smtp_port)
-    }
-
-    fn pinned(self, config: &Config) -> Option<&str> {
-        match self {
-            Self::Mysql => config.services.mysql.version.as_deref(),
-            Self::Mariadb => config.services.mariadb.version.as_deref(),
-            Self::Postgres => config.services.postgresql.version.as_deref(),
-            Self::Mongodb => config.services.mongodb.version.as_deref(),
-            Self::Mailpit => config.services.mailpit.version.as_deref(),
-            Self::Meilisearch => config.services.meilisearch.version.as_deref(),
-            Self::Redis => config.services.redis.version.as_deref(),
-            Self::Garnet => config.services.garnet.version.as_deref(),
-        }
+        (self.descriptor().port)(config)
     }
 
     /// The part of a version that decides whether two data directories are compatible: the first
@@ -187,12 +270,11 @@ impl DbKind {
     /// (`17`, `18`). A new series is a new folder, never an upgrade in place.
     #[must_use]
     pub fn series(self, version: &str) -> String {
-        let parts = if matches!(self, Self::Postgres | Self::Mailpit) {
-            1
-        } else {
-            2
-        };
-        version.split('.').take(parts).collect::<Vec<_>>().join(".")
+        version
+            .split('.')
+            .take(self.descriptor().series_parts)
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
@@ -211,12 +293,15 @@ pub enum DbError {
     /// A path holds a character the configuration cannot carry.
     #[error("{0}")]
     Unusable(String),
+    /// The passwords could not be made, kept or read.
+    #[error(transparent)]
+    Secrets(#[from] SecretsError),
 }
 
-/// Everything decided about one database service before it runs.
+/// Everything decided about one database service before it runs. It holds no password.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbPlan {
-    /// MySQL or MariaDB.
+    /// MySQL, MariaDB, …
     pub kind: DbKind,
     /// The installed version that will run.
     pub version: InstalledVersion,
@@ -230,10 +315,15 @@ pub struct DbPlan {
     pub data: PathBuf,
     /// `data/<service>/<series>.init/`: where it is made first.
     pub staging: PathBuf,
+    /// `data/<service>/<series>-files/`: the only place the SQL of MySQL and MariaDB may read
+    /// and write files (`secure_file_priv`).
+    pub files: PathBuf,
     /// `etc/<service>/<series>/my.ini` (`postgresql.conf` for PostgreSQL).
     pub ini: PathBuf,
     /// `etc/<service>/overrides/`: the user's own `*.ini` (`*.conf` for PostgreSQL).
     pub overrides: PathBuf,
+    /// `secrets/`.
+    pub secrets: PathBuf,
     /// `logs/<service>/error.log`.
     pub error_log: PathBuf,
     /// `logs/<service>/runtime.log`: what the process prints.
@@ -247,7 +337,7 @@ pub fn plan(paths: &CrisolPaths, config: &Config, kind: DbKind) -> Result<DbPlan
         .into_iter()
         .filter(|i| i.service == kind.service())
         .collect();
-    let version = match kind.pinned(config) {
+    let version = match (kind.descriptor().pinned)(config) {
         Some(pin) => {
             let wanted = crate::version::VersionReq::parse(pin).map_err(|e| {
                 DbError::Unusable(format!("services.{}.version: {e}", kind.service()))
@@ -266,9 +356,13 @@ pub fn plan(paths: &CrisolPaths, config: &Config, kind: DbKind) -> Result<DbPlan
         port: kind.port(config),
         data: paths.data_for(service, &series)?,
         staging: paths.data_for(service, &format!("{series}.init"))?,
-        ini: etc.join(&series).join(kind.config_file().unwrap_or("none")),
-        extra_port: kind.extra_port(config),
+        files: paths.data_for(service, &format!("{series}-files"))?,
+        ini: etc
+            .join(&series)
+            .join(kind.descriptor().config_file.unwrap_or("none")),
+        extra_port: kind.descriptor().extra_port.map(|port| port(config)),
         overrides: paths.overrides_for(service)?,
+        secrets: paths.secrets_dir(),
         error_log: paths.logs_for(service)?.join("error.log"),
         runtime_log: paths.runtime_log(service)?,
         version,
@@ -283,312 +377,24 @@ impl DbPlan {
         self.kind.service()
     }
 
-    fn program(&self, exe: &str) -> PathBuf {
-        self.version.path.join(exe)
+    /// A file of this service and series in `secrets/`, by suffix: `""` is the password itself.
+    #[must_use]
+    pub fn secret_path(&self, suffix: &str) -> PathBuf {
+        self.secrets
+            .join(format!("{}-{}{suffix}", self.kind.service(), self.series))
     }
 }
 
-/// A path as it goes between the quotes of a `my.ini` value (forward slashes).
-fn quote(path: &Path) -> Result<String, DbError> {
-    let text = path.to_string_lossy().replace('\\', "/");
-    if let Some(bad) = text
-        .chars()
-        .find(|c| matches!(c, '"' | '#' | ';') || c.is_control())
-    {
-        return Err(DbError::Unusable(format!(
-            "`{text}` has a character the database configuration would read differently ({bad:?}); \
-             use a Crisol home without it"
-        )));
-    }
-    Ok(format!("\"{text}\""))
-}
-
-/// A path as it goes between the single quotes of a `postgresql.conf` value.
-fn quote_pg(path: &Path) -> Result<String, DbError> {
-    let text = path.to_string_lossy().replace('\\', "/");
-    if let Some(bad) = text.chars().find(|c| *c == '\'' || c.is_control()) {
-        return Err(DbError::Unusable(format!(
-            "`{text}` has a character the database configuration would read differently ({bad:?}); \
-             use a Crisol home without it"
-        )));
-    }
-    Ok(format!("'{text}'"))
-}
-
-/// The text of `postgresql.conf`: this computer only, the port of `crisol.toml`, the log to
-/// standard error (Crisol keeps it in `runtime.log`) and the user's own `*.conf`.
-fn render_postgres(plan: &DbPlan) -> Result<String, DbError> {
-    let mut text = String::from(
-        "# Generated by Crisol; it is rewritten whenever the plan changes. Your own settings go in\n\
-         # the `overrides` folder next to it, which is never touched.\n\n",
-    );
-    let mut line = |key: &str, value: &str| {
-        text.push_str(key);
-        text.push_str(" = ");
-        text.push_str(value);
-        text.push('\n');
-    };
-    // Only this computer: the superuser has no password (ADR-0006).
-    line("listen_addresses", "'127.0.0.1'");
-    line("port", &plan.port.to_string());
-    line("log_destination", "'stderr'");
-    line("logging_collector", "off");
-    line("include_dir", &quote_pg(&plan.overrides)?);
-    Ok(text)
-}
-
-/// The text of `my.ini` (`postgresql.conf` for PostgreSQL).
-pub fn render_ini(plan: &DbPlan) -> Result<String, DbError> {
-    if plan.kind.config_file().is_none() {
-        return Ok(String::new());
-    }
-    if plan.kind == DbKind::Postgres {
-        return render_postgres(plan);
-    }
-    let mut text = String::from(
-        "# Generated by Crisol; it is rewritten whenever the plan changes. Your own settings go in\n\
-         # the `overrides` folder next to it, which is never touched.\n\n[mysqld]\n",
-    );
-    let mut line = |key: &str, value: &str| {
-        text.push_str(key);
-        text.push_str(" = ");
-        text.push_str(value);
-        text.push('\n');
-    };
-    line("basedir", &quote(&plan.version.path)?);
-    line("datadir", &quote(&plan.data)?);
-    line("port", &plan.port.to_string());
-    // Only this computer: root has no password (ADR-0006).
-    line("bind-address", "127.0.0.1");
-    line("log-error", &quote(&plan.error_log)?);
-    line("character-set-server", "utf8mb4");
-    if plan.kind == DbKind::Mysql {
-        // The X protocol would open 33060 for nobody. (No `skip-name-resolve`: the only account
-        // `--initialize-insecure` makes is `root@localhost`, and a connection from 127.0.0.1 is
-        // that account only while the server maps the loopback address to `localhost`. Found
-        // with the real MySQL 8.4.)
-        line("mysqlx", "OFF");
-    } else {
-        // MariaDB makes `root@127.0.0.1` and `root@::1` as well.
-        line("skip-name-resolve", "ON");
-    }
-    text.push_str("\n!includedir ");
-    text.push_str(&quote(&plan.overrides)?);
-    text.push('\n');
-    Ok(text)
-}
-
-/// Writes `my.ini` (and the empty `overrides` folder it includes) if it changed.
-pub fn write_ini(plan: &DbPlan) -> Result<(), DbError> {
-    if plan.kind.config_file().is_none() {
-        return Ok(());
-    }
-    let text = render_ini(plan)?;
-    let io = |e: std::io::Error| DbError::Unusable(e.to_string());
-    fs::create_dir_all(&plan.overrides).map_err(io)?;
-    if let Some(dir) = plan.ini.parent() {
-        fs::create_dir_all(dir).map_err(io)?;
-    }
-    if fs::read_to_string(&plan.ini).is_ok_and(|current| current == text) {
-        return Ok(());
-    }
-    let tmp = plan.ini.with_extension("ini.new");
-    fs::write(&tmp, text).map_err(io)?;
-    fs::rename(&tmp, &plan.ini).map_err(io)
-}
-
-/// The one-time initializer, writing into the staging folder.
-#[must_use]
-pub fn init_spec(plan: &DbPlan) -> ProcessSpec {
-    if plan.kind == DbKind::Postgres {
-        // The superuser is `postgres`, with no password, reachable from this computer only
-        // (`trust` in a `pg_hba.conf` that listens nowhere else).
-        return ProcessSpec::new(plan.program("bin/initdb.exe"))
-            .arg("-D")
-            .arg(&plan.staging)
-            .args(["-U", "postgres", "-A", "trust", "-E", "UTF8"])
-            .cwd(&plan.version.path)
-            .log_file(&plan.runtime_log);
-    }
-    let spec = match plan.kind.installer() {
-        // MariaDB makes a root without a password.
-        Some(installer) => ProcessSpec::new(plan.program(installer))
-            .arg(format!("--datadir={}", plan.staging.display())),
-        None => ProcessSpec::new(plan.program(plan.kind.server()))
-            .arg(format!("--defaults-file={}", plan.ini.display()))
-            .arg("--initialize-insecure")
-            .arg(format!("--datadir={}", plan.staging.display()))
-            .arg("--console"),
-    };
-    spec.cwd(&plan.version.path).log_file(&plan.runtime_log)
-}
-
-/// The long-running service.
-#[must_use]
-pub fn service_spec(plan: &DbPlan) -> ServiceSpec {
-    match plan.kind {
-        DbKind::Postgres => return postgres_spec(plan),
-        DbKind::Mongodb
-        | DbKind::Mailpit
-        | DbKind::Meilisearch
-        | DbKind::Redis
-        | DbKind::Garnet => return simple_spec(plan),
-        DbKind::Mysql | DbKind::Mariadb => {}
-    }
-    let admin = ProcessSpec::new(plan.program("bin/mysqladmin.exe"))
-        .arg("--protocol=tcp")
-        .arg("--host=127.0.0.1")
-        .arg(format!("--port={}", plan.port))
-        .arg("--user=root")
-        .arg("shutdown");
-    ServiceSpec::new(plan.name())
-        .process(
-            ProcessSpec::new(plan.program(plan.kind.server()))
-                .arg(format!("--defaults-file={}", plan.ini.display()))
-                .arg("--console")
-                .cwd(&plan.version.path)
-                .log_file(&plan.runtime_log),
-        )
-        .port(plan.port)
-        .health(HealthCheck::Ports(vec![plan.port]))
-        .graceful_stop(admin)
-        .policy(LifecyclePolicy {
-            // A first start, or one after a crash, replays the redo log.
-            startup_timeout: Duration::from_secs(90),
-            // A clean shutdown flushes the buffer pool.
-            stop_grace: Duration::from_secs(30),
-            ..LifecyclePolicy::default()
-        })
-}
-
-/// MongoDB, Mailpit and Meilisearch: one process, everything in its command line, ready when
-/// its ports listen. They have no shutdown command Crisol can use (`mongod` has none on
-/// Windows), so a stop ends the group: all three recover their data from their own log or
-/// transaction file at the next start.
-fn simple_spec(plan: &DbPlan) -> ServiceSpec {
-    let data = &plan.data;
-    let mut process = ProcessSpec::new(plan.program(plan.kind.server()))
-        .cwd(data)
-        .log_file(&plan.runtime_log);
-    match plan.kind {
-        DbKind::Mongodb => {
-            process = process.arg("--dbpath").arg(data).args([
-                "--bind_ip",
-                "127.0.0.1",
-                "--port",
-                &plan.port.to_string(),
-            ]);
-        }
-        DbKind::Mailpit => {
-            process = process
-                .args(["--listen", &format!("127.0.0.1:{}", plan.port)])
-                .args([
-                    "--smtp",
-                    &format!("127.0.0.1:{}", plan.extra_port.unwrap_or(1025)),
-                ])
-                .arg("--database")
-                .arg(data.join("mailpit.db"))
-                // Nothing leaves this computer, not even a look for a newer version.
-                .arg("--disable-version-check");
-        }
-        DbKind::Meilisearch => {
-            process = process
-                .args(["--http-addr", &format!("127.0.0.1:{}", plan.port)])
-                .arg("--db-path")
-                .arg(data.join("db"))
-                .arg("--dump-dir")
-                .arg(data.join("dumps"))
-                .arg("--snapshot-dir")
-                .arg(data.join("snapshots"))
-                // ADR-0004: no telemetry.
-                .arg("--no-analytics");
-        }
-        DbKind::Redis => {
-            // Loopback only, with the protection Redis has for that; the data (the RDB file) in
-            // its own folder. `--maxmemory` is what the port for Windows needs to size the heap
-            // it uses to save in the background.
-            process = process
-                .args(["--bind", "127.0.0.1", "--port", &plan.port.to_string()])
-                .args(["--protected-mode", "yes", "--maxmemory", "512mb"])
-                // Started without a configuration file the Windows port saves nothing, not even
-                // on `SHUTDOWN`: the usual save points are asked for (found with the real one).
-                .args([
-                    "--save", "900", "1", "--save", "300", "100", "--save", "60", "10000",
-                ])
-                .arg("--dir")
-                .arg(data);
-        }
-        DbKind::Garnet => {
-            // Garnet keeps its keys in memory unless it is told to persist (checkpoints/AOF):
-            // a cache is what it is used for here. It sends no telemetry.
-            process = process
-                .args(["--bind", "127.0.0.1", "--port", &plan.port.to_string()])
-                .arg("--checkpointdir")
-                .arg(data.join("checkpoints"))
-                // Lua is off by default, and Laravel's queues use it.
-                .arg("--lua");
-        }
-        DbKind::Mysql | DbKind::Mariadb | DbKind::Postgres => {}
-    }
-    let ports: Vec<u16> = std::iter::once(plan.port).chain(plan.extra_port).collect();
-    let mut spec = ServiceSpec::new(plan.name())
-        .process(process)
-        .health(HealthCheck::Ports(ports.clone()))
-        .policy(LifecyclePolicy {
-            startup_timeout: Duration::from_secs(60),
-            ..LifecyclePolicy::default()
-        });
-    for port in ports {
-        spec = spec.port(port);
-    }
-    if plan.kind == DbKind::Redis {
-        // `SHUTDOWN` saves the data if there are save points, then leaves.
-        spec = spec.graceful_stop(ProcessSpec::new(plan.program("redis-cli.exe")).args([
-            "-h",
-            "127.0.0.1",
-            "-p",
-            &plan.port.to_string(),
-            "shutdown",
-        ]));
-    }
-    spec
-}
-
-fn postgres_spec(plan: &DbPlan) -> ServiceSpec {
-    let stop = ProcessSpec::new(plan.program("bin/pg_ctl.exe"))
-        .arg("stop")
-        .arg("-D")
-        .arg(&plan.data)
-        .args(["-m", "fast"]);
-    let ready = ProcessSpec::new(plan.program("bin/pg_isready.exe")).args([
-        "-h",
-        "127.0.0.1",
-        "-p",
-        &plan.port.to_string(),
-        "-q",
-    ]);
-    ServiceSpec::new(plan.name())
-        .process(
-            ProcessSpec::new(plan.program(plan.kind.server()))
-                .arg("-D")
-                .arg(&plan.data)
-                .arg("-c")
-                .arg(format!("config_file={}", plan.ini.display()))
-                .cwd(&plan.version.path)
-                .log_file(&plan.runtime_log),
-        )
-        .port(plan.port)
-        // The port opens before the server accepts connections; `pg_isready` says when it does.
-        .health(HealthCheck::Command(HealthCommand {
-            spec: ready,
-            timeout: Duration::from_secs(5),
-        }))
-        .graceful_stop(stop)
-        .policy(LifecyclePolicy {
-            startup_timeout: Duration::from_secs(90),
-            stop_grace: Duration::from_secs(30),
-            ..LifecyclePolicy::default()
-        })
+/// What a project needs to connect to `kind`, from the password kept for the series that would
+/// run. Reads files; starts nothing.
+pub fn connection_details(
+    paths: &CrisolPaths,
+    config: &Config,
+    kind: DbKind,
+) -> Result<Credentials, DbError> {
+    let plan = plan(paths, config, kind)?;
+    let secret = secrets::read_secret(&plan.secret_path(""))?;
+    Ok(credentials(&plan, secret.as_ref()))
 }
 
 /// How long the initializer may take.
@@ -611,6 +417,8 @@ pub struct DbService {
     ports: Arc<dyn PortProbe>,
     phase: Phase,
     state: ServiceState,
+    /// The password of this run, if the service has one. Never printed (`Secret`).
+    secret: Option<Secret>,
 }
 
 impl std::fmt::Debug for DbService {
@@ -636,6 +444,7 @@ impl DbService {
             ports,
             phase: Phase::Idle,
             state: ServiceState::Stopped,
+            secret: None,
         }
     }
 
@@ -675,19 +484,49 @@ impl DbService {
         );
     }
 
+    /// Makes a new password and keeps it in `secrets/`, replacing any older one.
+    fn new_secret(&self) -> Result<Secret, DbError> {
+        fs::create_dir_all(&self.plan.secrets)
+            .map_err(|e| DbError::Unusable(format!("{}: {e}", self.plan.secrets.display())))?;
+        let new = secrets::generate_password()?;
+        secrets::write_file(&self.plan.secret_path(""), new.expose())?;
+        Ok(new)
+    }
+
+    /// Chooses the password of this run. A service whose password is stored in its data gets a
+    /// new one only when that data is about to be made; data made before passwords existed has
+    /// none and runs as it was made. A service that is given its password at every start gets
+    /// one the first time and keeps it.
+    fn choose_secret(&mut self, will_initialize: bool) -> Result<(), DbError> {
+        let file = self.plan.secret_path("");
+        self.secret = match self.plan.kind.auth() {
+            Auth::None => None,
+            Auth::Stored if will_initialize => Some(self.new_secret()?),
+            Auth::Stored => secrets::read_secret(&file)?,
+            Auth::Applied => match secrets::read_secret(&file)? {
+                Some(existing) => Some(existing),
+                None => Some(self.new_secret()?),
+            },
+        };
+        Ok(())
+    }
+
     /// Starts it. From `Stopped` or `Failed`; anything else changes nothing.
     pub fn start(&mut self, now: Instant) -> Vec<ServiceEvent> {
         let mut events = Vec::new();
         if !matches!(self.state, ServiceState::Stopped | ServiceState::Failed(_)) {
             return events;
         }
-        if let Err(e) = write_ini(&self.plan) {
+        let initializes = !self.plan.data.is_dir()
+            && self.plan.kind.descriptor().initializer != Initializer::None;
+        let prepared = write_ini(&self.plan).and_then(|()| self.choose_secret(initializes));
+        if let Err(e) = prepared {
             self.fail(e.to_string(), &mut events);
             return events;
         }
         if self.plan.data.is_dir() {
             self.launch(now, &mut events);
-        } else if self.plan.kind.has_initializer() {
+        } else if initializes {
             self.begin_init(now, &mut events);
         } else if let Err(e) = fs::create_dir_all(&self.plan.data) {
             self.fail(
@@ -701,8 +540,12 @@ impl DbService {
     }
 
     fn launch(&mut self, now: Instant, events: &mut Vec<ServiceEvent>) {
+        if let Err(e) = specs::write_runtime_files(&self.plan, self.secret.as_ref()) {
+            self.fail(e.to_string(), events);
+            return;
+        }
         let mut service = Service::new(
-            service_spec(&self.plan),
+            service_spec(&self.plan, self.secret.as_ref()),
             self.supervisor.clone(),
             self.ports.clone(),
         );
@@ -732,12 +575,15 @@ impl DbService {
             if let Some(parent) = self.plan.staging.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            // MySQL wants the folder to be empty or missing; MariaDB creates it.
+            specs::write_init_files(&self.plan, self.secret.as_ref()).map_err(|e| e.to_string())?;
             let group = self
                 .supervisor
                 .create_group("init", GroupOptions::default())
                 .map_err(|e| e.to_string())?;
-            match self.supervisor.spawn(group, &init_spec(&self.plan)) {
+            match self
+                .supervisor
+                .spawn(group, &init_spec(&self.plan, self.secret.as_ref()))
+            {
                 Ok(process) => Ok((group, process)),
                 Err(e) => {
                     let _ = self.supervisor.kill_group(group);
@@ -793,13 +639,14 @@ impl DbService {
         self.state = ServiceState::Stopped;
     }
 
-    /// Ends an initialization (killing it and deleting its staging folder) and forgets the
-    /// phase.
+    /// Ends an initialization (killing it and deleting its staging folder and the files it was
+    /// given) and forgets the phase.
     fn close_phase(&mut self) {
         if let Phase::Initializing { group, .. } = self.phase {
             let _ = self.supervisor.kill_group(group);
             let _ = self.supervisor.close_group(group);
             let _ = fs::remove_dir_all(&self.plan.staging);
+            specs::remove_init_files(&self.plan, true);
         }
         self.phase = Phase::Idle;
     }
@@ -816,8 +663,11 @@ impl DbService {
                     let from = std::mem::replace(&mut self.state, inner.clone());
                     events.push(ServiceEvent::StateChanged { from, to: inner });
                 }
-                if self.state == ServiceState::Stopped {
-                    self.phase = Phase::Idle;
+                match self.state {
+                    ServiceState::Stopped => self.phase = Phase::Idle,
+                    // MariaDB has taken its password: the file that carried it is not needed.
+                    ServiceState::Running => specs::remove_first_launch_file(&self.plan),
+                    _ => {}
                 }
             }
             Phase::Initializing {
@@ -842,6 +692,9 @@ impl DbService {
                     Ok(ProcessStatus::Exited(ExitReason::Code(0))) => {
                         let _ = self.supervisor.close_group(group);
                         self.phase = Phase::Idle;
+                        // What the initializer was given is spent (MariaDB's is kept: it
+                        // carries the password to the first launch).
+                        specs::remove_init_files(&self.plan, false);
                         match self.promote_staging() {
                             Ok(()) => self.launch(now, &mut events),
                             Err(reason) => self.fail(reason, &mut events),

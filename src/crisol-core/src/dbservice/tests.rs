@@ -1,4 +1,5 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
@@ -6,6 +7,7 @@ use super::*;
 use crate::ports::fake::FakePortProbe;
 use crate::ports::PortOwner;
 use crate::process::fake::FakeSupervisor;
+use crate::process::ProcessSpec;
 
 struct Rig {
     _tmp: TempDir,
@@ -444,9 +446,10 @@ fn postgresql_initializes_with_initdb_and_runs_postgres_directly() {
     );
     let args = words(&init.spec);
     assert!(
-        args.contains(&"trust".to_owned()) && args.contains(&"postgres".to_owned()),
+        args.contains(&"scram-sha-256".to_owned()) && args.contains(&"postgres".to_owned()),
         "{args:?}"
     );
+    assert!(!args.contains(&"trust".to_owned()), "{args:?}");
     assert!(
         args.contains(&plan.staging.display().to_string()),
         "{args:?}"
@@ -603,21 +606,25 @@ fn redis_and_garnet_listen_on_this_computer_only_and_redis_is_stopped_with_shutd
 
     let (redis, plan, mut db) = started_args(&rig, DbKind::Redis, ("redis", "5.0.14.1"));
     assert_eq!(plan.series, "5.0");
+    // Everything, the password included, is in a private configuration file: the command line
+    // is that file and nothing else.
+    let conf = plan.secret_path(".conf");
+    assert_eq!(redis, [conf.display().to_string()]);
+    let text = fs::read_to_string(&conf).unwrap();
+    for line in [
+        "bind 127.0.0.1",
+        "port 19379",
+        "protected-mode yes",
+        "requirepass ",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
     assert!(
-        redis.windows(2).any(|w| w == ["--bind", "127.0.0.1"]),
-        "{redis:?}"
-    );
-    assert!(
-        redis.windows(2).any(|w| w == ["--port", "19379"]),
-        "{redis:?}"
-    );
-    assert!(
-        redis.windows(2).any(|w| w == ["--protected-mode", "yes"]),
-        "{redis:?}"
-    );
-    assert!(
-        redis.contains(&plan.data.display().to_string()),
-        "{redis:?}"
+        text.contains(&format!(
+            "dir \"{}\"",
+            plan.data.display().to_string().replace('\\', "/")
+        )),
+        "{text}"
     );
     rig.listen(19379);
     db.tick(rig.at(700));
@@ -650,4 +657,336 @@ fn redis_and_garnet_listen_on_this_computer_only_and_redis_is_stopped_with_shutd
             || program.ends_with(r"net10.0\GarnetServer.exe"),
         "{program:?}"
     );
+}
+
+// ---- passwords (ADR-0016) --------------------------------------------------------------
+
+fn password_of(rig: &Rig, kind: DbKind) -> String {
+    crate::secrets::read_secret(&rig.plan(kind).secret_path(""))
+        .unwrap()
+        .expect("a password was generated")
+        .expose()
+        .to_owned()
+}
+
+/// Every file under `dir` (recursively) that holds `needle`.
+fn files_with(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(folder) = pending.pop() {
+        for entry in fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if fs::read(&path).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle)) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Brings `kind` up from nothing the way the daemon would, with the fakes.
+fn bring_up(rig: &Rig, kind: DbKind, version: (&str, &str), port: u16) -> DbService {
+    rig.install(version.0, version.1);
+    let plan = rig.plan(kind);
+    let mut db = rig.service(kind);
+    db.start(rig.at(0));
+    if kind.descriptor().initializer != Initializer::None {
+        // The initializer made its data and left cleanly.
+        let marker = if kind == DbKind::Postgres {
+            "base"
+        } else {
+            "mysql"
+        };
+        fs::create_dir_all(plan.staging.join(marker)).unwrap();
+        rig.supervisor.exit(rig.last_process(), 0).unwrap();
+        db.tick(rig.at(500));
+    }
+    rig.listen(port);
+    db.tick(rig.at(1200));
+    // PostgreSQL waits for `pg_isready`.
+    if kind == DbKind::Postgres {
+        rig.supervisor.exit(rig.last_process(), 0).unwrap();
+        db.tick(rig.at(1500));
+        db.tick(rig.at(2200));
+    }
+    db
+}
+
+#[test]
+fn a_generated_password_is_never_in_an_argument_a_spec_a_configuration_or_a_log() {
+    let mut rig = Rig::new();
+    let cases = [
+        (DbKind::Mysql, ("mysql", "8.4.11"), 19306),
+        (DbKind::Mariadb, ("mariadb", "11.8.9"), 19307),
+        (DbKind::Postgres, ("postgresql", "17.11"), 19432),
+        (DbKind::Redis, ("redis", "5.0.14.1"), 19379),
+        (DbKind::Garnet, ("garnet", "2.2.3"), 19380),
+        (DbKind::Meilisearch, ("meilisearch", "1.55.0"), 19700),
+    ];
+    rig.config.services.mysql.port = 19306;
+    rig.config.services.mariadb.port = 19307;
+    rig.config.services.postgresql.port = 19432;
+    rig.config.services.redis.port = 19379;
+    rig.config.services.garnet.port = 19380;
+    rig.config.services.meilisearch.port = 19700;
+    let mut running = Vec::new();
+    for (kind, version, port) in cases {
+        running.push(bring_up(&rig, kind, version, port));
+        // The server's own log, where a password would be if the program echoed its options.
+        let plan = rig.plan(kind);
+        fs::create_dir_all(plan.runtime_log.parent().unwrap()).unwrap();
+        fs::write(&plan.runtime_log, "started\n").unwrap();
+    }
+    for (kind, _, _) in cases {
+        let password = password_of(&rig, kind);
+        assert_eq!(password.len(), crate::secrets::PASSWORD_LENGTH, "{kind:?}");
+        for record in rig.supervisor.spawned() {
+            let spec = &record.spec;
+            let visible = format!(
+                "{} {} {:?} {:?} {:?}",
+                spec.program.display(),
+                words(spec).join(" "),
+                spec.cwd,
+                spec.log_file,
+                spec
+            );
+            assert!(
+                !visible.contains(&password),
+                "the password of {kind:?} is in a spec: {visible}"
+            );
+        }
+        // Nothing in the home but `secrets/` holds it.
+        let elsewhere: Vec<PathBuf> = files_with(rig.paths.home(), &password)
+            .into_iter()
+            .filter(|f| !f.starts_with(rig.paths.secrets_dir()))
+            .collect();
+        assert_eq!(elsewhere, Vec::<PathBuf>::new(), "{kind:?}");
+        assert!(
+            !files_with(&rig.paths.secrets_dir(), &password).is_empty(),
+            "{kind:?}: it is kept in secrets/"
+        );
+    }
+    // The only place a password travels outside a file is the environment of a child: the key
+    // of Meilisearch, and `redis-cli`'s when it is asked to stop Redis.
+    let with_env: Vec<String> = rig
+        .supervisor
+        .spawned()
+        .iter()
+        .filter(|r| !r.spec.env.is_empty())
+        .map(|r| {
+            r.spec
+                .program
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(with_env, ["meilisearch-windows-amd64.exe"]);
+    running[3].stop(rig.at(3000));
+    let stop = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(stop.spec.program.ends_with("redis-cli.exe"));
+    assert_eq!(
+        stop.spec.env,
+        [(
+            "REDISCLI_AUTH".into(),
+            password_of(&rig, DbKind::Redis).into()
+        )]
+    );
+}
+
+#[test]
+fn mysql_gets_its_password_from_a_private_init_file_that_is_deleted_afterwards() {
+    let mut rig = Rig::new();
+    rig.config.services.mysql.port = 19306;
+    rig.install("mysql", "8.4.11");
+    let plan = rig.plan(DbKind::Mysql);
+    let mut db = rig.service(DbKind::Mysql);
+    db.start(rig.at(0));
+    let password = password_of(&rig, DbKind::Mysql);
+    let init = rig.supervisor.spawned()[0].clone();
+    let sql = plan.secret_path(".init.sql");
+    assert!(words(&init.spec).contains(&format!("--init-file={}", sql.display())));
+    let text = fs::read_to_string(&sql).unwrap();
+    assert_eq!(
+        text,
+        format!("ALTER USER 'root'@'localhost' IDENTIFIED BY '{password}';\n")
+    );
+    assert!(sql.starts_with(rig.paths.secrets_dir()));
+    fs::create_dir_all(plan.staging.join("mysql")).unwrap();
+    rig.supervisor.exit(init.process, 0).unwrap();
+    db.tick(rig.at(500));
+    assert!(!sql.exists(), "spent, so deleted");
+    // The server runs from the data that has the password; `mysqladmin` reads an options file.
+    let server = words(&rig.supervisor.spawned().last().unwrap().spec);
+    assert!(
+        !server.iter().any(|a| a.contains("init-file")),
+        "{server:?}"
+    );
+    rig.listen(19306);
+    db.tick(rig.at(1200));
+    db.stop(rig.at(2000));
+    let admin = rig.supervisor.spawned().last().unwrap().clone();
+    let args = words(&admin.spec);
+    assert!(admin.spec.program.ends_with("mysqladmin.exe"));
+    assert_eq!(
+        args[0],
+        format!(
+            "--defaults-extra-file={}",
+            plan.secret_path(".client.cnf").display()
+        )
+    );
+    assert_eq!(args.last().map(String::as_str), Some("shutdown"));
+    let options = fs::read_to_string(plan.secret_path(".client.cnf")).unwrap();
+    assert!(
+        options.contains(&format!("password=\"{password}\"")) && options.contains("port=19306"),
+        "{options}"
+    );
+    // And the SQL cannot read or write files anywhere else.
+    let ini = fs::read_to_string(&plan.ini).unwrap();
+    assert!(ini.contains("secure_file_priv = \""), "{ini}");
+    assert!(
+        plan.files.is_dir() && ini.contains(&plan.files.display().to_string().replace('\\', "/"))
+    );
+}
+
+#[test]
+fn a_failed_or_cancelled_initialization_leaves_no_password_file_and_the_next_has_a_new_password() {
+    let mut rig = Rig::new();
+    rig.config.services.postgresql.port = 19432;
+    rig.install("postgresql", "17.11");
+    let plan = rig.plan(DbKind::Postgres);
+    let mut db = rig.service(DbKind::Postgres);
+    db.start(rig.at(0));
+    let first = password_of(&rig, DbKind::Postgres);
+    let pwfile = plan.secret_path(".pwfile");
+    assert_eq!(fs::read_to_string(&pwfile).unwrap(), format!("{first}\n"));
+    rig.supervisor.exit(rig.last_process(), 1).unwrap();
+    db.tick(rig.at(300));
+    assert!(matches!(db.state(), ServiceState::Failed(_)));
+    assert!(
+        !pwfile.exists(),
+        "the password file is deleted when the initialization fails"
+    );
+    db.start(rig.at(1000));
+    let second = password_of(&rig, DbKind::Postgres);
+    assert_ne!(first, second, "a new initialization, a new password");
+    db.stop(rig.at(1100));
+    assert!(!pwfile.exists(), "and when it is cancelled");
+}
+
+#[test]
+fn mariadb_carries_its_password_to_the_first_launch_in_a_file_that_goes_when_it_runs() {
+    let mut rig = Rig::new();
+    rig.config.services.mariadb.port = 19307;
+    rig.install("mariadb", "11.8.9");
+    let plan = rig.plan(DbKind::Mariadb);
+    let mut db = rig.service(DbKind::Mariadb);
+    db.start(rig.at(0));
+    let password = password_of(&rig, DbKind::Mariadb);
+    let init = rig.supervisor.spawned()[0].clone();
+    assert!(
+        !words(&init.spec).iter().any(|a| a.contains("password")),
+        "install-db is not given it"
+    );
+    fs::create_dir_all(plan.staging.join("mysql")).unwrap();
+    rig.supervisor.exit(init.process, 0).unwrap();
+    db.tick(rig.at(500));
+    let sql = plan.secret_path(".init.sql");
+    let text = fs::read_to_string(&sql).unwrap();
+    assert!(
+        text.contains(&format!(
+            "ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '{password}'"
+        )),
+        "{text}"
+    );
+    let server = rig.supervisor.spawned().last().unwrap().clone();
+    assert!(words(&server.spec).contains(&format!("--init-file={}", sql.display())));
+    rig.listen(19307);
+    db.tick(rig.at(1200));
+    assert_eq!(*db.state(), ServiceState::Running);
+    assert!(!sql.exists(), "the password is set, so the file is gone");
+    // A later start does not ask for it again.
+    db.stop(rig.at(2000));
+    rig.supervisor.exit(server.process, 0).unwrap();
+    rig.ports.release(19307);
+    db.tick(rig.at(2500));
+    db.start(rig.at(3000));
+    let again = words(&rig.supervisor.spawned().last().unwrap().spec);
+    assert!(!again.iter().any(|a| a.contains("init-file")), "{again:?}");
+}
+
+#[test]
+fn data_made_before_there_were_passwords_runs_as_it_was_made_and_the_credentials_say_so() {
+    let mut rig = Rig::new();
+    rig.config.services.mysql.port = 19306;
+    rig.install("mysql", "8.4.11");
+    let plan = rig.plan(DbKind::Mysql);
+    fs::create_dir_all(plan.data.join("mysql")).unwrap();
+    let mut db = rig.service(DbKind::Mysql);
+    db.start(rig.at(0));
+    assert!(
+        !plan.secret_path("").exists(),
+        "nothing is invented for data that exists"
+    );
+    rig.listen(19306);
+    db.tick(rig.at(700));
+    db.stop(rig.at(1000));
+    let admin = words(&rig.supervisor.spawned().last().unwrap().spec);
+    assert!(
+        admin.contains(&"--user=root".to_owned()) && admin.contains(&"--port=19306".to_owned()),
+        "{admin:?}"
+    );
+    let details = connection_details(&rig.paths, &rig.config, DbKind::Mysql).unwrap();
+    assert!(
+        details
+            .notes
+            .iter()
+            .any(|n| n.contains("before Crisol generated passwords")),
+        "{details:?}"
+    );
+    assert!(details
+        .lines
+        .contains(&("DB_PASSWORD".to_owned(), String::new())));
+}
+
+#[test]
+fn the_credentials_are_the_lines_a_project_needs_in_its_env() {
+    let mut rig = Rig::new();
+    rig.config.services.redis.port = 19379;
+    rig.config.services.meilisearch.port = 19700;
+    rig.config.services.postgresql.port = 19432;
+    let _redis = bring_up(&rig, DbKind::Redis, ("redis", "5.0.14.1"), 19379);
+    let _meili = bring_up(&rig, DbKind::Meilisearch, ("meilisearch", "1.55.0"), 19700);
+    let _pg = bring_up(&rig, DbKind::Postgres, ("postgresql", "17.11"), 19432);
+    let get = |kind| {
+        connection_details(&rig.paths, &rig.config, kind)
+            .unwrap()
+            .lines
+    };
+    let redis = get(DbKind::Redis);
+    assert!(redis.contains(&("REDIS_HOST".to_owned(), "127.0.0.1".to_owned())));
+    assert!(redis.contains(&("REDIS_PORT".to_owned(), "19379".to_owned())));
+    assert!(redis.contains(&(
+        "REDIS_PASSWORD".to_owned(),
+        password_of(&rig, DbKind::Redis)
+    )));
+    let meili = get(DbKind::Meilisearch);
+    assert!(meili.contains(&(
+        "MEILISEARCH_HOST".to_owned(),
+        "http://127.0.0.1:19700".to_owned()
+    )));
+    assert!(meili.contains(&(
+        "MEILISEARCH_KEY".to_owned(),
+        password_of(&rig, DbKind::Meilisearch)
+    )));
+    let pg = get(DbKind::Postgres);
+    assert!(pg.contains(&("DB_CONNECTION".to_owned(), "pgsql".to_owned())));
+    assert!(pg.contains(&("DB_USERNAME".to_owned(), "postgres".to_owned())));
+    assert!(pg.contains(&(
+        "DB_PASSWORD".to_owned(),
+        password_of(&rig, DbKind::Postgres)
+    )));
 }

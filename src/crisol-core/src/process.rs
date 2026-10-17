@@ -78,7 +78,11 @@ impl Default for GroupOptions {
 }
 
 /// What to run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` shows the names of the environment variables and hides their values: the environment
+/// is where a password goes to reach a child without being in its command line (ADR-0016), and a
+/// spec that is printed in a log or a failed test must not give it away.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProcessSpec {
     /// Executable to launch.
     pub program: PathBuf,
@@ -94,6 +98,20 @@ pub struct ProcessSpec {
     pub log_file: Option<PathBuf>,
     /// When to rotate `log_file`. Ignored when there is no log file.
     pub log_rotation: LogRotation,
+}
+
+impl std::fmt::Debug for ProcessSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&OsString> = self.env.iter().map(|(name, _)| name).collect();
+        f.debug_struct("ProcessSpec")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("cwd", &self.cwd)
+            .field("env", &names)
+            .field("log_file", &self.log_file)
+            .field("log_rotation", &self.log_rotation)
+            .finish()
+    }
 }
 
 impl ProcessSpec {

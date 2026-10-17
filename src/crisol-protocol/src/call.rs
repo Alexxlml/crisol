@@ -134,6 +134,12 @@ pub enum Call {
     },
     /// Checks the installation and says what is wrong and how to fix it.
     Doctor,
+    /// What a project needs to connect to a service (user, password, host, port) as `.env`
+    /// lines. The passwords are the ones Crisol generated; reading them starts nothing.
+    Credentials {
+        /// `mysql`, `postgresql`, `redis`, …
+        service: String,
+    },
     /// Asks the daemon to push [`crate::Event`]s on this connection.
     Subscribe,
 }
@@ -166,6 +172,7 @@ impl Call {
             Self::Unsecure { .. } => "unsecure",
             Self::Logs { .. } => "logs",
             Self::Doctor => "doctor",
+            Self::Credentials { .. } => "credentials",
             Self::Subscribe => "subscribe",
         }
     }

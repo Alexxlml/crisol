@@ -29,12 +29,23 @@ La Fase 9 añade MySQL, MariaDB, PostgreSQL y otros servicios que, a diferencia 
 
 ## Corrección (2026-10-17, revisión de la Fase 9)
 
-Decidida por el propietario a partir de `claude/revisiones/2026-10-17-opus-fase9.md`. Sustituye a «root sin contraseña» de los puntos 5 y 9. Pendiente de implementar.
+Decidida por el propietario a partir de `claude/revisiones/2026-10-17-opus-fase9.md`. Sustituye a «root sin contraseña» de los puntos 5 y 9.
 
-- **Contraseñas generadas.** `127.0.0.1` protege de la red, pero no de otras cuentas del equipo: con un superusuario sin contraseña, otra cuenta puede ejecutar código con tu usuario (PostgreSQL `COPY … TO PROGRAM`, MySQL/MariaDB `INTO OUTFILE`, Redis `CONFIG SET dir` + `SAVE`), justo lo que el ADR-0008 cierra en el disco.
-  - Cada base inicializa su superusuario con una contraseña aleatoria, guardada en un archivo privado fuera de `crisol.toml` (ADR-0006).
-  - Un comando la muestra para el `.env` del proyecto.
-  - MySQL y MariaDB fijan además `secure_file_priv` en una carpeta propia.
+- **Contraseñas generadas (implementado).** `127.0.0.1` protege de la red, pero no de otras cuentas del equipo: con un superusuario sin contraseña, otra cuenta puede ejecutar código con tu usuario (PostgreSQL `COPY … TO PROGRAM`, MySQL/MariaDB `INTO OUTFILE`, Redis `CONFIG SET dir` + `SAVE`), justo lo que el ADR-0008 cierra en el disco.
+  - **Dónde viven:** `secrets/` en la home, creada con `PrivateDirs` y comprobada como `certs/` (`secrets::ensure_dir`; si otra cuenta puede escribir en ella o es de otra cuenta, no se lee ni se escribe nada). Un archivo por servicio y serie (`secrets/mysql-8.4`); se generan con `getrandom` (CSPRNG del sistema), 32 letras y dígitos sin sesgo. Nunca en `crisol.toml`, en el `my.ini`, en la línea de órdenes visible ni en los logs; `Secret` se imprime como `<secret>`, y `ProcessSpec` oculta los valores de las variables de entorno en su `Debug`.
+  - **Cómo la recibe cada servicio:**
+    - *PostgreSQL:* `initdb -A scram-sha-256 --pwfile=<archivo privado>`, borrado al terminar (o al fallar). `pg_ctl` y `pg_isready` no necesitan contraseña. La prueba real comprueba que **se rechaza a quien no la tiene aunque venga de 127.0.0.1**.
+    - *MySQL:* `--initialize-insecure` más `--init-file=<archivo privado>` con `ALTER USER 'root'@'localhost' IDENTIFIED BY …`, borrado al terminar la inicialización.
+    - *MariaDB:* `mariadb-install-db` y, en el primer arranque, un `--init-file` privado (`ALTER USER IF EXISTS` para `root@localhost`, `127.0.0.1` y `::1`) que el servidor ejecuta **antes de aceptar conexiones**; se borra en cuanto el servicio está en marcha.
+    - *`mysqladmin shutdown`* (MySQL y MariaDB) lee `--defaults-extra-file=<archivo de opciones privado>` con el usuario, el puerto y la contraseña.
+    - *Redis:* el *port* de Windows lee un archivo de configuración como primer argumento; todo (incluido `requirepass`) va en `secrets/redis-<serie>.conf` y la línea de órdenes es solo esa ruta. `redis-cli shutdown` recibe la contraseña por `REDISCLI_AUTH` en su entorno.
+    - *Garnet:* `--config-import-path` con un JSON privado (`AuthenticationMode: Password`, `Password`).
+    - *Meilisearch:* `MEILI_MASTER_KEY` en el entorno del proceso (la clave no está en los argumentos).
+    - *MongoDB:* ver más abajo (cierre limpio).
+  - **`secure_file_priv`** apunta a `data/<servicio>/<serie>-files/` en MySQL y MariaDB; la prueba real comprueba que `INTO OUTFILE` fuera de esa carpeta se rechaza y dentro funciona.
+  - **`crisol db credentials <servicio>`** muestra las líneas para el `.env` (`DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`; `REDIS_PASSWORD`; `MEILISEARCH_KEY`). La respuesta del daemon lleva el protocolo a la versión 2.
+  - **Bases ya inicializadas sin contraseña** (las de las pruebas) **no se migran**: siguen funcionando como se hicieron y `crisol db credentials` lo avisa. Para dárselas hay que pararlas, borrar su carpeta `data/<servicio>/<serie>` y arrancarlas (los datos se pierden).
+
 - **Mailpit detrás de Nginx** como `mail.<tld>`. El `default_server` rechaza los demás nombres, lo que corta el *DNS rebinding* contra sus correos.
 - **MongoDB se detiene con su comando `shutdown` nativo** (`OP_MSG`), sin `mongosh`. Matar el grupo queda como último recurso.
 - **Memcached** se incluye con el build de terceros `jefyt/memcached-windows` (memcached 1.6.8 de 2020, compilado en 2026), marcado `end_of_life` y con certeza menor.

@@ -55,7 +55,7 @@ fn install_from_downloads(paths: &CrisolPaths, service: &str, version: &str) {
 }
 
 struct World {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     paths: CrisolPaths,
     stack: DbStack,
 }
@@ -71,11 +71,7 @@ fn world(config: &str) -> World {
         Arc::new(WindowsPortProbe::new()),
         Arc::new(WindowsPrivateDirs::new()),
     );
-    World {
-        _tmp: tmp,
-        paths,
-        stack,
-    }
+    World { tmp, paths, stack }
 }
 
 impl World {
@@ -96,8 +92,29 @@ impl World {
             .map(|(_, s)| s)
     }
 
-    /// Runs the SQL with the `mysql` client of the installed version, as root without a password.
-    fn sql(&self, kind: DbKind, version: &str, port: u16, sql: &str) -> String {
+    /// The password Crisol generated for `kind`.
+    fn password(&self, kind: DbKind) -> String {
+        let config = crisol_core::config::Config::load_from(&self.paths)
+            .unwrap()
+            .config;
+        let plan = crisol_core::dbservice::plan(&self.paths, &config, kind).unwrap();
+        crisol_core::secrets::read_secret(&plan.secret_path(""))
+            .unwrap()
+            .expect("a password was generated")
+            .expose()
+            .to_owned()
+    }
+
+    /// Runs the SQL with the client of the installed version: with the password in the
+    /// environment of the client (never in its arguments), or with none.
+    fn try_sql(
+        &self,
+        kind: DbKind,
+        version: &str,
+        port: u16,
+        sql: &str,
+        password: Option<&str>,
+    ) -> std::process::Output {
         let bin = self
             .paths
             .bin_for(kind.service(), version)
@@ -107,19 +124,44 @@ impl World {
         if kind == DbKind::Postgres {
             command = Command::new(bin.join("psql.exe"));
             command
-                .args(["-h", "127.0.0.1", "-U", "postgres", "-d", "postgres", "-tA"])
+                .args([
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "postgres",
+                    "-tA",
+                    "-w",
+                ])
                 .args(["-p", &port.to_string()])
                 .arg("-c")
-                .arg(sql);
+                .arg(sql)
+                // Not the user's own pgpass.conf.
+                .env("PGPASSFILE", self.tmp.path().join("no-pgpass"))
+                .env_remove("PGPASSWORD");
+            if let Some(password) = password {
+                command.env("PGPASSWORD", password);
+            }
         } else {
             command = Command::new(bin.join("mysql.exe"));
             command
                 .args(["--protocol=tcp", "-h127.0.0.1", "-uroot", "-N", "-B"])
                 .arg(format!("-P{port}"))
                 .arg("-e")
-                .arg(sql);
+                .arg(sql)
+                .env_remove("MYSQL_PWD");
+            if let Some(password) = password {
+                command.env("MYSQL_PWD", password);
+            }
         }
-        let out = command.output().unwrap();
+        command.output().unwrap()
+    }
+
+    /// Like [`try_sql`](Self::try_sql) with the generated password; fails if the SQL does.
+    fn sql(&self, kind: DbKind, version: &str, port: u16, sql: &str) -> String {
+        let password = self.password(kind);
+        let out = self.try_sql(kind, version, port, sql, Some(&password));
         assert!(
             out.status.success(),
             "{sql}: {}",
@@ -129,6 +171,7 @@ impl World {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn exercise(kind: DbKind, version: &str, port: u16, series: &str) {
     let _ports = PORTS
         .lock()
@@ -170,8 +213,55 @@ fn exercise(kind: DbKind, version: &str, port: u16, series: &str) {
         .unwrap()
         .exists());
 
-    // Root without a password, from this computer, and it persists.
+    // Without the password the connection is refused, from 127.0.0.1 too; with it, it works.
+    let refused = world.try_sql(kind, version, port, "SELECT 1", None);
+    let why = String::from_utf8_lossy(&refused.stderr).to_lowercase();
+    assert!(
+        !refused.status.success()
+            && (why.contains("access denied")
+                || why.contains("password")
+                || why.contains("authentication")),
+        "a connection without the password was not refused: {why}"
+    );
+    let wrong = world.try_sql(kind, version, port, "SELECT 1", Some("not-the-password"));
+    assert!(!wrong.status.success(), "a wrong password was accepted");
     assert_eq!(world.sql(kind, version, port, "SELECT 1"), "1");
+    if kind != DbKind::Postgres {
+        // `INTO OUTFILE` works in the folder of this series and nowhere else.
+        let outside = std::env::temp_dir().join("crisol-outfile-test.txt");
+        let _ = fs::remove_file(&outside);
+        let denied = world.try_sql(
+            kind,
+            version,
+            port,
+            &format!(
+                "SELECT 1 INTO OUTFILE '{}'",
+                outside.to_string_lossy().replace('\\', "/")
+            ),
+            Some(&world.password(kind)),
+        );
+        assert!(
+            !denied.status.success() && !outside.exists(),
+            "wrote outside secure_file_priv"
+        );
+        let files = world
+            .paths
+            .data_for(name, &format!("{series}-files"))
+            .unwrap();
+        world.sql(
+            kind,
+            version,
+            port,
+            &format!(
+                "SELECT 1 INTO OUTFILE '{}'",
+                files
+                    .join("inside.txt")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            ),
+        );
+        assert!(files.join("inside.txt").is_file());
+    }
     let (setup, query) = if kind == DbKind::Postgres {
         (
             "CREATE TABLE crisol_t (n int); INSERT INTO crisol_t VALUES (42)",
@@ -254,15 +344,18 @@ fn postgresql_17_does_the_same_in_its_own_data_series() {
 
 // ---- the simple data services (F9.4) -------------------------------------------------------
 
-fn http(port: u16, method: &str, path: &str, body: &str) -> String {
+fn http(port: u16, method: &str, path: &str, body: &str, key: Option<&str>) -> String {
     use std::io::{Read, Write};
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
+    let auth = key.map_or_else(String::new, |key| {
+        format!("Authorization: Bearer {key}\r\n")
+    });
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .unwrap();
@@ -333,7 +426,7 @@ fn mailpit_catches_a_message_on_its_smtp_port_and_shows_it_on_its_web_port() {
     reader.read_line(&mut line).unwrap();
     assert!(line.starts_with("250"), "{line}");
 
-    let listed = http(19025, "GET", "/api/v1/messages", "");
+    let listed = http(19025, "GET", "/api/v1/messages", "", None);
     assert!(listed.contains("hola crisol"), "{listed}");
     // The messages survive a restart (they are in `data/mailpit/1/`).
     println!(
@@ -341,7 +434,7 @@ fn mailpit_catches_a_message_on_its_smtp_port_and_shows_it_on_its_web_port() {
         stop_and_wait(&mut world, DbKind::Mailpit)
     );
     run_and_wait(&mut world, DbKind::Mailpit);
-    assert!(http(19025, "GET", "/api/v1/messages", "").contains("hola crisol"));
+    assert!(http(19025, "GET", "/api/v1/messages", "", None).contains("hola crisol"));
     stop_and_wait(&mut world, DbKind::Mailpit);
 }
 
@@ -354,18 +447,38 @@ fn meilisearch_indexes_a_document_and_keeps_it_across_a_restart() {
     let mut world = world("[services.meilisearch]\nenabled = true\nport = 19700\n");
     install_from_downloads(&world.paths, "meilisearch", "1.55.0");
     run_and_wait(&mut world, DbKind::Meilisearch);
-    assert!(http(19700, "GET", "/health", "").contains("available"));
+    let key = world.password(DbKind::Meilisearch);
+    let key = key.as_str();
+    assert!(http(19700, "GET", "/health", "", None).contains("available"));
+    // Without the key the API says no; with it, yes.
+    let refused = http(19700, "GET", "/indexes", "", None);
+    assert!(
+        refused.contains("401") || refused.contains("missing_authorization_header"),
+        "{refused}"
+    );
+    let wrong = http(19700, "GET", "/indexes", "", Some("not-the-key"));
+    assert!(
+        wrong.contains("403") || wrong.contains("invalid_api_key"),
+        "{wrong}"
+    );
     let created = http(
         19700,
         "POST",
         "/indexes/films/documents",
         r#"[{"id":1,"title":"Crisol"}]"#,
+        Some(key),
     );
     assert!(created.contains("taskUid"), "{created}");
     // Indexing is asynchronous: wait for the task.
     let end = Instant::now() + Duration::from_secs(30);
     loop {
-        let found = http(19700, "POST", "/indexes/films/search", r#"{"q":"crisol"}"#);
+        let found = http(
+            19700,
+            "POST",
+            "/indexes/films/search",
+            r#"{"q":"crisol"}"#,
+            Some(key),
+        );
         if found.contains("\"title\":\"Crisol\"") {
             break;
         }
@@ -377,10 +490,14 @@ fn meilisearch_indexes_a_document_and_keeps_it_across_a_restart() {
         stop_and_wait(&mut world, DbKind::Meilisearch)
     );
     run_and_wait(&mut world, DbKind::Meilisearch);
-    assert!(
-        http(19700, "POST", "/indexes/films/search", r#"{"q":"crisol"}"#)
-            .contains("\"title\":\"Crisol\"")
-    );
+    assert!(http(
+        19700,
+        "POST",
+        "/indexes/films/search",
+        r#"{"q":"crisol"}"#,
+        Some(key)
+    )
+    .contains("\"title\":\"Crisol\""));
     stop_and_wait(&mut world, DbKind::Meilisearch);
 }
 
@@ -480,21 +597,37 @@ fn two_series_of_one_database_keep_their_data_apart_and_switching_loses_nothing(
 // ---- Redis and Garnet (F9.3, ADR-0017) ----------------------------------------------------
 
 /// One command of the Redis protocol over a plain socket, answer as text.
-fn resp(port: u16, args: &[&str]) -> String {
+fn resp(port: u16, password: Option<&str>, args: &[&str]) -> String {
     use std::fmt::Write as _;
     use std::io::{Read, Write};
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let mut command = format!("*{}\r\n", args.len());
+    let mut command = String::new();
+    if let Some(password) = password {
+        let _ = write!(
+            command,
+            "*2\r\n$4\r\nAUTH\r\n${}\r\n{password}\r\n",
+            password.len()
+        );
+    }
+    let _ = write!(command, "*{}\r\n", args.len());
     for arg in args {
         let _ = write!(command, "${}\r\n{arg}\r\n", arg.len());
     }
     stream.write_all(command.as_bytes()).unwrap();
     let mut buffer = [0_u8; 256];
+    std::thread::sleep(Duration::from_millis(150));
     let read = stream.read(&mut buffer).unwrap_or(0);
-    String::from_utf8_lossy(&buffer[..read]).into_owned()
+    let text = String::from_utf8_lossy(&buffer[..read]).into_owned();
+    // With a password the answer to AUTH comes first: only the reply is returned.
+    if password.is_some() {
+        text.split_once("\r\n")
+            .map_or(String::new(), |(_, rest)| rest.to_owned())
+    } else {
+        text
+    }
 }
 
 #[test]
@@ -506,8 +639,13 @@ fn redis_5_runs_saves_on_shutdown_and_has_its_data_back() {
     let mut world = world("[services.redis]\nenabled = true\nport = 19379\n");
     install_from_downloads(&world.paths, "redis", "5.0.14.1");
     run_and_wait(&mut world, DbKind::Redis);
-    assert!(resp(19379, &["PING"]).starts_with("+PONG"));
-    assert!(resp(19379, &["SET", "crisol", "42"]).starts_with("+OK"));
+    let pw = world.password(DbKind::Redis);
+    let pw = Some(pw.as_str());
+    // Without the password every command is refused; with it they work.
+    assert!(resp(19379, None, &["PING"]).starts_with("-NOAUTH"));
+    assert!(!resp(19379, Some("not-it"), &["PING"]).starts_with("+PONG"));
+    assert!(resp(19379, pw, &["PING"]).starts_with("+PONG"));
+    assert!(resp(19379, pw, &["SET", "crisol", "42"]).starts_with("+OK"));
     let stopped = stop_and_wait(&mut world, DbKind::Redis);
     println!("redis: stop took {stopped:?}");
     assert!(
@@ -522,7 +660,7 @@ fn redis_5_runs_saves_on_shutdown_and_has_its_data_back() {
         fs::read_dir(&data).map(Iterator::count)
     );
     run_and_wait(&mut world, DbKind::Redis);
-    assert!(resp(19379, &["GET", "crisol"]).contains("42"));
+    assert!(resp(19379, pw, &["GET", "crisol"]).contains("42"));
     stop_and_wait(&mut world, DbKind::Redis);
 }
 
@@ -535,20 +673,24 @@ fn garnet_answers_the_redis_protocol_on_the_loopback() {
     let mut world = world("[services.garnet]\nenabled = true\nport = 19380\n");
     install_from_downloads(&world.paths, "garnet", "2.2.3");
     run_and_wait(&mut world, DbKind::Garnet);
-    assert!(resp(19380, &["PING"]).starts_with("+PONG"));
-    assert!(resp(19380, &["SET", "crisol", "42"]).starts_with("+OK"));
-    assert!(resp(19380, &["GET", "crisol"]).contains("42"));
-    // What Laravel\'s queues need: Lua, lists and expiry.
+    let pw = world.password(DbKind::Garnet);
+    let pw = Some(pw.as_str());
+    assert!(resp(19380, None, &["PING"]).starts_with("-NOAUTH"));
+    assert!(resp(19380, pw, &["PING"]).starts_with("+PONG"));
+    assert!(resp(19380, pw, &["SET", "crisol", "42"]).starts_with("+OK"));
+    assert!(resp(19380, pw, &["GET", "crisol"]).contains("42"));
+    // What Laravel's queues need: Lua, lists and expiry.
     let lua = resp(
         19380,
+        pw,
         &["EVAL", "return redis.call('set', KEYS[1], 'x')", "1", "k"],
     );
     println!("garnet EVAL answered: {lua:?}");
     // A difference with Redis, found here: a script that returns the status reply of `SET`
     // gets `+OK` from Redis and the bulk string `$2 OK` from Garnet (ADR-0017).
     assert!(lua.contains("OK"), "{lua}");
-    assert!(resp(19380, &["RPUSH", "q", "a"]).starts_with(":1"));
-    assert!(resp(19380, &["EXPIRE", "q", "100"]).starts_with(":1"));
+    assert!(resp(19380, pw, &["RPUSH", "q", "a"]).starts_with(":1"));
+    assert!(resp(19380, pw, &["EXPIRE", "q", "100"]).starts_with(":1"));
     println!(
         "garnet: stop took {:?}",
         stop_and_wait(&mut world, DbKind::Garnet)
@@ -577,6 +719,7 @@ fn redis_and_garnet_cannot_run_together_on_6379_and_the_second_is_told_who_has_i
     stop_and_wait(&mut world, DbKind::Redis);
     // Once Redis is down, Garnet may take the port.
     run_and_wait(&mut world, DbKind::Garnet);
-    assert!(resp(19381, &["PING"]).starts_with("+PONG"));
+    let pw = world.password(DbKind::Garnet);
+    assert!(resp(19381, Some(pw.as_str()), &["PING"]).starts_with("+PONG"));
     stop_and_wait(&mut world, DbKind::Garnet);
 }

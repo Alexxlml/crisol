@@ -27,6 +27,7 @@ mod names {
     pub const RUNTIME_LOG: &str = "runtime.log";
     pub const CERTS: &str = "certs";
     pub const SHIMS: &str = "shims";
+    pub const SECRETS: &str = "secrets";
     pub const WWW: &str = "www";
 }
 
@@ -161,6 +162,8 @@ pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Resu
         paths.etc_dir(),
         paths.certs_dir(),
         paths.shims_dir(),
+        // The passwords of the services: whoever can write here can read or change them.
+        paths.secrets_dir(),
         // Where PHP of the projects runs from, if the user parks nothing else.
         paths.www_dir(),
     ] {
@@ -429,6 +432,13 @@ impl CrisolPaths {
     #[must_use]
     pub fn ca_key(&self) -> PathBuf {
         self.certs_dir().join("ca.key")
+    }
+
+    /// The passwords Crisol generates for the services (ADR-0006, ADR-0016): `secrets/`. Made
+    /// private like `certs/`, and never read by anything but Crisol and the person it belongs to.
+    #[must_use]
+    pub fn secrets_dir(&self) -> PathBuf {
+        self.home.join(names::SECRETS)
     }
 
     /// The only directory that enters the user `PATH`: `shims/`.

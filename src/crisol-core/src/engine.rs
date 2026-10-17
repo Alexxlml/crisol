@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crisol_protocol::{
-    Call, Check, CheckStatus, DoneInfo, ErrorCode, Event, InstalledInfo, LogChunk, RemovedInfo,
-    Reply, RpcError, SiteInfo, Tool as WireTool, UsedInfo, VersionInfo, VersionList,
+    Call, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, ErrorCode, Event, InstalledInfo,
+    LogChunk, RemovedInfo, Reply, RpcError, SiteInfo, Tool as WireTool, UsedInfo, VersionInfo,
+    VersionList,
 };
 
 use crate::catalog::{Catalog, Target};
@@ -178,6 +179,7 @@ impl Engine {
                 from,
             } => self.logs(service, *lines, *from),
             Call::Doctor => Ok(self.doctor()),
+            Call::Credentials { service } => self.credentials(service),
             Call::Hello { .. }
             | Call::Status { .. }
             | Call::Start { .. }
@@ -217,6 +219,34 @@ impl Engine {
             }
             _ => None,
         }
+    }
+
+    /// The `.env` lines to connect to `service`. Reads the password Crisol kept; starts nothing.
+    fn credentials(&self, service: &str) -> Result<Reply, RpcError> {
+        let kind = crate::dbservice::DbKind::from_service(service).ok_or_else(|| {
+            RpcError::new(
+                ErrorCode::NotFound,
+                format!("`{service}` has no credentials; they are for mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit and memcached"),
+            )
+        })?;
+        let config = self.load_config()?;
+        let details = crate::dbservice::connection_details(&self.paths, &config, kind).map_err(
+            |e| match e {
+                crate::dbservice::DbError::NotInstalled(_) => {
+                    RpcError::new(ErrorCode::NotAvailable, e.to_string())
+                }
+                other => RpcError::new(ErrorCode::Io, other.to_string()),
+            },
+        )?;
+        Ok(Reply::Credentials(CredentialsInfo {
+            service: service.to_owned(),
+            lines: details
+                .lines
+                .into_iter()
+                .map(|(key, value)| EnvLine { key, value })
+                .collect(),
+            notes: details.notes,
+        }))
     }
 
     fn load_config(&self) -> Result<Config, RpcError> {

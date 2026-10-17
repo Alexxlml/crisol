@@ -26,8 +26,8 @@ pub use client::{read_bounded_line, Client, ClientError};
 pub use error::{ErrorCode, RpcError};
 pub use event::Event;
 pub use reply::{
-    Check, CheckStatus, DoneInfo, HelloInfo, InstalledInfo, LogChunk, RemovedInfo, Reply,
-    ServiceInfo, SiteInfo, StatusInfo, UsedInfo, VersionInfo, VersionList,
+    Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, HelloInfo, InstalledInfo, LogChunk,
+    RemovedInfo, Reply, ServiceInfo, SiteInfo, StatusInfo, UsedInfo, VersionInfo, VersionList,
 };
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The version of this protocol. Raised for any change that is not an added field.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The `jsonrpc` member of every message.
 pub const JSONRPC: &str = "2.0";

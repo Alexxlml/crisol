@@ -34,6 +34,29 @@ pub enum Reply {
         /// Each check, in order.
         checks: Vec<Check>,
     },
+    /// Answer to `credentials`.
+    Credentials(CredentialsInfo),
+}
+
+/// How to connect to a service, as the lines of a project's `.env`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialsInfo {
+    /// The service.
+    pub service: String,
+    /// `KEY=value`, in order.
+    pub lines: Vec<EnvLine>,
+    /// Things to know.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+/// One line of an `.env`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvLine {
+    /// `DB_PASSWORD`.
+    pub key: String,
+    /// Its value.
+    pub value: String,
 }
 
 /// The daemon introduces itself.
