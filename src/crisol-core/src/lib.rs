@@ -12,6 +12,7 @@ pub mod engine;
 pub mod fetch;
 pub mod hosts;
 pub mod install;
+pub mod ipc;
 pub mod log;
 pub mod manage;
 pub mod nginx;

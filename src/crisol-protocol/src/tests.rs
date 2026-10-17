@@ -343,3 +343,131 @@ fn version_is_not_empty() {
     assert_ne!(VERSION, "");
     assert_eq!(PROTOCOL_VERSION, 1);
 }
+
+// ---- the client over plain buffers -------------------------------------------------------
+
+mod client {
+    use std::io::Cursor;
+
+    use super::*;
+
+    /// A client whose "daemon" has already written `incoming`; what it sends is kept.
+    fn over(incoming: &str) -> Client<Cursor<Vec<u8>>, Vec<u8>> {
+        Client::new(Cursor::new(incoming.as_bytes().to_vec()), Vec::new())
+    }
+
+    fn line<T: Serialize>(value: &T) -> String {
+        to_line(value).unwrap()
+    }
+
+    fn done(message: &str) -> Reply {
+        Reply::Done(DoneInfo {
+            message: message.to_owned(),
+            changed: true,
+            warnings: vec![],
+        })
+    }
+
+    #[test]
+    fn a_call_sends_one_request_and_returns_the_reply_with_its_id() {
+        let mut client = over(&line(&Response::ok(1, done("ok"))));
+        let reply = client.call(&Call::Sites).unwrap();
+        assert_eq!(reply, done("ok"));
+        let sent = String::from_utf8(client.writer().clone()).unwrap();
+        assert_eq!(
+            sent,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sites\"}\n"
+        );
+    }
+
+    #[test]
+    fn ids_go_up_and_events_in_between_go_to_the_callback() {
+        let incoming = format!(
+            "{}{}{}{}",
+            line(&Response::ok(1, done("first"))),
+            line(&Notification::new(Event::Reloaded)),
+            line(&Notification::new(Event::ReloadStarted)),
+            line(&Response::ok(2, done("second"))),
+        );
+        let mut client = over(&incoming);
+        assert_eq!(client.call(&Call::Sites).unwrap(), done("first"));
+        let mut seen = Vec::new();
+        let reply = client
+            .call_with_events(&Call::Doctor, &mut |e| seen.push(e))
+            .unwrap();
+        assert_eq!(reply, done("second"));
+        assert_eq!(seen, [Event::Reloaded, Event::ReloadStarted]);
+        assert!(String::from_utf8(client.writer().clone())
+            .unwrap()
+            .contains("\"id\":2"));
+    }
+
+    #[test]
+    fn an_error_response_is_an_rpc_error_with_its_code_and_fix() {
+        let failed = Response::failed(
+            Some(1),
+            RpcError::new(ErrorCode::HomeExposed, "open").with_fix("icacls ..."),
+        );
+        let mut client = over(&line(&failed));
+        match client.call(&Call::Sites).unwrap_err() {
+            ClientError::Rpc(error) => {
+                assert_eq!(error.code, ErrorCode::HomeExposed);
+                assert_eq!(error.fix.as_deref(), Some("icacls ..."));
+            }
+            other => panic!("{other}"),
+        }
+        // A daemon that could not read the request answers with no id.
+        let unreadable = Response::failed(None, RpcError::new(ErrorCode::ParseError, "bad"));
+        let mut client = over(&line(&unreadable));
+        assert!(matches!(
+            client.call(&Call::Sites),
+            Err(ClientError::Rpc(e)) if e.code == ErrorCode::ParseError
+        ));
+    }
+
+    #[test]
+    fn a_closed_stream_a_wrong_id_and_junk_are_errors_not_hangs() {
+        assert!(matches!(
+            over("").call(&Call::Sites),
+            Err(ClientError::Closed)
+        ));
+        assert!(matches!(
+            over(&line(&Response::ok(9, done("x")))).call(&Call::Sites),
+            Err(ClientError::Protocol(_))
+        ));
+        assert!(matches!(
+            over("not json\n").call(&Call::Sites),
+            Err(ClientError::Protocol(_))
+        ));
+        // Half a message and then silence.
+        assert!(matches!(
+            over("{\"jsonrpc\":").call(&Call::Sites),
+            Err(ClientError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[test]
+    fn subscribers_read_events_until_the_daemon_hangs_up() {
+        let incoming = format!(
+            "{}{}",
+            line(&Notification::new(Event::Reloaded)),
+            line(&Notification::new(Event::ShuttingDown)),
+        );
+        let mut client = over(&incoming);
+        assert_eq!(client.next_event().unwrap(), Some(Event::Reloaded));
+        assert_eq!(client.next_event().unwrap(), Some(Event::ShuttingDown));
+        assert_eq!(client.next_event().unwrap(), None);
+    }
+
+    #[test]
+    fn a_line_without_end_is_never_read_past_the_limit() {
+        let huge = "a".repeat(MAX_LINE + 10);
+        let mut reader = Cursor::new(huge.into_bytes());
+        let error = read_bounded_line(&mut reader).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let mut ok = Cursor::new(b"one\ntwo\n".to_vec());
+        assert_eq!(read_bounded_line(&mut ok).unwrap().as_deref(), Some("one"));
+        assert_eq!(read_bounded_line(&mut ok).unwrap().as_deref(), Some("two"));
+        assert_eq!(read_bounded_line(&mut ok).unwrap(), None);
+    }
+}

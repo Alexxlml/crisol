@@ -533,7 +533,7 @@ impl Engine {
                 name,
                 status: CheckStatus::Warning,
                 detail: format!("missing in {}: {}", dir.display(), missing.join(", ")),
-                fix: Some("crisol shims install".to_owned()),
+                fix: None,
             }
         }
     }

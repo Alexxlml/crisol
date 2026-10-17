@@ -16,11 +16,13 @@
 //! else raises [`PROTOCOL_VERSION`].
 
 mod call;
+mod client;
 mod error;
 mod event;
 mod reply;
 
 pub use call::{Call, Tool};
+pub use client::{read_bounded_line, Client, ClientError};
 pub use error::{ErrorCode, RpcError};
 pub use event::Event;
 pub use reply::{

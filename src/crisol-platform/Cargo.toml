@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 crisol-core.workspace = true
+crisol-protocol.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
@@ -25,6 +26,7 @@ windows = { workspace = true, features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
     "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_UI_Shell",

@@ -9,6 +9,8 @@ mod helper_location;
 #[cfg(windows)]
 mod hosts_file;
 #[cfg(windows)]
+mod ipc;
+#[cfg(windows)]
 mod job_object;
 #[cfg(windows)]
 mod nrpt;
@@ -18,6 +20,8 @@ mod port_probe;
 mod private_dir;
 #[cfg(windows)]
 mod root_certs;
+#[cfg(windows)]
+mod system;
 #[cfg(windows)]
 mod system_paths;
 #[cfg(windows)]
@@ -34,6 +38,8 @@ pub use helper_location::HelperLocation;
 #[cfg(windows)]
 pub use hosts_file::{flush_dns, ElevatedHosts, FileHosts};
 #[cfg(windows)]
+pub use ipc::{connect_to_daemon, spawn_daemon, DaemonConnection, PipeSecurity};
+#[cfg(windows)]
 pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]
 pub use nrpt::{ElevatedNrpt, PowerShellNrpt};
@@ -43,6 +49,8 @@ pub use port_probe::WindowsPortProbe;
 pub use private_dir::WindowsPrivateDirs;
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
+#[cfg(windows)]
+pub use system::{default_deps, WindowsSystemChecks};
 #[cfg(windows)]
 pub use system_paths::{restrict_dll_search, system_directory, HELPER_EXE, HELPER_FOLDER};
 #[cfg(windows)]

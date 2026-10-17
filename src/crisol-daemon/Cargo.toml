@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "crisol_daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "crisold"
 path = "src/main.rs"
@@ -15,6 +19,12 @@ clap.workspace = true
 crisol-core.workspace = true
 crisol-platform.workspace = true
 crisol-protocol.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -130,11 +130,17 @@ fn private_sddl(sid: &str) -> String {
 
 /// The SID of the user this process runs as, as text (`S-1-5-21-…`).
 pub(crate) fn current_user_sid() -> io::Result<String> {
+    // SAFETY: the pseudo-handle of the current process is always valid.
+    user_sid_of_process(unsafe { GetCurrentProcess() })
+}
+
+/// The SID of the user a process runs as, as text. `process` needs the right to query limited
+/// information.
+pub(crate) fn user_sid_of_process(process: HANDLE) -> io::Result<String> {
     let mut token = HANDLE::default();
-    // SAFETY: the pseudo-handle of the current process is always valid; `token` is a valid
+    // SAFETY: `process` is a valid handle (the caller's promise); `token` is a valid
     // out-parameter.
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
-        .map_err(io::Error::from)?;
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }.map_err(io::Error::from)?;
     // SAFETY: `token` is a valid handle that nobody else owns.
     let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
     let handle = HANDLE(token.as_raw_handle());
