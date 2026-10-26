@@ -4,3 +4,12 @@
 .idea/
 .DS_Store
 Thumbs.db
+# memoria de trabajo de los agentes y configuración local de herramientas (solo local)
+/claude/
+/.mcp.json
+# contexto personal de las sesiones de Claude (solo local)
+/CONTEXTO_migracion.md
+/INSTRUCCIONES_PROYECTO_DESKTOP.md
+# variables de entorno y secretos locales
+.env
+.env.*
