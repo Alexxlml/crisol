@@ -134,6 +134,10 @@ Crisol es un proyecto personal desarrollado con agentes de IA bajo dirección hu
 | `analisis/` | Notas de investigación: DNS en Windows, fuentes de binarios, *shims* de Node y problemas a resolver |
 | `licenses/` | Licencias de los archivos de terceros incluidos (ver `THIRD-PARTY-NOTICES.md`) |
 
+## Apoya a Crisol
+
+Crisol es gratis y de código abierto. Si quieres apoyar su desarrollo y mantenimiento, puedes hacerlo en [GitHub Sponsors](https://github.com/sponsors/Alexxlml) o [Ko-fi](https://ko-fi.com/alexxlml). Darle una estrella al repositorio y compartir ideas o reportar errores también ayuda mucho.
+
 ## Licencia
 
 Crisol se distribuye bajo cualquiera de estas dos licencias, a tu elección:
