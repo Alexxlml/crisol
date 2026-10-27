@@ -1,150 +1,156 @@
 # Crisol
 
-Suite de desarrollo web local para PHP y Node, escrita en Rust.
+[![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue)](#license)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE422B)
 
-Crisol instala y administra las herramientas de un entorno de desarrollo local —PHP, Nginx, Node, bases de datos y servicios de apoyo— para que **todo funcione completo, sin funciones de pago y sin ensuciar el sistema**.
+**English** | [Español](README.es.md)
 
-> **Estado: en desarrollo, backend.** Las fases 0 a 10 del backend están completas (más de 1000 pruebas automáticas). Sigue la Fase 11 (diagnóstico y desinstalación limpia) y después la Fase 12 (contrato para la interfaz gráfica). Todavía no hay versiones publicadas ni interfaz gráfica: hoy se usa desde la línea de comandos y solo en Windows.
+Local web development suite for PHP and Node, written in Rust.
 
-## El problema
+Crisol installs and manages the tools of a local development environment —PHP, Nginx, Node, databases and supporting services— so that **everything works out of the box, with no paid features and without cluttering your system**.
 
-Las suites de desarrollo local para Windows resuelven bien una parte del trabajo, pero en el uso diario aparecen los mismos tropiezos:
+> **Status: in development, backend.** Backend phases 0 to 10 are complete (more than 1,000 automated tests). Phase 11 (diagnostics and clean uninstall) is next, followed by Phase 12 (the contract for the graphical interface). There are no published releases or graphical interface yet: today it is used from the command line and only on Windows.
 
-- **Funciones clave detrás de un pago**, como el gestor de bases de datos, que obligan a combinar varias herramientas.
-- **Variables de entorno y entradas del PATH que se acumulan** por cada versión instalada, chocan entre herramientas y no se limpian al desinstalar.
-- **Configuración que se revierte sola:** un ajuste hecho a mano desaparece la siguiente vez que la aplicación regenera sus archivos.
-- **Pasos manuales para lo básico:** habilitar extensiones de PHP, confiar en el certificado HTTPS o editar el archivo `hosts`.
-- **Aplicaciones pesadas** que cargan un runtime completo y quedan atadas a un sistema operativo.
+## The problem
 
-## Lo que Crisol propone
+Local development suites for Windows solve part of the job well, but the same stumbling blocks show up in daily use:
 
-1. **El backend es el producto.** Toda la lógica vive en un núcleo sin interfaz. La línea de comandos de hoy y la interfaz gráfica de mañana son carcasas intercambiables sobre el mismo protocolo.
-2. **Cero contaminación del sistema.** Una sola entrada en el PATH (la carpeta de *shims*) y ninguna variable por versión. Desinstalar deja el sistema como estaba.
-3. **La configuración del usuario es sagrada.** Lo que tú escribes en `crisol.toml` es la fuente de verdad; Crisol solo regenera sus propios archivos derivados y edita los tuyos únicamente con un comando explícito, conservando comentarios y orden.
-4. **Rápido y ligero.** Ejecutables nativos pequeños, arranque inmediato y poca memoria en reposo. El *shim* que resuelve la versión de `php` o `node` añade unos pocos milisegundos.
-5. **Seguro por defecto.** Descargas verificadas con SHA-256 y catálogo firmado, carpeta de datos privada, contraseñas generadas fuera de la configuración, sin telemetría y sin privilegios de administrador salvo una operación aislada y opcional.
-6. **Multiplataforma por diseño, Windows primero.** Todo lo específico del sistema operativo queda detrás de *traits* en un crate aparte.
+- **Key features behind a paywall**, such as the database manager, which force you to combine several tools.
+- **Environment variables and PATH entries that pile up** with every installed version, clash between tools and are not cleaned up on uninstall.
+- **Configuration that reverts on its own:** a change you made by hand disappears the next time the app regenerates its files.
+- **Manual steps for the basics:** enabling PHP extensions, trusting the HTTPS certificate or editing the `hosts` file.
+- **Heavy applications** that load a full runtime and are tied to one operating system.
 
-## Qué hace hoy
+## What Crisol proposes
 
-| Área | Estado |
+1. **The backend is the product.** All the logic lives in a core with no interface. Today's command line and tomorrow's graphical interface are interchangeable shells over the same protocol.
+2. **Zero system pollution.** A single PATH entry (the *shims* folder) and no per-version variables. Uninstalling leaves the system as it was.
+3. **User configuration is sacred.** What you write in `crisol.toml` is the source of truth; Crisol only regenerates its own derived files and edits yours only through an explicit command, keeping comments and order.
+4. **Fast and lightweight.** Small native executables, instant startup and low idle memory. The *shim* that resolves the `php` or `node` version adds only a few milliseconds.
+5. **Secure by default.** Downloads verified with SHA-256 and a signed catalog, a private data folder, passwords generated outside the configuration, no telemetry, and no administrator privileges except for one isolated, optional operation.
+6. **Cross-platform by design, Windows first.** Everything OS-specific sits behind *traits* in a separate crate.
+
+## What it does today
+
+| Area | Status |
 |---|---|
-| **Versiones** | Catálogo firmado; instala, desinstala y lista versiones de PHP, Nginx, Node, Composer y servicios de datos, con verificación SHA-256 y sin dejar restos ante un fallo. |
-| **PHP** | Varias versiones a la vez. `php.ini` generado por versión con las extensiones comunes activas, certificados raíz del sistema para cURL/OpenSSL y tus `overrides/` al final. Pool de `php-cgi` por versión con reinicio de workers. |
-| **Versión por proyecto** | El *shim* elige la versión según `.crisol.toml`, `.php-version`, `.nvmrc`, `engines` o `composer.json`, sin tocar el PATH por proyecto. |
-| **Sitios** | `park` y `link` sirven carpetas como `nombre.test` con Nginx, cada una con su versión de PHP. Configuración generada desde plantillas, sin parchear archivos. |
-| **HTTPS local** | CA propia limitada a dominios de uso especial (`.test`, `.localhost`…), un certificado por sitio e instalación de la CA en el almacén del usuario, sin administrador. |
-| **Dominios `.test`** | Respondedor DNS local y una regla del sistema que se instala una sola vez, con el archivo `hosts` como respaldo. |
-| **Daemon** | `crisold` supervisa los servicios (Job Objects: sin procesos huérfanos), vigila la configuración y responde por un *named pipe* que solo tu usuario puede abrir. Arranque opcional al iniciar sesión. |
-| **Bases de datos y servicios** | MySQL, MariaDB, PostgreSQL, MongoDB, Redis/Garnet, Memcached, Meilisearch y Mailpit, con contraseñas generadas y `crisol db credentials` para tu `.env`. |
-| **Node** | Node 20, 22 y 24 con *shims* de `node`, `npm`, `npx`, `corepack`, `pnpm` y `yarn`; paquetes globales y caché separados por versión. |
+| **Versions** | Signed catalog; installs, uninstalls and lists versions of PHP, Nginx, Node, Composer and data services, with SHA-256 verification and no leftovers if something fails. |
+| **PHP** | Several versions side by side. A generated `php.ini` per version with the common extensions enabled, the system root certificates for cURL/OpenSSL and your `overrides/` applied last. A `php-cgi` pool per version with worker restarts. |
+| **Per-project version** | The *shim* picks the version from `.crisol.toml`, `.php-version`, `.nvmrc`, `engines` or `composer.json`, without touching the PATH per project. |
+| **Sites** | `park` and `link` serve folders as `name.test` with Nginx, each with its own PHP version. Configuration is generated from templates, never by patching files. |
+| **Local HTTPS** | Its own CA, limited to special-use domains (`.test`, `.localhost`…), one certificate per site and the CA installed in the user store, without administrator rights. |
+| **`.test` domains** | A local DNS responder and a system rule installed only once, with the `hosts` file as a fallback. |
+| **Daemon** | `crisold` supervises the services (Job Objects: no orphan processes), watches the configuration and answers over a *named pipe* that only your user can open. Optional start at sign-in. |
+| **Databases and services** | MySQL, MariaDB, PostgreSQL, MongoDB, Redis/Garnet, Memcached, Meilisearch and Mailpit, with generated passwords and `crisol db credentials` for your `.env`. |
+| **Node** | Node 20, 22 and 24 with *shims* for `node`, `npm`, `npx`, `corepack`, `pnpm` and `yarn`; global packages and cache kept separate per version. |
 
-## Un vistazo al CLI
+## A quick look at the CLI
 
 ```bash
-crisol install php 8.4          # descarga y verifica PHP 8.4
+crisol install php 8.4          # download and verify PHP 8.4
 crisol install nginx
-crisol park                     # cada carpeta de aquí se sirve como <carpeta>.test
-crisol start                    # Nginx y PHP (arranca el daemon si hace falta)
-crisol secure tienda            # https://tienda.test
-crisol use php 8.3 --local      # este proyecto usa PHP 8.3
+crisol park                     # every folder here is served as <folder>.test
+crisol start                    # Nginx and PHP (starts the daemon if needed)
+crisol secure shop              # https://shop.test
+crisol use php 8.3 --local      # this project uses PHP 8.3
 crisol enable mysql && crisol start
-crisol db credentials mysql     # líneas listas para el .env
-crisol doctor                   # revisa la instalación y dice qué corregir
+crisol db credentials mysql     # lines ready for your .env
+crisol doctor                   # checks the installation and tells you what to fix
 ```
 
-Para que `php`, `node` o `composer` usen los *shims* en una sola terminal, sin cambiar nada del sistema: `crisol env | Invoke-Expression` (PowerShell). Para dejarlo fijo: `crisol path add`.
+To make `php`, `node` or `composer` use the *shims* in a single terminal, without changing anything on the system: `crisol env | Invoke-Expression` (PowerShell). To make it permanent: `crisol path add`.
 
-## Arquitectura
+## Architecture
 
 ```
- crisol (CLI)     GUI futura     otros clientes
+ crisol (CLI)    future GUI     other clients
         └──────────────┼──────────────┘
                  IPC (named pipe)
                ┌───────▼───────┐
-               │    crisold    │  daemon: dueño de los servicios
+               │    crisold    │  daemon: owns the services
                └───────┬───────┘
                ┌───────▼───────┐
-               │  crisol-core  │  lógica pura, sin interfaz ni APIs del SO
+               │  crisol-core  │  pure logic, no UI or OS APIs
                └───────┬───────┘
                ┌───────▼────────┐
-               │crisol-platform │  Windows hoy; Linux y macOS después
+               │crisol-platform │  Windows today; Linux and macOS later
                └────────────────┘
-  crisol-shim: resuelve la versión de php/node/composer por proyecto
+  crisol-shim: resolves the php/node/composer version per project
 ```
 
-| Crate | Responsabilidad |
+| Crate | Responsibility |
 |---|---|
-| `crisol-core` | Modelos, configuración, catálogo, generación de configs, orquestación. Define los *traits* de plataforma y sus dobles para pruebas. |
-| `crisol-platform` | Implementación de esos *traits* para Windows: procesos, puertos, permisos, certificados, DNS, PATH. |
-| `crisol-protocol` | Mensajes del IPC, versionados. Es el contrato que usará la interfaz gráfica. |
-| `crisol-daemon` | `crisold`: mantiene los servicios vivos y atiende el IPC. |
-| `crisol-cli` | `crisol`: solo interpreta argumentos y llama al núcleo o al daemon. |
-| `crisol-shim` | Ejecutable mínimo que se instala como `php`, `node`, `npm`… y lanza la versión correcta. |
-| `crisol-elevate` | Ayudante que se instala una vez con administrador para la regla DNS de `.test`; nada más corre con privilegios. |
+| `crisol-core` | Models, configuration, catalog, config generation, orchestration. Defines the platform *traits* and their test doubles. |
+| `crisol-platform` | Windows implementation of those *traits*: processes, ports, permissions, certificates, DNS, PATH. |
+| `crisol-protocol` | Versioned IPC messages. This is the contract the graphical interface will use. |
+| `crisol-daemon` | `crisold`: keeps the services alive and serves the IPC. |
+| `crisol-cli` | `crisol`: only parses arguments and calls the core or the daemon. |
+| `crisol-shim` | Minimal executable installed as `php`, `node`, `npm`… that launches the right version. |
+| `crisol-elevate` | Helper installed once with administrator rights for the `.test` DNS rule; nothing else runs elevated. |
 
-Más detalle en [`docs/arquitectura.md`](docs/arquitectura.md).
+More detail in [`docs/arquitectura.md`](docs/arquitectura.md) (in Spanish).
 
-## Compilar
+## Build
 
-Requisitos: Windows 10/11 y Rust estable 1.88 o posterior.
+Requirements: Windows 10/11 and stable Rust 1.88 or later.
 
 ```bash
 cd src
 cargo build --release
-bash scripts/check.sh   # formato, clippy y pruebas
+bash scripts/check.sh   # formatting, clippy and tests
 ```
 
-Los binarios quedan en `src/target/release/`. Por defecto Crisol usa `C:\Crisol` como carpeta de datos; la variable `CRISOL_HOME` la cambia (útil para pruebas).
+The binaries end up in `src/target/release/`. By default Crisol uses `C:\Crisol` as its data folder; the `CRISOL_HOME` variable changes it (useful for testing).
 
-> Crisol todavía no está listo para el uso diario: no tiene instalador ni versiones publicadas, y la desinstalación completa llega en la Fase 11.
+> Crisol is not ready for daily use yet: it has no installer or published releases, and full uninstall arrives in Phase 11.
 
-## Hoja de ruta
+## Roadmap
 
-| Fase | Contenido | Estado |
+| Phase | Content | Status |
 |---|---|---|
-| 0–1 | Esqueleto, rutas y configuración que nunca se destruye | ✅ |
-| 2 | Supervisión de procesos sin huérfanos | ✅ |
-| 3 | Catálogo firmado y descargas verificadas | ✅ |
-| 4–5 | PHP, *shims* y sitios con Nginx | ✅ |
-| 6–7 | HTTPS local y dominios `.test` | ✅ |
-| 8 | Daemon, IPC y CLI completa | ✅ |
-| 9 | Bases de datos y servicios extra | ✅ |
+| 0–1 | Skeleton, paths and configuration that is never destroyed | ✅ |
+| 2 | Process supervision with no orphans | ✅ |
+| 3 | Signed catalog and verified downloads | ✅ |
+| 4–5 | PHP, *shims* and sites with Nginx | ✅ |
+| 6–7 | Local HTTPS and `.test` domains | ✅ |
+| 8 | Daemon, IPC and full CLI | ✅ |
+| 9 | Databases and extra services | ✅ |
 | 10 | Node | ✅ |
-| 11 | `crisol doctor` completo y desinstalación que revierte todo | ⏳ siguiente |
-| 12 | Protocolo documentado para la interfaz gráfica | Pendiente |
-| Después | Interfaz gráfica, soporte para Linux y macOS, instalador firmado | Planeado |
+| 11 | Full `crisol doctor` and an uninstall that reverts everything | ⏳ next |
+| 12 | Documented protocol for the graphical interface | Pending |
+| Later | Graphical interface, Linux and macOS support, signed installer | Planned |
 
-El plan detallado, con sus criterios de aceptación, está en [`docs/plan.md`](docs/plan.md).
+The detailed plan, with its acceptance criteria, is in [`docs/plan.md`](docs/plan.md) (in Spanish).
 
-## Cómo se desarrolla
+## How it is developed
 
-Crisol es un proyecto personal desarrollado con agentes de IA bajo dirección humana:
+Crisol is a personal project built with AI agents under human direction:
 
-- **Diseño y decisiones:** cada decisión de arquitectura queda registrada como ADR en [`docs/decisiones/`](docs/decisiones/) (18 hasta ahora: shims en lugar de PATH, sin telemetría, secretos fuera de la config, CA restringida, entre otras).
-- **Implementación:** por fases y una tarea a la vez, con Claude Code. Cada tarea termina con pruebas, `clippy` sin advertencias y un commit convencional. Las reglas para los agentes están en [`CLAUDE.md`](CLAUDE.md).
-- **Revisión:** al cierre de cada fase, una revisión independiente del código y una verificación manual en Windows antes de avanzar.
+- **Design and decisions:** every architecture decision is recorded as an ADR in [`docs/decisiones/`](docs/decisiones/) (18 so far: shims instead of PATH, no telemetry, secrets outside the config, a restricted CA, among others).
+- **Implementation:** in phases and one task at a time, with Claude Code. Each task ends with tests, `clippy` with no warnings and a conventional commit. The rules for the agents are in [`CLAUDE.md`](CLAUDE.md).
+- **Review:** at the end of each phase, an independent code review and a manual check on Windows before moving on.
 
-## Estructura del repositorio
+## Repository layout
 
-| Carpeta | Contenido |
+| Folder | Content |
 |---|---|
-| `src/` | Código fuente (workspace de Cargo) |
-| `docs/` | Arquitectura, plan por fases, catálogo y decisiones (ADR) |
-| `analisis/` | Notas de investigación: DNS en Windows, fuentes de binarios, *shims* de Node y problemas a resolver |
-| `licenses/` | Licencias de los archivos de terceros incluidos (ver `THIRD-PARTY-NOTICES.md`) |
+| `src/` | Source code (Cargo workspace) |
+| `docs/` | Architecture, phase plan, catalog and decisions (ADR), in Spanish |
+| `analisis/` | Research notes: DNS on Windows, binary sources, Node *shims* and open problems, in Spanish |
+| `licenses/` | Licenses of the bundled third-party files (see `THIRD-PARTY-NOTICES.md`) |
 
-## Apoya a Crisol
+## Support Crisol
 
-Crisol es gratis y de código abierto. Si quieres apoyar su desarrollo y mantenimiento, puedes hacerlo en [GitHub Sponsors](https://github.com/sponsors/Alexxlml) o [Ko-fi](https://ko-fi.com/alexxlml). Darle una estrella al repositorio y compartir ideas o reportar errores también ayuda mucho.
+Crisol is free and open source. If you'd like to support its development and maintenance, you can do so through [GitHub Sponsors](https://github.com/sponsors/Alexxlml) or [Ko-fi](https://ko-fi.com/alexxlml). Starring the repository and sharing ideas or reporting bugs helps a lot too.
 
-## Licencia
+## License
 
-Crisol se distribuye bajo cualquiera de estas dos licencias, a tu elección:
+Crisol is licensed under either of these two licenses, at your option:
 
 - MIT ([`LICENSE-MIT`](LICENSE-MIT))
 - Apache 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
 
-Salvo que indiques lo contrario, cualquier contribución que envíes para incluirla en Crisol, tal como la define la licencia Apache 2.0, se distribuye bajo las mismas dos licencias, sin términos adicionales.
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in Crisol, as defined in the Apache 2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
-Lo que proviene de terceros y sus licencias están en [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+Third-party material and its licenses are listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
