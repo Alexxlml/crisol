@@ -1,6 +1,6 @@
 # ADR-0019 — `crisol shell`: una terminal donde solo manda Crisol
 
-- **Estado:** aceptada (el propietario respondió el diseño el 2026-10-29); sin implementar
+- **Estado:** aceptada (el propietario respondió el diseño el 2026-10-29) e implementada el mismo día
 - **Fecha:** 2026-10-29
 
 ## Contexto
@@ -67,3 +67,11 @@ La misma desde la que se llama, detectada por el proceso padre (como `crisol env
 - Dentro de `crisol shell`, los programas de otras suites que Crisol no reemplaza siguen existiendo detrás. Lo que Crisol sí ofrece (PHP, Composer, Node y sus gestores, clientes de bases) gana siempre.
 - Un perfil del usuario que *reescriba* el `PATH` entero queda corregido por el de Crisol, que corre después. Uno que lance procesos al abrir sí los lanza (salvo con `--clean`).
 - Un programa que lea el `PATH` del registro en lugar del de su proceso escapa al aislamiento (es raro).
+
+## Implementación (2026-10-29)
+
+- `crisol_core::shell` (entorno, perfiles y elección de terminal), `crisol_platform::{find_terminal, run_terminal}` y `crisol shell [--shell pwsh|powershell|cmd|bash] [--clean]`. Si ya estás dentro de un `crisol shell`, se niega a abrir otro (variable `CRISOL_SHELL`). Sin los shims instalados, pide `crisol shims install`.
+- **PowerShell no lee el perfil de un archivo.** La política de ejecución predeterminada de Windows PowerShell 5.1 en un equipo cliente es `Restricted`, y en este equipo todas las políticas están en `Undefined`, así que un `.ps1` no se ejecutaría. El perfil va como `-EncodedCommand` (UTF-16LE en Base64), que esa política sí permite. Así no hace falta relajarla (`-ExecutionPolicy Bypass` la relajaría también para los scripts del usuario en esa sesión). cmd y Git Bash leen el suyo de `etc/shell/crisol.cmd` y `etc/shell/crisol.bashrc`.
+- **Alias, funciones y macros del usuario:** Herd escribe `alias php="php.bat"` en `~/.bash_profile`, y un alias gana a cualquier carpeta del `PATH`. Se comprobó en este equipo: dentro de Git Bash, `php` seguía siendo el de Herd. El perfil de Crisol retira los alias y funciones de PowerShell, los alias y funciones de Bash y las macros de `doskey` con el nombre de un comando que Crisol ofrece (los shims y los clientes de las bases: `shell::taken_back`).
+- **Git Bash:** se lanza el `bash.exe` desde el que se llamó (la ruta del proceso padre) o, si no, el `bin\bash.exe` de la instalación de Git del primer `git.exe` del `PATH`. `CHERE_INVOKING=1` evita que `/etc/profile` cambie de carpeta. El prompt de Git ocupa dos líneas, así que `(crisol)` va en la del `$`.
+- **Comprobado a mano** en este equipo con cmd, Windows PowerShell 5.1, PowerShell 7.6.9 (de la Microsoft Store) y Git Bash: los shims van primero; `PHPRC`, `npm_config_prefix` y `NODE_OPTIONS` quedan fuera; el prompt lleva `(crisol)` y la ventana el título «Crisol»; se devuelve el código de salida de la terminal; y anidar se rechaza. Sin comprobar: que las macros de `doskey` de un `AutoRun` desaparezcan (solo actúan con lo que se escribe en la consola, así que no hay forma automática de probarlo), y un perfil de PowerShell con alias propios.

@@ -33,6 +33,8 @@ mod system;
 #[cfg(windows)]
 mod system_paths;
 #[cfg(windows)]
+mod terminal;
+#[cfg(windows)]
 mod trust_store;
 #[cfg(windows)]
 mod user_path;
@@ -77,6 +79,8 @@ pub use system_paths::{
     is_system_program, path_program_guard, restrict_dll_search, system_directory, HELPER_EXE,
     HELPER_FOLDER,
 };
+#[cfg(windows)]
+pub use terminal::{find_terminal, run_terminal};
 #[cfg(windows)]
 pub use trust_store::WindowsTrustStore;
 #[cfg(windows)]

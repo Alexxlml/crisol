@@ -53,6 +53,9 @@ fn main() -> ExitCode {
         reserved_name: Box::new(reserved_name),
         env: Box::new(|name| std::env::var(name).ok()),
         parent_program: crisol_platform::parent_program(),
+        env_vars: Box::new(|| std::env::vars_os().collect()),
+        find_terminal: Box::new(crisol_platform::find_terminal),
+        run_terminal: Box::new(crisol_platform::run_terminal),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {
             Some(path) if path.is_file() => spawn_daemon(path),

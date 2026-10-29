@@ -10,23 +10,28 @@
 pub mod args;
 pub mod render;
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
+use crisol_core::config::Config;
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::{Deps, Engine};
 use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
+use crisol_core::shell::{self, ShellLaunch, Terminal};
 use crisol_core::shimsetup::{self, Shell, ShimsError};
 use crisol_core::userpath::{PathChange, UserPath};
 use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
-use crate::args::{Args, AutostartAction, PathAction, Plan, ShellArg, ShimsAction, SystemAction};
+use crate::args::{
+    Args, AutostartAction, PathAction, Plan, ShellArg, ShimsAction, SystemAction, TerminalArg,
+};
 
 /// Exit code: it worked.
 pub const EXIT_OK: u8 = 0;
@@ -34,6 +39,11 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: the arguments are wrong (the same as `clap` uses).
 pub const EXIT_USAGE: u8 = 2;
+
+/// Where a terminal's program is, given the program that started `crisol`.
+pub type FindTerminal = Box<dyn Fn(Terminal, Option<&str>) -> Option<PathBuf>>;
+/// Starts a terminal and gives its exit code.
+pub type RunTerminal = Box<dyn Fn(&ShellLaunch) -> std::io::Result<i32>>;
 
 /// Reads a variable of the environment of the process.
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
@@ -109,6 +119,12 @@ pub struct Context {
     pub env: EnvLookup,
     /// The program that started this one (`pwsh.exe`), which tells the shell better.
     pub parent_program: Option<String>,
+    /// All the variables of the environment of this process, for `crisol shell`.
+    pub env_vars: Box<dyn Fn() -> Vec<(OsString, OsString)>>,
+    /// Where a terminal's program is (given the program that started this one).
+    pub find_terminal: FindTerminal,
+    /// Starts a terminal in this window, waits and gives its exit code.
+    pub run_terminal: RunTerminal,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
@@ -175,6 +191,7 @@ impl Session<'_> {
             Plan::Shims(action) => self.shims(action),
             Plan::Path(action) => self.path(action),
             Plan::Env(shell) => self.env(shell),
+            Plan::Shell { shell, clean } => self.shell(shell, clean),
         }
     }
 
@@ -385,10 +402,7 @@ impl Session<'_> {
         // What would win over the shims matters whenever they are (or are about to be) in use.
         if word != "removed" && word != "absent" {
             for line in shimsetup::describe_shadows(&status.shadows) {
-                text.push_str(
-                    "
-  ",
-                );
+                text.push_str("\n  ");
                 text.push_str(&line);
             }
         }
@@ -430,6 +444,62 @@ impl Session<'_> {
             let _ = write!(self.out, "{script}");
         }
         EXIT_OK
+    }
+
+    fn shell(&mut self, asked: Option<TerminalArg>, clean: bool) -> u8 {
+        let asked = asked.map(|arg| match arg {
+            TerminalArg::Pwsh => Terminal::Pwsh,
+            TerminalArg::Powershell => Terminal::WindowsPowerShell,
+            TerminalArg::Cmd => Terminal::Cmd,
+            TerminalArg::Bash => Terminal::Bash,
+        });
+        let parent = self.context.parent_program.as_deref();
+        let find = |t: Terminal| (self.context.find_terminal)(t, parent);
+        let (terminal, program, note) = match shell::choose_terminal(asked, parent, &find) {
+            Ok(chosen) => chosen,
+            Err(error) => return self.shell_error(&error),
+        };
+        let config = match Config::load_from(&self.context.paths) {
+            Ok(loaded) => loaded.config,
+            Err(error) => {
+                return self.fail(&RpcError::new(ErrorCode::InvalidParams, error.to_string()))
+            }
+        };
+        let front = shell::front_folders(&self.context.paths, &config);
+        let env = (self.context.env_vars)();
+        let launch = match shell::plan_shell(&shell::ShellInput {
+            paths: &self.context.paths,
+            terminal,
+            program: &program,
+            clean,
+            front: &front,
+            env: &env,
+        }) {
+            Ok(launch) => launch,
+            Err(error) => return self.shell_error(&error),
+        };
+        if let Some(note) = note {
+            let _ = writeln!(self.err, "crisol: {note}");
+        }
+        match (self.context.run_terminal)(&launch) {
+            Ok(code) => u8::try_from(code).unwrap_or(EXIT_FAILED),
+            Err(error) => self.fail(&RpcError::new(
+                ErrorCode::Io,
+                format!("cannot start {}: {error}", program.display()),
+            )),
+        }
+    }
+
+    fn shell_error(&mut self, error: &shell::ShellError) -> u8 {
+        let code = match error {
+            shell::ShellError::AlreadyInside => ErrorCode::Conflict,
+            shell::ShellError::NoShims
+            | shell::ShellError::NotFound(_)
+            | shell::ShellError::NoTerminal => ErrorCode::NotAvailable,
+            shell::ShellError::Unusable(_) => ErrorCode::InvalidParams,
+            shell::ShellError::Io(_) => ErrorCode::Io,
+        };
+        self.fail(&RpcError::new(code, error.to_string()))
     }
 
     fn system(&mut self, action: SystemAction) -> u8 {

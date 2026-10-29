@@ -196,6 +196,17 @@ pub enum Command {
         #[arg(long, value_enum)]
         shell: Option<ShellArg>,
     },
+    /// Opens a terminal where only Crisol decides which `php`, `node` or `mysql` runs: its
+    /// shims and database clients first, the variables of other tools taken out, and your
+    /// profile followed by Crisol's. `exit` takes you back. Nothing outside it changes.
+    Shell {
+        /// `pwsh`, `powershell`, `cmd` or `bash`; by default the one you are in.
+        #[arg(long, value_enum)]
+        shell: Option<TerminalArg>,
+        /// Without your own profile (`$PROFILE`, `AutoRun`, `~/.bashrc`).
+        #[arg(long)]
+        clean: bool,
+    },
 }
 
 /// What `crisol shims` does.
@@ -231,6 +242,19 @@ pub enum ShellArg {
     /// `cmd.exe`.
     Cmd,
     /// Git Bash and other POSIX shells.
+    Bash,
+}
+
+/// The terminal `crisol shell` opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TerminalArg {
+    /// PowerShell 7.
+    Pwsh,
+    /// Windows PowerShell 5.1.
+    Powershell,
+    /// `cmd.exe`.
+    Cmd,
+    /// Git Bash.
     Bash,
 }
 
@@ -298,6 +322,13 @@ pub enum Plan {
     Path(PathAction),
     /// `env`: the lines for one terminal.
     Env(Option<ShellArg>),
+    /// Open a `crisol shell`.
+    Shell {
+        /// The terminal asked for.
+        shell: Option<TerminalArg>,
+        /// Without the user's profile.
+        clean: bool,
+    },
 }
 
 /// Parses the arguments (the first is the program name).
@@ -426,6 +457,7 @@ impl Command {
             Self::Shims { action } => return Plan::Shims(action),
             Self::Path { action } => return Plan::Path(action),
             Self::Env { shell } => return Plan::Env(shell),
+            Self::Shell { shell, clean } => return Plan::Shell { shell, clean },
         };
         Plan::Call(call)
     }

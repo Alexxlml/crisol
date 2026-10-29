@@ -268,6 +268,18 @@ impl DbKind {
         Self::ALL.into_iter().find(|k| k.service() == name)
     }
 
+    /// The folder of its installation that has its command-line client (`mysql.exe`,
+    /// `psql.exe`, `redis-cli.exe`), relative to the installation: `""` for the installation
+    /// itself. `None` for the services without one.
+    #[must_use]
+    pub fn client_folder(self) -> Option<&'static str> {
+        match self {
+            Self::Mysql | Self::Mariadb | Self::Postgres | Self::Mongodb => Some("bin"),
+            Self::Redis => Some(""),
+            Self::Mailpit | Self::Meilisearch | Self::Garnet | Self::Memcached => None,
+        }
+    }
+
     /// The main port `crisol.toml` says now (a running one may have been started on another).
     #[must_use]
     pub fn configured_ports(self, config: &Config) -> Vec<u16> {

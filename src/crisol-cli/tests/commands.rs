@@ -163,6 +163,8 @@ struct Env {
     shim_exe: std::path::PathBuf,
     /// The program that "started" `crisol` (none: the shell is guessed from the variables).
     parent_program: Option<String>,
+    /// The terminals `crisol shell` asked to start.
+    terminals: Arc<Mutex<Vec<crisol_core::shell::ShellLaunch>>>,
     setup: Arc<FakeSetup>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
@@ -222,6 +224,7 @@ impl Env {
             user_path: Arc::new(FakeUserPath::with_user(r"C:\Tools;%USERPROFILE%\bin")),
             shim_exe,
             parent_program: None,
+            terminals: Arc::default(),
             setup: Arc::new(FakeSetup::new()),
             driver_stop,
             driver,
@@ -262,6 +265,26 @@ impl Env {
             reserved_name: Box::new(|name| name == "ping"),
             env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
             parent_program: self.parent_program.clone(),
+            env_vars: Box::new(|| {
+                vec![
+                    ("Path".into(), r"C:\laragon\bin\php;C:\Windows".into()),
+                    ("PHPRC".into(), r"C:\laragon\bin\php".into()),
+                ]
+            }),
+            // Every terminal is "installed" at a made-up place.
+            find_terminal: Box::new(|terminal, _| {
+                Some(std::path::PathBuf::from(format!(
+                    r"C:\fake\{}.exe",
+                    terminal.name()
+                )))
+            }),
+            run_terminal: {
+                let terminals = Arc::clone(&self.terminals);
+                Box::new(move |launch| {
+                    terminals.lock().unwrap().push(launch.clone());
+                    Ok(5)
+                })
+            },
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(25),
@@ -1169,4 +1192,39 @@ fn db_reset_password_needs_the_daemon_because_it_asks_a_running_server() {
     let shown = env.failing(&["db", "reset-password", "mysql"]);
     assert!(shown.contains("daemon is not running"), "{shown}");
     assert!(shown.contains("crisol start"), "{shown}");
+}
+
+// ---- crisol shell ----------------------------------------------------------------------------
+
+#[test]
+fn shell_opens_the_terminal_it_was_called_from_with_crisol_first_and_gives_back_its_code() {
+    let mut env = Env::new(&[]);
+    let (code, _, err) = env.run(&["shell"]);
+    assert_eq!(code, 1, "without shims it refuses: {err}");
+    assert!(err.contains("crisol shims install"), "{err}");
+
+    env.ok(&["shims", "install"]);
+    env.parent_program = Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_owned());
+    let (code, _, err) = env.run(&["shell"]);
+    assert_eq!(code, 5, "the terminal's exit code: {err}");
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.program, std::path::Path::new(r"C:\fake\pwsh.exe"));
+    let path = launch
+        .set
+        .iter()
+        .find(|(n, _)| n == "PATH")
+        .unwrap()
+        .1
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        path.starts_with(&env.paths.shims_dir().display().to_string())
+            && path.ends_with(r"C:\laragon\bin\php;C:\Windows"),
+        "{path}"
+    );
+    assert_eq!(launch.remove, ["PHPRC"]);
+
+    assert_eq!(env.run(&["shell", "--shell", "cmd", "--clean"]).0, 5);
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.args[0], "/d");
 }

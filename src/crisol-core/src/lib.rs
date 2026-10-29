@@ -35,6 +35,7 @@ pub mod resolve;
 pub mod secrets;
 pub mod service;
 pub mod setup;
+pub mod shell;
 pub mod shims;
 pub mod shimsetup;
 pub mod sites;
