@@ -21,7 +21,7 @@ fn a_request_is_json_rpc_with_method_and_params() {
         7,
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4".to_owned(),
+            version: Some("8.4".to_owned()),
             from: None,
             sha256: None,
         },
@@ -60,7 +60,13 @@ fn every_call_survives_a_round_trip_and_names_itself() {
         Call::Shutdown,
         Call::Install {
             service: "node".to_owned(),
-            version: "latest".to_owned(),
+            version: Some("latest".to_owned()),
+            from: None,
+            sha256: None,
+        },
+        Call::Install {
+            service: "node".to_owned(),
+            version: None,
             from: None,
             sha256: None,
         },
@@ -151,9 +157,22 @@ fn optional_parameters_may_be_left_out() {
             from: None
         }
     );
+    // An install without a version asks for the recommended line (ADR-0012).
+    let install: Request =
+        from_line(r#"{"jsonrpc":"2.0","id":5,"method":"install","params":{"service":"php"}}"#)
+            .unwrap();
+    assert_eq!(
+        install.call,
+        Call::Install {
+            service: "php".to_owned(),
+            version: None,
+            from: None,
+            sha256: None
+        }
+    );
     // A required one may not.
     assert!(from_line::<Request>(
-        r#"{"jsonrpc":"2.0","id":5,"method":"install","params":{"service":"php"}}"#
+        r#"{"jsonrpc":"2.0","id":6,"method":"uninstall","params":{"service":"php"}}"#
     )
     .is_err());
 }

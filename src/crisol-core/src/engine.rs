@@ -177,7 +177,13 @@ impl Engine {
                 version,
                 from,
                 sha256,
-            } => self.install(service, version, from.as_deref(), sha256.as_deref(), events),
+            } => self.install(
+                service,
+                version.as_deref(),
+                from.as_deref(),
+                sha256.as_deref(),
+                events,
+            ),
             Call::Uninstall { service, version } => self.uninstall(service, version),
             Call::Use { tool, version, dir } => self.use_version(*tool, version, dir.as_deref()),
             Call::Park { path } => self.park(path),
@@ -395,11 +401,12 @@ impl Engine {
     fn install(
         &self,
         service: &str,
-        version: &str,
+        version: Option<&str>,
         from: Option<&str>,
         sha256: Option<&str>,
         events: &mut dyn FnMut(Event),
     ) -> Result<Reply, RpcError> {
+        let version = self.requested(service, version, from.is_some())?;
         let env = Environment {
             paths: &self.paths,
             catalog: &self.deps.catalog,
@@ -493,6 +500,24 @@ impl Engine {
                 }))
             }
             Err(error) => Err(manage_error(error)),
+        }
+    }
+
+    /// What an install asks the catalog for. Without a version, the one Crisol uses by default
+    /// (the recommended line), not merely the highest (ADR-0012); an archive has no default.
+    fn requested<'a>(
+        &'a self,
+        service: &str,
+        version: Option<&'a str>,
+        from_file: bool,
+    ) -> Result<&'a str, RpcError> {
+        match version {
+            Some(version) => Ok(version),
+            None if from_file => Err(RpcError::new(
+                ErrorCode::InvalidParams,
+                "`from` needs the exact version of the archive",
+            )),
+            None => Ok(self.deps.catalog.recommended(service).unwrap_or("latest")),
         }
     }
 

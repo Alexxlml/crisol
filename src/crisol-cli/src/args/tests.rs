@@ -33,7 +33,7 @@ fn each_command_is_one_call() {
         call(&["install", "php", "8.4"]),
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4".to_owned(),
+            version: Some("8.4".to_owned()),
             from: None,
             sha256: None
         }
@@ -42,7 +42,7 @@ fn each_command_is_one_call() {
         call(&["install", "nginx"]),
         Call::Install {
             service: "nginx".to_owned(),
-            version: "latest".to_owned(),
+            version: None,
             from: None,
             sha256: None
         }
@@ -268,7 +268,7 @@ fn install_from_a_file_needs_its_hash_and_sends_an_absolute_path() {
         ]),
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4.28".to_owned(),
+            version: Some("8.4.28".to_owned()),
             from: Some(r"D:\work\dl\php.zip".to_owned()),
             sha256: Some(hash.clone()),
         }
@@ -285,7 +285,7 @@ fn install_from_a_file_needs_its_hash_and_sends_an_absolute_path() {
         ]),
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4.28".to_owned(),
+            version: Some("8.4.28".to_owned()),
             from: Some(r"E:\dl\php.zip".to_owned()),
             sha256: Some(hash.clone()),
         }
@@ -294,6 +294,15 @@ fn install_from_a_file_needs_its_hash_and_sends_an_absolute_path() {
     for words in [
         vec!["install", "php", "8.4.28", "--from", "php.zip"],
         vec!["install", "php", "8.4.28", "--sha256", hash.as_str()],
+        // And the version of the archive must be written: there is no default for a file.
+        vec![
+            "install",
+            "php",
+            "--from",
+            "php.zip",
+            "--sha256",
+            hash.as_str(),
+        ],
     ] {
         let mut arguments = vec!["crisol"];
         arguments.extend(words);

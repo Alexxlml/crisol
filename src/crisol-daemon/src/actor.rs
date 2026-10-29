@@ -292,7 +292,10 @@ impl Ctx<'_> {
         let label = match &call {
             Call::Install {
                 service, version, ..
-            } => format!("installing {service} {version}"),
+            } => match version {
+                Some(version) => format!("installing {service} {version}"),
+                None => format!("installing {service}"),
+            },
             Call::Uninstall { service, version } => format!("removing {service} {version}"),
             _ => "doctor".to_owned(),
         };

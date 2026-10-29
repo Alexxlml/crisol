@@ -625,8 +625,17 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
     }
     assert_eq!(resolve("nginx", "1.28"), "1.28.3");
     assert_eq!(resolve("nginx", "1.30"), "1.30.5");
-    assert_eq!(resolve("node", "22"), "22.23.3");
-    assert_eq!(resolve("node", "24"), "24.22.0");
+    // The security releases of 2026-10-20 (and 24.22.2 after them), and Node 26, LTS since
+    // 2026-10-28.
+    assert_eq!(resolve("node", "22"), "22.23.4");
+    assert_eq!(resolve("node", "24"), "24.22.2");
+    assert_eq!(resolve("node", "26"), "26.13.0");
+    for replaced in ["22.23.3", "24.22.0"] {
+        assert!(
+            catalog.find("node", replaced, WINDOWS).is_err(),
+            "{replaced}"
+        );
+    }
     assert_eq!(
         catalog
             .latest("composer", WINDOWS)
@@ -777,12 +786,13 @@ fn the_built_in_catalog_recommends_php_8_4_and_marks_7_4_as_unsupported() {
     };
     assert!(catalog.find("php", "8.4", target).is_ok());
     assert!(catalog.find("node", "24", target).is_ok());
-    // Node 20 is only for old projects: it never is what "latest" means.
+    // Node 20 is only for old projects: it never is what "latest" means. The highest is 26,
+    // but the default stays on 24 until 26 has had its first maintenance update.
     let node20 = catalog.find("node", "20", target).unwrap();
     assert!(node20.end_of_life);
     assert_eq!(
         catalog.latest("node", target).unwrap().version.to_string(),
-        "24.22.0"
+        "26.13.0"
     );
 
     let old = catalog.find("php", "7.4", target).unwrap();
@@ -1031,5 +1041,5 @@ fn the_built_in_catalog_flags_php2shell_only_where_there_is_no_fixed_build() {
     for fixed in ["8.3.36", "8.4.27", "8.5.12"] {
         assert!(!affected(&catalog, "php", fixed), "{fixed}");
     }
-    assert!(!affected(&catalog, "node", "22.23.3"));
+    assert!(!affected(&catalog, "node", "22.23.4"));
 }

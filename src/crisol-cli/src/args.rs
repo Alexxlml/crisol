@@ -64,13 +64,14 @@ pub enum Command {
     Install {
         /// `php`, `nginx`, `node`, …
         service: String,
-        /// `8.4`, `8.4.26` or `latest` (the default).
-        #[arg(id = "requested", value_name = "VERSION", default_value = "latest")]
-        version: String,
+        /// `8.4`, `8.4.26` or `latest` (the highest). Without it, the version Crisol uses by
+        /// default: the line the catalog recommends.
+        #[arg(id = "requested", value_name = "VERSION")]
+        version: Option<String>,
         /// Installs from an archive you already downloaded instead of the catalog: the way out
         /// when this `crisol.exe` does not list a version yet (needs the exact version and
         /// `--sha256`). Crisol marks it "not verified by Crisol".
-        #[arg(long, value_name = "ZIP", requires = "sha256")]
+        #[arg(long, value_name = "ZIP", requires = "sha256", requires = "requested")]
         from: Option<PathBuf>,
         /// The SHA-256 of that archive, from the provider's page. It is checked before
         /// anything is unpacked.

@@ -13,7 +13,7 @@
 //! The clients are the Windows `curl` (Schannel, trusting only `--cacert`), PHP's cURL (OpenSSL,
 //! with the generated `cacert.pem`) and Node (OpenSSL, with `NODE_EXTRA_CA_CERTS`). Needs
 //! `nginx-1.28.3.zip`, `php-7.4.33-nts-Win32-vc15-x64.zip`, `cacert-2026-09-25.pem` and
-//! `node-v22.23.3-win-x64.zip` in `CRISOL_TEST_DOWNLOADS`. Ports 19450 and 19451.
+//! `node-v22.23.4-win-x64.zip` in `CRISOL_TEST_DOWNLOADS`. Ports 19450 and 19451.
 //!
 //! ```text
 //! CRISOL_TEST_DOWNLOADS=<folder> cargo test -p crisol-platform --test tls_clients -- --ignored --nocapture
@@ -95,7 +95,7 @@ fn a_certificate_the_ca_signs_for_a_public_site_is_refused_by_every_client() {
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
     let php_dir = install_from_downloads(&paths, "php", "7.4.33");
     install_from_downloads(&paths, "cacert", "2026.9.25");
-    let node_dir = install_from_downloads(&paths, "node", "22.23.3");
+    let node_dir = install_from_downloads(&paths, "node", "22.23.4");
 
     // The CA, and the legitimate certificate for ok.test.
     let now = SystemTime::now();

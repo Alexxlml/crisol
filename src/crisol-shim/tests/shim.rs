@@ -446,7 +446,7 @@ fn add_node_scripts(dir: &Path, corepack: bool) {
 fn npm_and_npx_run_their_script_on_the_node_of_the_project_without_a_batch_file() {
     let rig = Rig::new();
     let old = rig.install("node", "20.20.2", &exe_name("node"));
-    let new = rig.install("node", "24.22.0", &exe_name("node"));
+    let new = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&old, true);
     add_node_scripts(&new, true);
     fs::write(
@@ -480,7 +480,7 @@ fn npm_and_npx_run_their_script_on_the_node_of_the_project_without_a_batch_file(
 #[test]
 fn npm_receives_percent_caret_quote_and_even_line_breaks_unchanged() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, false);
     let npm = rig.shim("npm");
     let tricky = [
@@ -536,14 +536,14 @@ fn a_node_command_without_its_script_says_the_installation_is_damaged() {
 #[test]
 fn npm_runs_with_a_global_folder_per_version_and_a_cache_in_the_home() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, false);
     let seen = |output: &Output, name: &str| echoed_var(output, name);
     let global = rig
         .home
         .join("data")
         .join("node")
-        .join("24.22.0")
+        .join("24.22.2")
         .join("global");
 
     for name in ["npm", "npx", "node"] {
@@ -584,7 +584,7 @@ fn npm_runs_with_a_global_folder_per_version_and_a_cache_in_the_home() {
 fn a_global_program_gets_its_command_when_npm_installs_it_and_runs_under_the_right_node() {
     let rig = Rig::new();
     let node_22 = rig.install("node", "22.23.3", &exe_name("node"));
-    let node_24 = rig.install("node", "24.22.0", &exe_name("node"));
+    let node_24 = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&node_22, false);
     add_node_scripts(&node_24, false);
     // The shims of a real installation live in `<home>/shims`.
@@ -598,7 +598,7 @@ fn a_global_program_gets_its_command_when_npm_installs_it_and_runs_under_the_rig
         .home
         .join("data")
         .join("node")
-        .join("24.22.0")
+        .join("24.22.2")
         .join("global");
     fs::create_dir_all(&global).unwrap();
     fs::write(
@@ -624,8 +624,8 @@ fn a_global_program_gets_its_command_when_npm_installs_it_and_runs_under_the_rig
     assert_eq!(output.status.code(), Some(1));
     let text = stderr(&output);
     assert!(
-        text.contains("`tsc` is not installed for Node 22.23.3, only for Node 24.22.0")
-            && text.contains("crisol use node 24.22.0"),
+        text.contains("`tsc` is not installed for Node 22.23.3, only for Node 24.22.2")
+            && text.contains("crisol use node 24.22.2"),
         "{text}"
     );
 
@@ -640,7 +640,7 @@ fn a_global_program_gets_its_command_when_npm_installs_it_and_runs_under_the_rig
 #[test]
 fn a_copy_of_the_shim_with_a_made_up_name_does_nothing() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, false);
     // Not in the shims folder of the home, and not in the list.
     let outside = rig.shims.join(exe_name("tsc"));
@@ -656,7 +656,7 @@ fn a_copy_of_the_shim_with_a_made_up_name_does_nothing() {
 #[test]
 fn npm_commands_that_do_not_touch_the_global_programs_leave_the_commands_alone() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, false);
     let shims = rig.home.join("shims");
     fs::create_dir_all(&shims).unwrap();
@@ -666,7 +666,7 @@ fn npm_commands_that_do_not_touch_the_global_programs_leave_the_commands_alone()
         .home
         .join("data")
         .join("node")
-        .join("24.22.0")
+        .join("24.22.2")
         .join("global");
     fs::create_dir_all(&global).unwrap();
     fs::write(global.join("tsc.cmd"), "@echo off\r\n").unwrap();
@@ -685,7 +685,7 @@ fn npm_commands_that_do_not_touch_the_global_programs_leave_the_commands_alone()
 #[test]
 fn pnpm_and_yarn_go_through_corepack_with_downloads_kept_in_the_cache() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, true);
     let cache = rig.home.join("cache").join("corepack");
 
@@ -713,7 +713,7 @@ fn pnpm_and_yarn_go_through_corepack_with_downloads_kept_in_the_cache() {
 #[test]
 fn corepack_enable_writes_nothing_and_says_why_but_the_rest_goes_through() {
     let rig = Rig::new();
-    let dir = rig.install("node", "24.22.0", &exe_name("node"));
+    let dir = rig.install("node", "24.22.2", &exe_name("node"));
     add_node_scripts(&dir, true);
     let corepack = rig.shim("corepack");
 
@@ -1333,13 +1333,21 @@ fn node_is_not_told_about_a_copy_other_accounts_can_modify() {
 /// `corepack enable` writing nothing.
 ///
 /// ```text
-/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip and node-v24.22.0-win-x64.zip> cargo test -p crisol-shim real_node -- --ignored --nocapture
+/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip, node-v24.22.2-win-x64.zip and node-v26.13.0-win-x64.zip> cargo test -p crisol-shim real_node -- --ignored --nocapture
 /// ```
 #[test]
-#[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the official Node 20.20.2 and 24.22.0 archives (Windows)"]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the official Node 20.20.2, 24.22.2 and 26.13.0 archives (Windows)"]
+#[allow(clippy::too_many_lines)]
 fn real_node_runs_through_the_shims() {
     let rig = Rig::new();
-    let paths = install_downloaded(&rig, &[("node", "20.20.2"), ("node", "24.22.0")]);
+    let paths = install_downloaded(
+        &rig,
+        &[
+            ("node", "20.20.2"),
+            ("node", "24.22.2"),
+            ("node", "26.13.0"),
+        ],
+    );
     let (node, npm, npx, corepack) = (
         rig.shim("node"),
         rig.shim("npm"),
@@ -1360,8 +1368,8 @@ fn real_node_runs_through_the_shims() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         first_line(&output),
-        "v24.22.0",
-        "the highest supported one by default"
+        "v24.22.2",
+        "the recommended line by default, though 26 is higher"
     );
     fs::write(rig.work.join(".nvmrc"), "20\n").unwrap();
     assert_eq!(first_line(&rig.run(&node, &["--version"])), "v20.20.2");
@@ -1377,6 +1385,18 @@ fn real_node_runs_through_the_shims() {
     let npm_24 = first_line(&rig.run(&npm, &["--version"]));
     assert_ne!(npm_20, npm_24, "each Node brings its own npm");
     println!("npm {npm_20} with Node 20, npm {npm_24} with Node 24");
+
+    // Node 26 runs when asked for, and it has no Corepack: `pnpm` says so.
+    fs::write(rig.work.join(".nvmrc"), "26\n").unwrap();
+    assert_eq!(first_line(&rig.run(&node, &["--version"])), "v26.13.0");
+    let output = rig.run(&rig.shim("pnpm"), &["--version"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("Node 26.13.0 does not include Corepack"),
+        "{}",
+        stderr(&output)
+    );
+    fs::write(rig.work.join(".nvmrc"), "24\n").unwrap();
 
     // Arguments reach a real node exactly, whatever cmd.exe would have thought of them.
     let tricky = [
@@ -1423,7 +1443,7 @@ fn real_node_runs_through_the_shims() {
     );
 
     // `corepack enable` writes nothing: the installation is as it was.
-    let install = paths.bin_for("node", "24.22.0").unwrap();
+    let install = paths.bin_for("node", "24.22.2").unwrap();
     let listing = |dir: &Path| {
         let mut names: Vec<String> = fs::read_dir(dir)
             .unwrap()
@@ -1446,10 +1466,10 @@ fn real_node_runs_through_the_shims() {
 /// `pnpm` through the shim downloads pnpm into `cache/corepack` of the home and nowhere else.
 /// It needs the network (the npm registry).
 #[test]
-#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 24.22.0 archive (Windows)"]
+#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 24.22.2 archive (Windows)"]
 fn real_pnpm_goes_through_corepack_and_downloads_only_into_the_home() {
     let rig = Rig::new();
-    install_downloaded(&rig, &[("node", "24.22.0")]);
+    install_downloaded(&rig, &[("node", "24.22.2")]);
     let outside =
         std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("node").join("corepack"));
     let snapshot = |dir: &Option<PathBuf>| {
@@ -1489,14 +1509,14 @@ fn real_pnpm_goes_through_corepack_and_downloads_only_into_the_home() {
 /// nothing is touched in `%APPDATA%\npm` or `%LOCALAPPDATA%\npm-cache`.
 ///
 /// ```text
-/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip and node-v24.22.0-win-x64.zip> cargo test -p crisol-shim real_global -- --ignored --nocapture
+/// CRISOL_TEST_DOWNLOADS=<folder with node-v20.20.2-win-x64.zip and node-v24.22.2-win-x64.zip> cargo test -p crisol-shim real_global -- --ignored --nocapture
 /// ```
 #[test]
 #[allow(clippy::too_many_lines)] // one scenario, read top to bottom
-#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 20.20.2 and 24.22.0 archives (Windows)"]
+#[ignore = "needs the network and CRISOL_TEST_DOWNLOADS with the official Node 20.20.2 and 24.22.2 archives (Windows)"]
 fn real_global_programs_live_in_the_home_one_set_per_node_version() {
     let rig = Rig::new();
-    install_downloaded(&rig, &[("node", "20.20.2"), ("node", "24.22.0")]);
+    install_downloaded(&rig, &[("node", "20.20.2"), ("node", "24.22.2")]);
     let shims = rig.home.join("shims");
     fs::create_dir_all(&shims).unwrap();
     for name in ["node", "npm"] {
@@ -1547,8 +1567,8 @@ fn real_global_programs_live_in_the_home_one_set_per_node_version() {
         stdout(&output),
         stderr(&output)
     );
-    assert!(global("24.22.0").join("semver.cmd").is_file());
-    assert!(global("24.22.0")
+    assert!(global("24.22.2").join("semver.cmd").is_file());
+    assert!(global("24.22.2")
         .join("node_modules")
         .join("semver")
         .is_dir());
@@ -1563,7 +1583,7 @@ fn real_global_programs_live_in_the_home_one_set_per_node_version() {
     );
     assert_eq!(
         PathBuf::from(first_line(&rig.run(&npm, &["root", "--global"]))),
-        global("24.22.0").join("node_modules")
+        global("24.22.2").join("node_modules")
     );
 
     // It runs.
@@ -1581,7 +1601,7 @@ fn real_global_programs_live_in_the_home_one_set_per_node_version() {
     let output = rig.run(&semver, &["1.2.3"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).contains("only for Node 24.22.0"),
+        stderr(&output).contains("only for Node 24.22.2"),
         "{}",
         stderr(&output)
     );
@@ -1607,7 +1627,7 @@ fn real_global_programs_live_in_the_home_one_set_per_node_version() {
         stdout(&output),
         stderr(&output)
     );
-    assert!(!global("24.22.0").join("semver.cmd").exists());
+    assert!(!global("24.22.2").join("semver.cmd").exists());
     assert!(semver.is_file());
     fs::write(rig.work.join(".nvmrc"), "20\n").unwrap();
     let output = rig.run(&npm, &["uninstall", "-g", "semver"]);

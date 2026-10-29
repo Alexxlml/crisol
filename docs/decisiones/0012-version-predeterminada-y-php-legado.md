@@ -49,3 +49,11 @@ Interpretación del "8.4^" del usuario: la **línea 8.4** (cualquier 8.4.x, el p
 ## Ampliación a Node (2026-10-17, F10.1)
 
 El mecanismo es el mismo y se aplica a Node sin cambios en el código: `[recommended] node = "24"` (la LTS en activo; al pasar la 26 a LTS y estabilizarse se cambia con un catálogo nuevo) y Node 20.20.2 con `end_of_life = true`, instalable para proyectos viejos y nunca elegida por defecto ni por `latest`. Con 20, 22 y 24 instaladas, `engines.node = ">=18"` resuelve a 24 y `".nvmrc"` con `20` da 20.
+
+## Ampliación: `crisol install` sin versión (2026-10-29, catálogo `serial = 13`)
+
+Al añadir Node 26 apareció un desajuste: `crisol install node` pedía `latest` e instalaba 26.13.0, mientras la predeterminada efectiva seguía siendo 24. Con PHP pasaba lo mismo (`crisol install php` daba 8.5 y la recomendada es 8.4). El propietario decidió (2026-10-29) que **sin versión se instala la línea recomendada**: lo que se instala es lo que Crisol usará.
+
+- `Call::Install.version` pasa a ser opcional en el protocolo. Sin él, el motor pide `[recommended]` del servicio y, si no hay, `latest`. Un cliente que manda `"latest"` sigue recibiendo la más alta.
+- El CLI ya no rellena `latest` por defecto. `--from` exige escribir la versión (clap y el motor lo comprueban): un archivo no tiene versión predeterminada.
+- `[defaults]` de `crisol.toml` no interviene: se usa solo la línea del catálogo. Si se quiere que una predeterminada del usuario también decida qué se instala, el cambio va en `Engine::requested`.

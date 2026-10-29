@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 12
+serial = 13
 generated = "2026-10-29"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -140,27 +140,42 @@ end_of_life = true
 
 [[package]]
 service = "node"
-version = "22.23.3"
+version = "22.23.4"
 os = "windows"
 arch = "x86_64"
-url = "https://nodejs.org/dist/v22.23.3/node-v22.23.3-win-x64.zip"
-sha256 = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+url = "https://nodejs.org/dist/v22.23.4/node-v22.23.4-win-x64.zip"
+sha256 = "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20"
 format = "zip"
-root = "node-v22.23.3-win-x64"
+root = "node-v22.23.4-win-x64"
 executable = "node.exe"
-size = 35574076
+size = 35604229
 
 [[package]]
 service = "node"
-version = "24.22.0"
+version = "24.22.2"
 os = "windows"
 arch = "x86_64"
-url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip"
-sha256 = "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3"
+url = "https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip"
+sha256 = "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
 format = "zip"
-root = "node-v24.22.0-win-x64"
+root = "node-v24.22.2-win-x64"
 executable = "node.exe"
-size = 37733703
+size = 37754834
+
+# Node 26 became LTS on 2026-10-28. It no longer ships Corepack (Node 25 left it out): the
+# shims of `corepack`, `pnpm` and `yarn` say so. `[recommended] node` stays on 24 until 26 has
+# had its first maintenance update.
+[[package]]
+service = "node"
+version = "26.13.0"
+os = "windows"
+arch = "x86_64"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip"
+sha256 = "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a"
+format = "zip"
+root = "node-v26.13.0-win-x64"
+executable = "node.exe"
+size = 41157375
 
 [[package]]
 service = "composer"

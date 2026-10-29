@@ -122,7 +122,7 @@ impl Rig {
     fn install(&self, service: &str, version: &str) -> Reply {
         self.call(&Call::Install {
             service: service.to_owned(),
-            version: version.to_owned(),
+            version: Some(version.to_owned()),
             from: None,
             sha256: None,
         })
@@ -273,7 +273,8 @@ fn install_reports_download_progress_through_events() {
         .handle(
             &Call::Install {
                 service: "nginx".to_owned(),
-                version: "latest".to_owned(),
+                // Nginx has no recommended line: without a version it is the highest.
+                version: None,
                 from: None,
                 sha256: None,
             },
@@ -288,13 +289,47 @@ fn install_reports_download_progress_through_events() {
 }
 
 #[test]
+fn install_without_a_version_takes_the_recommended_line_and_latest_the_highest() {
+    let rig = Rig::build(
+        &[("node", "24.22.2"), ("node", "26.13.0")],
+        Arc::new(NoSystemChecks),
+        "\n[recommended]\nnode = \"24\"\n",
+    );
+    let call = |version: Option<&str>| {
+        installed_info(
+            rig.call(&Call::Install {
+                service: "node".to_owned(),
+                version: version.map(str::to_owned),
+                from: None,
+                sha256: None,
+            })
+            .unwrap(),
+        )
+        .version
+    };
+    assert_eq!(call(None), "24.22.2");
+    assert_eq!(call(Some("latest")), "26.13.0");
+
+    // An archive has no default: its version must be said.
+    let error = rig
+        .call(&Call::Install {
+            service: "node".to_owned(),
+            version: None,
+            from: Some(r"D:\dl\node.zip".to_owned()),
+            sha256: Some("0".repeat(64)),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams);
+}
+
+#[test]
 fn version_errors_have_codes_a_client_can_act_on() {
     let rig = Rig::new(&[("php", "8.4.26")]);
     let code = |call: Call| rig.call(&call).unwrap_err().code;
     assert_eq!(
         code(Call::Install {
             service: "php".to_owned(),
-            version: "9.9".to_owned(),
+            version: Some("9.9".to_owned()),
             from: None,
             sha256: None,
         }),
@@ -303,7 +338,7 @@ fn version_errors_have_codes_a_client_can_act_on() {
     assert_eq!(
         code(Call::Install {
             service: "php".to_owned(),
-            version: "not-a-version".to_owned(),
+            version: Some("not-a-version".to_owned()),
             from: None,
             sha256: None,
         }),
@@ -341,7 +376,7 @@ fn an_open_home_blocks_install_and_uninstall_with_the_command_to_close_it() {
     for call in [
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4".to_owned(),
+            version: Some("8.4".to_owned()),
             from: None,
             sha256: None,
         },
@@ -1037,7 +1072,7 @@ fn installed_info(reply: Reply) -> InstalledInfo {
 fn install_call(version: &str, from: Option<&Path>, sha256: Option<&str>) -> Call {
     Call::Install {
         service: "php".to_owned(),
-        version: version.to_owned(),
+        version: Some(version.to_owned()),
         from: from.map(|p| p.display().to_string()),
         sha256: sha256.map(str::to_owned),
     }

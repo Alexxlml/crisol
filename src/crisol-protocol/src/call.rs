@@ -57,8 +57,11 @@ pub enum Call {
     Install {
         /// `php`, `nginx`, `node`, …
         service: String,
-        /// `8.4`, `8.4.26` or `latest`; with `from`, the exact version of the archive.
-        version: String,
+        /// `8.4`, `8.4.26` or `latest` (the highest that still receives security fixes); with
+        /// `from`, the exact version of the archive. Without it, the line the catalog
+        /// recommends, which is what Crisol uses by default (ADR-0012).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
         /// An archive already downloaded (an absolute path): the way out when the catalog
         /// lacks the version (ADR-0020). Needs `sha256`.
         #[serde(default, skip_serializing_if = "Option::is_none")]

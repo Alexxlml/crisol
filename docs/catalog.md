@@ -51,6 +51,7 @@ end_of_life = true        # opcional: ya no recibe parches de seguridad (ADR-001
 - `8` coincide con cualquier `8.x.y`.
 - Las versiones preliminares (`8.5.0-rc1`) **solo** se eligen pidiéndolas exactamente.
 - `latest` es la más alta no preliminar, prefiriendo una que aún reciba parches (`end_of_life` no se elige mientras haya otra).
+- `crisol install <servicio>` **sin versión** pide la línea de `[recommended]` (lo que Crisol usará por defecto), no `latest`: con Node 24 recomendado y 26 en el catálogo, instala 24. Un servicio sin línea recomendada (Nginx) recibe `latest`. En el protocolo, `install` sin `version`.
 - El orden es numérico: `8.4.10` es mayor que `8.4.2`.
 
 ## Confianza (ADR-0005)
