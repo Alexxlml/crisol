@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::dbservice::DbAdmin;
 use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
-use crate::install::{InstallError, InstallOptions, Progress};
+use crate::install::{unverified_sha256, InstallError, InstallOptions, Progress};
 use crate::manage::{
     install_version, install_version_from, is_unverified_install, list_available, list_installed,
     uninstall, Environment, LocalArchive, ManageError,
@@ -427,6 +427,12 @@ impl Engine {
                 &mut progress,
                 self.deps.dirs.as_ref(),
             ),
+            (Some(archive), Some(_)) if !Path::new(archive).is_absolute() => {
+                return Err(RpcError::new(
+                    ErrorCode::InvalidParams,
+                    format!("`from` must be an absolute path, not `{archive}`"),
+                ));
+            }
             (Some(archive), Some(hash)) => install_version_from(
                 &env,
                 service,
@@ -741,22 +747,50 @@ impl Engine {
     /// Installs made with `--from`: Crisol did not verify those archives (ADR-0020).
     fn check_unverified(&self) -> Option<Check> {
         let installed = list_installed(&self.paths).ok()?;
-        let names: Vec<String> = installed
-            .iter()
-            .filter(|i| is_unverified_install(i))
-            .map(|i| format!("{} {}", i.service, i.version))
-            .collect();
-        (!names.is_empty()).then(|| Check {
+        let mut waiting = Vec::new();
+        let mut different = Vec::new();
+        for i in installed.iter().filter(|i| is_unverified_install(i)) {
+            let name = format!("{} {}", i.service, i.version);
+            let official = self
+                .deps
+                .catalog
+                .available(&i.service, self.deps.target)
+                .into_iter()
+                .find(|p| p.version == i.version);
+            match official {
+                // The mark records the hash the user gave; the catalog now has the real one.
+                Some(p) if unverified_sha256(&i.path).as_deref() != Some(p.sha256.as_str()) => {
+                    different.push(name);
+                }
+                _ => waiting.push(name),
+            }
+        }
+        if !different.is_empty() {
+            let first = &different[0];
+            return Some(Check {
+                name: "unverified installs".to_owned(),
+                status: CheckStatus::Problem,
+                detail: format!(
+                    "{} {} not the official build: the catalog lists that version with another hash",
+                    different.join(", "),
+                    if different.len() == 1 { "is" } else { "are" }
+                ),
+                fix: Some(format!(
+                    "crisol uninstall {first} && crisol install {first}"
+                )),
+            });
+        }
+        (!waiting.is_empty()).then(|| Check {
             name: "unverified installs".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
                 "{} installed from a file with a hash you gave, not verified by Crisol",
-                names.join(", ")
+                waiting.join(", ")
             ),
-            fix: Some(
-                "when a newer crisol.exe lists the version, `crisol uninstall` it and install it again"
-                    .to_owned(),
-            ),
+            fix: Some(format!(
+                "when this crisol.exe lists the version, `crisol install {}` verifies it",
+                waiting[0]
+            )),
         })
     }
 
@@ -1042,7 +1076,7 @@ fn manage_error(error: ManageError) -> RpcError {
         ManageError::Ambiguous { .. }
         | ManageError::Version(_)
         | ManageError::Paths(_)
-        | ManageError::FromNeedsExactVersion(_)
+        | ManageError::FromNeedsExactVersion { .. }
         | ManageError::FromBadHash
         | ManageError::FromContradictsCatalog { .. }
         | ManageError::FromUnknownService(_) => {

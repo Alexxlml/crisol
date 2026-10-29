@@ -14,8 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::catalog::{Catalog, CatalogError, Package, Target};
 use crate::fetch::Fetch;
 use crate::install::{
-    install, install_from, is_unverified, InstallError, InstallOptions, Installed, Origin,
-    Progress, STAGING_PREFIX,
+    confirm_unverified, install, install_from, is_unverified, InstallError, InstallOptions,
+    Installed, Origin, Progress, STAGING_PREFIX,
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::version::{Version, VersionError, VersionReq};
@@ -97,9 +97,15 @@ pub enum ManageError {
     /// changed. Carries the file that is busy (or the folder, if the folder itself is).
     #[error("`{}` is in use (is one of its programs running?); nothing was removed", .0.display())]
     InUse(PathBuf),
-    /// `--from` needs the exact version (`8.4.28`), not a line or `latest`.
-    #[error("`--from` needs an exact version such as 8.4.28, not `{0}`")]
-    FromNeedsExactVersion(String),
+    /// `--from` needs the exact version, with as many parts as the catalog's versions of that
+    /// tool (`8.4.28`, `17.12`), not a line or `latest`.
+    #[error("`--from` needs an exact version like {example}, not `{given}`")]
+    FromNeedsExactVersion {
+        /// What was given.
+        given: String,
+        /// A version of that tool from the catalog, to show the shape.
+        example: String,
+    },
     /// `--sha256` is not 64 hexadecimal digits.
     #[error("`--sha256` must be 64 hexadecimal digits")]
     FromBadHash,
@@ -224,7 +230,18 @@ pub fn install_version(
     } else {
         env.catalog.find(service, request, env.target)?
     };
-    Ok(install(package, env.paths, env.fetcher, options, progress)?)
+    let result = install(package, env.paths, env.fetcher, options, progress);
+    confirm_if_official(&result, package);
+    Ok(result?)
+}
+
+/// A version installed earlier with `--from` stops being "not verified" once the catalog
+/// lists it with the same hash the user gave (ADR-0020 §1). A different hash keeps the mark;
+/// `doctor` says the file was not the official one.
+fn confirm_if_official(result: &Result<Installed, InstallError>, package: &Package) {
+    if let Err(InstallError::AlreadyInstalled(path)) = result {
+        confirm_unverified(path, &package.sha256);
+    }
 }
 
 /// An archive the user downloaded and the SHA-256 they vouch for (`install --from`, ADR-0020).
@@ -241,7 +258,9 @@ pub struct LocalArchive<'a> {
 /// The way out when the catalog built into this `crisol.exe` lacks a version (a security fix
 /// published after it was built). `sha256` is the hash the user vouches for and it is checked
 /// before anything is unpacked. The archive layout (`format`, `root`, executable) is that of
-/// the highest version of the tool in the catalog. The result is `unverified` unless the
+/// the highest version of the tool in the catalog, with that version's number in `root`
+/// replaced by this one (`node-v24.22.0-win-x64` → `node-v24.23.0-win-x64`). The version must
+/// have as many parts as that one (`8.4.28`, `17.12`). The result is `unverified` unless the
 /// catalog has this exact version with this same hash, in which case this is just an offline
 /// install; a catalog version with another hash is refused.
 pub fn install_version_from(
@@ -254,9 +273,16 @@ pub fn install_version_from(
     dirs: &dyn PrivateDirs,
 ) -> Result<Installed, ManageError> {
     require_private_home(env.paths, dirs)?;
+    let template = env
+        .catalog
+        .template(service, env.target)
+        .ok_or_else(|| ManageError::FromUnknownService(service.to_owned()))?;
     let parsed = Version::parse(version)?;
-    if parsed.is_prerelease() || parsed.parts().len() < 3 {
-        return Err(ManageError::FromNeedsExactVersion(version.to_owned()));
+    if parsed.is_prerelease() || parsed.parts().len() != template.version.parts().len() {
+        return Err(ManageError::FromNeedsExactVersion {
+            given: version.to_owned(),
+            example: template.version.to_string(),
+        });
     }
     let given = normalize_hash(archive.sha256).ok_or(ManageError::FromBadHash)?;
 
@@ -276,15 +302,16 @@ pub fn install_version_from(
         }
         (known.clone(), false)
     } else {
-        let template = env
-            .catalog
-            .template(service, env.target)
-            .ok_or_else(|| ManageError::FromUnknownService(service.to_owned()))?;
+        let root = template
+            .root
+            .as_ref()
+            .map(|root| root.replace(&template.version.to_string(), &parsed.to_string()));
         let package = Package {
             version: parsed,
             sha256: given,
             size: None,
             end_of_life: false,
+            root,
             ..template.clone()
         };
         (package, true)
@@ -293,9 +320,11 @@ pub fn install_version_from(
         path: archive.path,
         unverified,
     };
-    Ok(install_from(
-        &package, env.paths, origin, options, progress,
-    )?)
+    let result = install_from(&package, env.paths, origin, options, progress);
+    if !unverified {
+        confirm_if_official(&result, &package);
+    }
+    Ok(result?)
 }
 
 fn normalize_hash(text: &str) -> Option<String> {

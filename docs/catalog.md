@@ -85,9 +85,9 @@ url      = "https://…"                      # solo https, como los demás
 
 `crisol install <servicio> <versión exacta> --from <archivo> --sha256 <hash>` es la salida de emergencia cuando el catálogo de este `crisol.exe` aún no trae una versión (por ejemplo, una corrección de seguridad publicada después). `--sha256` es obligatorio y se compara antes de extraer nada; quien lo da responde por él.
 
-- La estructura del archivo (`format`, `root`, `executable`) se toma de la **versión más alta** de ese servicio en el catálogo (`Catalog::template`). Si no coincide, el instalador falla con «el archivo no contiene…» y no deja nada instalado.
+- La estructura del archivo (`format`, `root`, `executable`) se toma de la **versión más alta** de ese servicio en el catálogo (`Catalog::template`), con su número de versión sustituido en `root` (`node-v24.22.0-win-x64` → `node-v24.23.0-win-x64`). La versión debe tener tantas partes como esa (`8.4.28`, `17.12`). Si no coincide, el instalador falla con «el archivo no contiene…» y no deja nada instalado.
 - Si el catálogo ya tiene esa versión: con **el mismo hash** es una instalación sin red y queda verificada; con **otro hash** se rechaza (no se puede pisar una entrada del catálogo).
-- Lo instalado así lleva `.crisol-unverified.toml` (hash, nombre del archivo y fecha) dentro de `bin/<servicio>/<versión>/`; `list` lo marca «not verified by Crisol» y `doctor` lo lista. Se borra con la versión.
+- Lo instalado así lleva `.crisol-unverified.toml` (hash, nombre del archivo y fecha) dentro de `bin/<servicio>/<versión>/`; `list` lo marca «not verified by Crisol» y `doctor` lo lista. Se borra con la versión, y también cuando un catálogo nuevo lista esa versión con el mismo hash y se ejecuta `crisol install` (con otro hash, `doctor` avisa de que no es la build oficial).
 
 ## Cómo añadir una entrada (F3.2)
 

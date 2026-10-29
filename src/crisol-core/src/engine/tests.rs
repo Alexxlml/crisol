@@ -1148,3 +1148,63 @@ fn the_vulnerable_flag_shows_in_the_version_list() {
     assert_eq!(list.installed[0].advisories, ["PHP2Shell"]);
     assert_eq!(list.available[0].advisories, ["PHP2Shell"]);
 }
+
+#[test]
+fn from_must_be_an_absolute_path() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (_, hash) = archive_in(&rig);
+    let error = rig
+        .call(&install_call(
+            "8.4.28",
+            Some(Path::new("php-8.4.28.zip")),
+            Some(&hash),
+        ))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams, "{error:?}");
+    assert_eq!(list_installed(rig.paths()).unwrap().len(), 0);
+}
+
+#[test]
+fn doctor_says_when_an_unverified_install_is_not_the_official_build() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (archive, hash) = archive_in(&rig);
+    rig.call(&install_call("8.4.28", Some(&archive), Some(&hash)))
+        .unwrap();
+    let waiting = checks(rig.call(&Call::Doctor).unwrap());
+    let line = waiting
+        .iter()
+        .find(|c| c.name == "unverified installs")
+        .unwrap();
+    assert_eq!(line.status, CheckStatus::Warning);
+    assert!(line
+        .fix
+        .as_deref()
+        .unwrap()
+        .contains("crisol install php 8.4.28"));
+
+    // Rewrite the mark as if the user had vouched for another file than the official one.
+    let mark = list_installed(rig.paths()).unwrap()[0]
+        .path
+        .join(crate::install::UNVERIFIED_FILE);
+    fs::write(&mark, format!("sha256 = \"{}\"\n", "cd".repeat(32))).unwrap();
+    let rig_new = Rig::new(&[("php", "8.4.28")]);
+    // Same home layout, new catalog: copy the installation over.
+    let dest = rig_new.paths().bin_for("php", "8.4.28").unwrap();
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::rename(mark.parent().unwrap(), &dest).unwrap();
+    let found = checks(rig_new.call(&Call::Doctor).unwrap());
+    let line = found
+        .iter()
+        .find(|c| c.name == "unverified installs")
+        .unwrap();
+    assert_eq!(line.status, CheckStatus::Problem, "{line:?}");
+    assert!(
+        line.detail.contains("not the official build"),
+        "{}",
+        line.detail
+    );
+    assert_eq!(
+        line.fix.as_deref(),
+        Some("crisol uninstall php 8.4.28 && crisol install php 8.4.28")
+    );
+}

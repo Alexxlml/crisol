@@ -765,7 +765,7 @@ fn from_needs_an_exact_version_and_a_real_hash() {
         assert!(
             matches!(
                 error,
-                ManageError::FromNeedsExactVersion(_) | ManageError::Version(_)
+                ManageError::FromNeedsExactVersion { .. } | ManageError::Version(_)
             ),
             "{version}: {error}"
         );
@@ -819,4 +819,122 @@ fn a_file_that_is_not_the_one_vouched_for_installs_nothing() {
         "{error}"
     );
     assert_eq!(rig.installed(), Vec::<String>::new());
+}
+
+/// A zip with `executable` inside `folder` (or at the top), and a catalog with one build of
+/// `service` `version` whose `root` is `root`.
+fn rooted(folder: Option<&str>, executable: &str) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default();
+    let name = folder.map_or_else(|| executable.to_owned(), |f| format!("{f}/{executable}"));
+    writer.start_file(name, options).unwrap();
+    writer.write_all(b"MZ binary").unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+fn one_build(service: &str, version: &str, root: Option<&str>, executable: &str) -> Catalog {
+    let root = root.map_or_else(String::new, |r| format!("root = \"{r}\"\n"));
+    Catalog::parse(&format!(
+        "schema = 1\nserial = 1\n\n[[package]]\nservice = \"{service}\"\nversion = \"{version}\"\n\
+         os = \"windows\"\narch = \"x86_64\"\nurl = \"https://example.invalid/x.zip\"\n\
+         sha256 = \"{}\"\nformat = \"zip\"\n{root}executable = \"{executable}\"\n",
+        "ab".repeat(32)
+    ))
+    .unwrap()
+}
+
+fn write_zip(dir: &TempDir, bytes: &[u8]) -> (PathBuf, String) {
+    let path = dir.path().join("download.zip");
+    fs::write(&path, bytes).unwrap();
+    (path, sha_of(bytes))
+}
+
+#[test]
+fn the_version_in_the_template_root_is_replaced_by_the_one_asked_for() {
+    let rig = Rig::new();
+    let catalog = one_build("node", "24.22.0", Some("node-v24.22.0-win-x64"), "node.exe");
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = write_zip(&dir, &rooted(Some("node-v24.23.0-win-x64"), "node.exe"));
+
+    let installed = rig
+        .install_from(
+            &catalog,
+            &FakeFetcher::new(),
+            ("node", "24.23.0"),
+            (&archive, &hash),
+        )
+        .unwrap();
+    assert!(installed.path.join("node.exe").is_file());
+    assert_eq!(rig.installed(), ["node 24.23.0"]);
+}
+
+#[test]
+fn a_root_without_the_version_is_kept_and_two_part_versions_work() {
+    let rig = Rig::new();
+    let catalog = one_build("postgresql", "17.11", Some("pgsql"), "bin/postgres.exe");
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = write_zip(&dir, &rooted(Some("pgsql"), "bin/postgres.exe"));
+
+    for wrong in ["17", "17.12.1"] {
+        let error = rig
+            .install_from(
+                &catalog,
+                &FakeFetcher::new(),
+                ("postgresql", wrong),
+                (&archive, &hash),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, ManageError::FromNeedsExactVersion { example, .. } if example == "17.11"),
+            "{wrong}: {error}"
+        );
+    }
+    rig.install_from(
+        &catalog,
+        &FakeFetcher::new(),
+        ("postgresql", "17.12"),
+        (&archive, &hash),
+    )
+    .unwrap();
+    assert_eq!(rig.installed(), ["postgresql 17.12"]);
+}
+
+#[test]
+fn an_unverified_install_is_confirmed_when_the_catalog_lists_it_with_the_same_hash() {
+    let rig = Rig::new();
+    let (old_catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+    rig.install_from(&old_catalog, &fetcher, ("php", "8.4.28"), (&archive, &hash))
+        .unwrap();
+
+    // A newer crisol.exe whose catalog lists 8.4.28 with that hash (`world` hashes the same zip).
+    let (new_catalog, fetcher) = world(&[("php", "8.4.26"), ("php", "8.4.28")]);
+    let error = rig
+        .install(&new_catalog, &fetcher, "php", "8.4.28")
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ManageError::Install(InstallError::AlreadyInstalled(_))
+    ));
+    let version = list_installed(&rig.paths).unwrap().remove(0);
+    assert!(!is_unverified_install(&version), "the mark is gone");
+    assert_eq!(fetcher.requests(), Vec::<String>::new());
+}
+
+#[test]
+fn an_unverified_install_with_another_hash_than_the_catalog_keeps_its_mark() {
+    let rig = Rig::new();
+    let (old_catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let bytes = rooted(None, "php.exe"); // not the zip `world` hashes
+    let (archive, hash) = write_zip(&dir, &bytes);
+    rig.install_from(&old_catalog, &fetcher, ("php", "8.4.28"), (&archive, &hash))
+        .unwrap();
+
+    let (new_catalog, fetcher) = world(&[("php", "8.4.28")]);
+    rig.install(&new_catalog, &fetcher, "php", "8.4.28")
+        .unwrap_err();
+    let version = list_installed(&rig.paths).unwrap().remove(0);
+    assert!(is_unverified_install(&version));
 }

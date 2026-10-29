@@ -75,3 +75,13 @@ Un aviso **no impide** instalar ni usar la versión (un proyecto viejo puede nec
 ## Cuándo una versión está afectada
 
 Una versión `v` del servicio del aviso está afectada si coincide con alguna línea de `affects` (o `affects` falta) y **ninguna** versión de `fixed_in` de esa misma línea es menor o igual que `v`. Con el ejemplo de arriba, 8.4.26 está afectada, 8.4.27 no, y 7.4.33 (un aviso con `affects = ["7.4"]` y `fixed_in = []`) lo está siempre. Las versiones preliminares no coinciden con una línea (como en `VersionReq`).
+
+## Corrección tras la revisión (Opus, 2026-10-29)
+
+Ver `claude/revisiones/2026-10-29-opus-adr0020.md`.
+
+- **La plantilla ajusta `root`.** Nginx, Node, MySQL, MariaDB, MongoDB y Memcached empaquetan todo en una carpeta con la versión (`node-v24.22.0-win-x64`). Con la plantilla tal cual, `--from` rechazaba siempre el archivo de otra versión. Ahora, en el `root` de la plantilla, la versión de la plantilla se sustituye por la pedida; un `root` sin versión (`pgsql`) queda igual.
+- **«Versión exacta» = tantas partes como la plantilla.** PostgreSQL usa dos (`17.12`); la regla anterior (3 o más) lo dejaba fuera.
+- **La marca se retira sola** (lo que prometía §1). Si el catálogo de un `crisol.exe` nuevo lista la versión con **el mismo hash** que guarda `.crisol-unverified.toml`, `crisol install <servicio> <versión>` responde «ya instalada» y borra la marca. Con **otro hash**, la marca se queda y `doctor` lo marca como problema («no es la build oficial»), con `crisol uninstall … && crisol install …` como solución.
+- **`from` debe ser una ruta absoluta** en el protocolo: el daemon tiene otro directorio actual. El CLI ya la convertía.
+- Pendiente para F11.1: una instalación `--from` de una línea sin soporte (PHP 7.4.x nueva) no queda como `end_of_life`, porque esa marca es por versión exacta del catálogo. El aviso de vulnerabilidad sí la cubre.

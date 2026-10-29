@@ -157,6 +157,24 @@ pub fn is_unverified(dir: &Path) -> bool {
     dir.join(UNVERIFIED_FILE).is_file()
 }
 
+/// The SHA-256 recorded in the [`UNVERIFIED_FILE`] of the installation in `dir`, if it has a
+/// readable one.
+#[must_use]
+pub fn unverified_sha256(dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(dir.join(UNVERIFIED_FILE)).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    table.get("sha256")?.as_str().map(str::to_owned)
+}
+
+/// Removes the [`UNVERIFIED_FILE`] of the installation in `dir` when the hash it records is
+/// `sha256`, the catalog's own: the archive turned out to be the official one (ADR-0020 §1).
+/// If removing it fails the mark stays, and `doctor` keeps listing the install.
+pub fn confirm_unverified(dir: &Path, sha256: &str) {
+    if unverified_sha256(dir).is_some_and(|recorded| recorded == sha256) {
+        let _ = fs::remove_file(dir.join(UNVERIFIED_FILE));
+    }
+}
+
 /// Why an installation failed. In every case nothing is left installed.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
