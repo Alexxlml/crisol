@@ -4,7 +4,7 @@
 //! fetches an HTTPS site with cURL. Before the fix PHP ran without extensions and both failed
 //! (`could not find driver`, no cURL).
 //!
-//! Needs the official archives of Nginx 1.28.3, PHP 8.4.26, MySQL 8.4.11 and the CA bundle in
+//! Needs the official archives of Nginx 1.28.3, PHP 8.4.27, MySQL 8.4.11 and the CA bundle in
 //! `CRISOL_TEST_DOWNLOADS`, and access to the Internet for the HTTPS request. Ports of the
 //! 19000 range; the home is temporary.
 //!
@@ -79,7 +79,7 @@ fn a_php_page_uses_pdo_against_mysql_and_curl_against_an_https_site() {
     paths.ensure_layout().unwrap();
     for (service, version) in [
         ("nginx", "1.28.3"),
-        ("php", "8.4.26"),
+        ("php", "8.4.27"),
         ("mysql", "8.4.11"),
         ("cacert", "2026.9.25"),
     ] {

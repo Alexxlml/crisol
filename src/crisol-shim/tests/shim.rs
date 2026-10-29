@@ -122,7 +122,7 @@ fn args_seen(output: &Output) -> Vec<String> {
 fn it_runs_the_resolved_version_and_hands_over_the_arguments() {
     let rig = Rig::new();
     rig.install("php", "8.3.35", &exe_name("php"));
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     fs::write(rig.work.join(".php-version"), "8.3\n").unwrap();
     let php = rig.shim("php");
 
@@ -137,7 +137,7 @@ fn it_runs_the_resolved_version_and_hands_over_the_arguments() {
 #[test]
 fn arguments_with_spaces_quotes_and_odd_characters_arrive_unchanged() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let php = rig.shim("php");
 
     let tricky = [
@@ -165,7 +165,7 @@ fn arguments_with_spaces_quotes_and_odd_characters_arrive_unchanged() {
 #[test]
 fn the_exit_code_of_the_real_program_is_the_exit_code_of_the_shim() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let php = rig.shim("php");
 
     for code in [0, 1, 3, 42, 255] {
@@ -181,7 +181,7 @@ fn the_exit_code_of_the_real_program_is_the_exit_code_of_the_shim() {
 #[test]
 fn standard_input_and_output_are_connected_through() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let php = rig.shim("php");
 
     let mut child = rig
@@ -223,7 +223,7 @@ fn the_working_directory_is_the_callers() {
 fn the_version_follows_the_directory() {
     let rig = Rig::new();
     rig.install("php", "8.2.28", &exe_name("php"));
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let php = rig.shim("php");
     let a = rig.work.join("a");
     let b = rig.work.join("b");
@@ -234,14 +234,14 @@ fn the_version_follows_the_directory() {
 
     let ran = |dir: &Path| stdout(&rig.command(&php).current_dir(dir).output().unwrap());
     assert!(ran(&a).contains("8.2.28"));
-    assert!(ran(&b).contains("8.4.26"));
+    assert!(ran(&b).contains("8.4.27"));
 }
 
 #[test]
 fn the_environment_variable_overrides_for_one_terminal() {
     let rig = Rig::new();
     rig.install("php", "8.2.28", &exe_name("php"));
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     fs::write(rig.work.join(".php-version"), "8.4\n").unwrap();
     let php = rig.shim("php");
 
@@ -252,8 +252,8 @@ fn the_environment_variable_overrides_for_one_terminal() {
 #[test]
 fn the_generated_php_ini_is_handed_to_php_unless_the_user_chose_one() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
-    let ini_dir = rig.home.join("etc").join("php").join("8.4.26");
+    rig.install("php", "8.4.27", &exe_name("php"));
+    let ini_dir = rig.home.join("etc").join("php").join("8.4.27");
     fs::create_dir_all(&ini_dir).unwrap();
     fs::write(ini_dir.join("php.ini"), "; generated\n").unwrap();
     let php = rig.shim("php");
@@ -276,7 +276,7 @@ fn the_generated_php_ini_is_handed_to_php_unless_the_user_chose_one() {
 fn node_is_told_to_trust_the_local_ca_only_when_there_is_one_and_the_user_has_not_chosen() {
     let rig = Rig::new();
     rig.install("node", "22.23.3", &exe_name("node"));
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let node = rig.shim("node");
     let php = rig.shim("php");
     let seen = |output: &Output| echoed_var(output, "NODE_EXTRA_CA_CERTS");
@@ -319,7 +319,7 @@ fn a_nested_shim_replaces_the_php_ini_its_outer_shim_set() {
     // php.ini, not the one of the PHP that is running the script.
     let rig = Rig::new();
     let mut ini_dirs = Vec::new();
-    for version in ["8.3.35", "8.4.26"] {
+    for version in ["8.3.35", "8.4.27"] {
         rig.install("php", version, &exe_name("php"));
         let dir = rig.home.join("etc").join("php").join(version);
         fs::create_dir_all(&dir).unwrap();
@@ -388,7 +388,7 @@ fn a_nested_shim_replaces_the_php_ini_its_outer_shim_set() {
 #[test]
 fn a_version_that_is_not_installed_is_an_error_that_says_what_is() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     fs::write(rig.work.join(".php-version"), "7.4\n").unwrap();
     let php = rig.shim("php");
 
@@ -397,7 +397,7 @@ fn a_version_that_is_not_installed_is_an_error_that_says_what_is() {
     let text = stderr(&output);
     assert!(text.starts_with("crisol: "), "{text}");
     assert!(
-        text.contains("7.4") && text.contains("8.4.26") && text.contains(".php-version"),
+        text.contains("7.4") && text.contains("8.4.27") && text.contains(".php-version"),
         "{text}"
     );
     assert_eq!(stdout(&output), "", "nothing ran");
@@ -419,7 +419,7 @@ fn with_nothing_installed_it_says_so() {
 #[test]
 fn a_damaged_installation_is_reported_not_guessed() {
     let rig = Rig::new();
-    fs::create_dir_all(rig.home.join("bin").join("php").join("8.4.26")).unwrap();
+    fs::create_dir_all(rig.home.join("bin").join("php").join("8.4.27")).unwrap();
     let php = rig.shim("php");
     let output = rig.run(&php, &[]);
     assert_eq!(output.status.code(), Some(1));
@@ -747,7 +747,7 @@ fn a_node_without_corepack_explains_pnpm_and_yarn() {
 fn composer_runs_the_phar_with_the_php_that_applies_to_the_directory() {
     let rig = Rig::new();
     rig.install("php", "8.2.28", &exe_name("php"));
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let old = rig.home.join("bin").join("composer").join("2.7.0");
     let new = rig.home.join("bin").join("composer").join("2.10.3");
     for dir in [&old, &new] {
@@ -776,7 +776,7 @@ fn composer_runs_the_phar_with_the_php_that_applies_to_the_directory() {
 #[test]
 fn composer_without_the_phar_installed_says_how_to_get_it() {
     let rig = Rig::new();
-    rig.install("php", "8.4.26", &exe_name("php"));
+    rig.install("php", "8.4.27", &exe_name("php"));
     let output = rig.run(&rig.shim("composer"), &[]);
     assert_eq!(output.status.code(), Some(1));
     let text = stderr(&output);
@@ -826,7 +826,7 @@ fn run_under_its_own_name_it_explains_itself() {
 #[ignore = "a timing benchmark: run it on request, in release mode"]
 fn shim_overhead_is_small() {
     let rig = Rig::new();
-    let dir = rig.install("php", "8.4.26", &exe_name("php"));
+    let dir = rig.install("php", "8.4.27", &exe_name("php"));
     fs::write(rig.work.join(".php-version"), "8.4\n").unwrap();
     // A realistic tree: the version file is a few directories up, and a git folder is not.
     let deep = rig.work.join("a").join("b").join("c").join("d");
@@ -893,7 +893,7 @@ fn install_downloaded(rig: &Rig, wanted: &[(&str, &str)]) -> crisol_core::paths:
 /// extensions are loaded).
 ///
 /// ```text
-/// CRISOL_TEST_DOWNLOADS=<folder with php-8.4.26-nts-Win32-vs17-x64.zip> cargo test -p crisol-shim real_php -- --ignored --nocapture
+/// CRISOL_TEST_DOWNLOADS=<folder with php-8.4.27-1-nts-Win32-vs17-x64.zip> cargo test -p crisol-shim real_php -- --ignored --nocapture
 /// ```
 #[test]
 #[ignore = "needs CRISOL_TEST_DOWNLOADS pointing at the downloaded official PHP archive (Windows)"]
@@ -901,10 +901,10 @@ fn real_php_runs_through_the_shim() {
     use crisol_core::phpini::{write_php_ini, PhpIniSettings};
 
     let rig = Rig::new();
-    let paths = install_downloaded(&rig, &[("php", "8.4.26")]);
+    let paths = install_downloaded(&rig, &[("php", "8.4.27")]);
     write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )
@@ -935,7 +935,7 @@ fn real_php_runs_through_the_shim() {
     let output = rig.run(&php, &["--ini"]);
     let text = stdout(&output).replace('\\', "/").to_lowercase();
     assert!(
-        text.contains("etc/php/8.4.26/php.ini"),
+        text.contains("etc/php/8.4.27/php.ini"),
         "the generated file is loaded:\n{text}"
     );
 }
@@ -1046,7 +1046,7 @@ fn serde_json_like(text: &str) -> Vec<String> {
 /// request without the bundle is made first, to show that it is the bundle that fixes it.
 ///
 /// Needs the network (one GET to getcomposer.org) and, in `CRISOL_TEST_DOWNLOADS`, both
-/// `php-8.4.26-nts-Win32-vs17-x64.zip` and `cacert-2026-09-25.pem`.
+/// `php-8.4.27-1-nts-Win32-vs17-x64.zip` and `cacert-2026-09-25.pem`.
 ///
 /// ```text
 /// CRISOL_TEST_DOWNLOADS=<folder> cargo test -p crisol-shim real_curl -- --ignored --nocapture
@@ -1059,7 +1059,7 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     use crisol_platform::WindowsRootCertificates;
 
     let rig = Rig::new();
-    let paths = install_downloaded(&rig, &[("php", "8.4.26"), ("cacert", "2026.9.25")]);
+    let paths = install_downloaded(&rig, &[("php", "8.4.27"), ("cacert", "2026.9.25")]);
     let php = rig.shim("php");
     let script = r"
         $c = curl_init('https://getcomposer.org/versions');
@@ -1071,7 +1071,7 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     // 1. Without a bundle: the php.ini has no CA file and cURL cannot verify the site.
     let without = write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )
@@ -1103,7 +1103,7 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
     );
     let with = write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )
@@ -1134,7 +1134,7 @@ fn real_curl_trusts_https_with_the_generated_bundle() {
 /// not need the bundle that PHP's plain cURL does.
 ///
 /// Needs the network (a read-only query to packagist.org) and, in `CRISOL_TEST_DOWNLOADS`,
-/// `php-8.4.26-nts-Win32-vs17-x64.zip`, `composer.phar` and `cacert-2026-09-25.pem`. Composer's
+/// `php-8.4.27-1-nts-Win32-vs17-x64.zip`, `composer.phar` and `cacert-2026-09-25.pem`. Composer's
 /// home and cache are pointed at the temporary folder: nothing of the user's is read or written.
 ///
 /// ```text
@@ -1152,7 +1152,7 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     let paths = install_downloaded(
         &rig,
         &[
-            ("php", "8.4.26"),
+            ("php", "8.4.27"),
             ("composer", "2.10.3"),
             ("cacert", "2026.9.25"),
         ],
@@ -1173,7 +1173,7 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     // It runs, on the PHP Crisol resolved, with the generated php.ini.
     write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )
@@ -1201,7 +1201,7 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     let text = stdout(&platform);
     assert!(
         text.lines()
-            .any(|l| l.starts_with("php ") && l.contains("8.4.26")),
+            .any(|l| l.starts_with("php ") && l.contains("8.4.27")),
         "{text}"
     );
     assert!(
@@ -1244,7 +1244,7 @@ fn real_composer_runs_through_the_shim_with_and_without_the_ca_bundle() {
     .unwrap();
     write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )

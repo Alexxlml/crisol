@@ -14,8 +14,8 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 10
-generated = "2026-10-17"
+serial = 11
+generated = "2026-10-29"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
 # and when a project's open constraint (">=7.4") is satisfied by it. Change it with a new serial.
@@ -24,7 +24,8 @@ php = "8.4"
 node = "24"
 
 # PHP 7.4 is here only so that old projects can be started (ADR-0012). It no longer receives
-# security fixes (`end_of_life`), so it is never a default. windows.php.net publishes no hash for
+# security fixes (`end_of_life`), so it is never a default. It is vulnerable to PHP2Shell
+# (CVE-2026-109618, CVE-2026-109619) and there is no build that fixes it. windows.php.net publishes no hash for
 # archived releases: this one was computed on a download over HTTPS and is the same on two
 # separate downloads (analisis/fuentes-binarios.md).
 [[package]]
@@ -39,38 +40,41 @@ executable = "php.exe"
 size = 26132214
 end_of_life = true
 
+# 8.3.36, 8.4.27 and 8.5.12 fix PHP2Shell (CVE-2026-109618, CVE-2026-109619; 2026-10-21), and
+# replace 8.3.35, 8.4.26 and 8.5.11, which are vulnerable. The `-1` builds of windows.php.net
+# (2026-10-26) are the ones published with a hash (analisis/fuentes-binarios.md).
 [[package]]
 service = "php"
-version = "8.3.35"
+version = "8.3.36"
 os = "windows"
 arch = "x86_64"
-url = "https://windows.php.net/downloads/releases/archives/php-8.3.35-nts-Win32-vs16-x64.zip"
-sha256 = "25a8e2ac9ff30f1d768d1447c09a600617fa6e6082729f6e95f008b59c91fe45"
+url = "https://windows.php.net/downloads/releases/archives/php-8.3.36-1-nts-Win32-vs16-x64.zip"
+sha256 = "1a097d52b7a68622cdc723073b61cc70caf79c941218ff65b2d8441dbc6b10d4"
 format = "zip"
 executable = "php.exe"
-size = 33873909
+size = 34179998
 
 [[package]]
 service = "php"
-version = "8.4.26"
+version = "8.4.27"
 os = "windows"
 arch = "x86_64"
-url = "https://windows.php.net/downloads/releases/archives/php-8.4.26-nts-Win32-vs17-x64.zip"
-sha256 = "da68394f9193b7f6b89d0c76861a4034ae10efee7fd55a7255d8118c2acf70d7"
+url = "https://windows.php.net/downloads/releases/archives/php-8.4.27-1-nts-Win32-vs17-x64.zip"
+sha256 = "dbae154a0a89791f36c3d48e68bae797878333e7d6cb5721e74617de59b63ab7"
 format = "zip"
 executable = "php.exe"
-size = 35103568
+size = 35296081
 
 [[package]]
 service = "php"
-version = "8.5.11"
+version = "8.5.12"
 os = "windows"
 arch = "x86_64"
-url = "https://windows.php.net/downloads/releases/archives/php-8.5.11-nts-Win32-vs17-x64.zip"
-sha256 = "0ea96e0d2b9b737a6036f05cf4e95c49313faa6d0f27bd97edb2742503f0c043"
+url = "https://windows.php.net/downloads/releases/archives/php-8.5.12-1-nts-Win32-vs17-x64.zip"
+sha256 = "2a36a2edcb7a5b9252f638fd5e4cf84d7f6e066092654220dc0b63e5cf4e9723"
 format = "zip"
 executable = "php.exe"
-size = 36048897
+size = 36310917
 
 [[package]]
 service = "nginx"

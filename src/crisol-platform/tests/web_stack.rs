@@ -1,8 +1,8 @@
-//! F5.4's acceptance test with the real thing: PHP 7.4.33 and 8.4.26, Nginx, `WebStack`
+//! F5.4's acceptance test with the real thing: PHP 7.4.33 and 8.4.27, Nginx, `WebStack`
 //! over Job Objects. A site is created while everything runs; Nginx is reloaded without
 //! cutting the site that was already there, and each site answers with its own PHP.
 //!
-//! Needs `php-7.4.33-nts-Win32-vc15-x64.zip`, `php-8.4.26-nts-Win32-vs17-x64.zip` and
+//! Needs `php-7.4.33-nts-Win32-vc15-x64.zip`, `php-8.4.27-1-nts-Win32-vs17-x64.zip` and
 //! `nginx-1.28.3.zip` in `CRISOL_TEST_DOWNLOADS`. Ports 19080 and 19100+; everything is
 //! stopped at the end.
 //!
@@ -126,7 +126,7 @@ impl Run {
 }
 
 #[test]
-#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 7.4.33, PHP 8.4.26 and Nginx 1.28.3 (Windows)"]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 7.4.33, PHP 8.4.27 and Nginx 1.28.3 (Windows)"]
 #[allow(clippy::too_many_lines)]
 fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_others() {
     let _ports = ports();
@@ -134,8 +134,8 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
     install_from_downloads(&paths, "php", "7.4.33");
-    install_from_downloads(&paths, "php", "8.4.26");
-    for version in ["7.4.33", "8.4.26"] {
+    install_from_downloads(&paths, "php", "8.4.27");
+    for version in ["7.4.33", "8.4.27"] {
         write_php_ini(
             &paths,
             version,
@@ -194,7 +194,7 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
         site(&paths, "new", None);
         let plan = plan_now();
         let applied = run.stack.apply(&plan, Instant::now()).unwrap();
-        assert_eq!(applied.new_pools, ["8.4.26"]);
+        assert_eq!(applied.new_pools, ["8.4.27"]);
         assert!(applied.reload_requested);
 
         // While Nginx is reloaded the old site never stops answering.
@@ -230,7 +230,7 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
             run.tick_for(Duration::from_millis(100));
             new = get("new.test", "/");
         }
-        assert!(new.contains("new PHP 8.4.26"), "{new}");
+        assert!(new.contains("new PHP 8.4.27"), "{new}");
         let old = get("old.test", "/");
         assert!(old.contains("old PHP 7.4.33"), "{old}");
 
@@ -238,11 +238,11 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
         fs::remove_dir_all(paths.www_dir().join("new")).unwrap();
         let plan = plan_now();
         let applied = run.stack.apply(&plan, Instant::now()).unwrap();
-        assert_eq!(applied.retired_pools, ["8.4.26"]);
+        assert_eq!(applied.retired_pools, ["8.4.27"]);
         run.events.clear();
         run.tick_until("the second reload", |r| r.saw(&WebEvent::Reloaded));
         run.tick_until("the 8.4 pool to be gone", |r| {
-            r.stack.pool_state("8.4.26").is_none()
+            r.stack.pool_state("8.4.27").is_none()
         });
         let mut gone = get("new.test", "/");
         for _ in 0..50 {
@@ -294,7 +294,7 @@ fn a_site_added_while_running_is_served_with_its_own_php_without_cutting_the_oth
             run.tick_for(Duration::from_millis(100));
             third = get("third.test", "/");
         }
-        assert!(third.contains("third PHP 8.4.26"), "{third}");
+        assert!(third.contains("third PHP 8.4.27"), "{third}");
     }));
 
     // Stop before judging, so a failure leaves nothing running.
@@ -458,8 +458,9 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
             "{head}"
         );
 
-        // PHP's cURL: refuses the site until the local CA is in `cacert.pem`, then accepts it,
-        // without the system store being involved (ADR-0013).
+        // PHP's cURL trusts the site from the start, without the system store being involved
+        // (ADR-0013): `apply` writes `cacert.pem` with the local CA before the pools start
+        // (review of phase 9, V1). Before V1 this test first saw it refused.
         let script = format!(
             "$c = curl_init('{url}/v.php'); curl_setopt_array($c, [CURLOPT_RESOLVE => \
              ['secure.test:{HTTPS}:127.0.0.1'], CURLOPT_RETURNTRANSFER => true, \
@@ -474,22 +475,6 @@ fn a_secured_site_is_served_over_https_to_a_client_that_trusts_only_the_local_ca
                 .unwrap();
             text(&output)
         };
-        let before = php(&script);
-        assert!(
-            before.starts_with("FAIL:"),
-            "PHP must not trust it yet: {before}"
-        );
-        let local =
-            crisol_core::ca::load_ca(&paths, &WindowsPrivateDirs, std::time::SystemTime::now())
-                .unwrap()
-                .unwrap();
-        crisol_core::cacert::write_php_cacert_with(
-            &paths,
-            &crisol_core::cacert::NoRoots,
-            Some(&local),
-            &crisol_core::paths::fake::FakePrivateDirs::new(),
-        )
-        .unwrap();
         assert_eq!(php(&script), "secure https=on PHP 7.4.33");
 
         // A site that was not secured is not vouched for: the handshake is refused.
@@ -599,12 +584,12 @@ fn get_at(address: SocketAddr, host: &str) -> String {
     body
 }
 
-/// Needs PHP 8.4.26 and Nginx 1.28.3. A program holding `[::1]:HTTP` keeps Nginx from starting
+/// Needs PHP 8.4.27 and Nginx 1.28.3. A program holding `[::1]:HTTP` keeps Nginx from starting
 /// and is named in the failure; once it lets go, the same site answers on `[::1]` and on
 /// `127.0.0.1`, which is where `shop.test` goes when a client tries IPv6 first.
 #[allow(clippy::too_many_lines)]
 #[test]
-#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 8.4.26 and Nginx 1.28.3 (Windows, IPv6 loopback)"]
+#[ignore = "needs CRISOL_TEST_DOWNLOADS with PHP 8.4.27 and Nginx 1.28.3 (Windows, IPv6 loopback)"]
 fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_both_addresses() {
     let _ports = ports();
     let ipv6 = SocketAddr::from((Ipv6Addr::LOCALHOST, HTTP));
@@ -616,10 +601,10 @@ fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_bo
     let tmp = tempfile::TempDir::new().unwrap();
     let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
     let nginx_dir = install_from_downloads(&paths, "nginx", "1.28.3");
-    install_from_downloads(&paths, "php", "8.4.26");
+    install_from_downloads(&paths, "php", "8.4.27");
     write_php_ini(
         &paths,
-        "8.4.26",
+        "8.4.27",
         &PhpIniSettings::default(),
         &crisol_core::paths::fake::FakePrivateDirs::new(),
     )
@@ -712,13 +697,13 @@ fn a_program_on_ipv6_loopback_blocks_nginx_and_without_it_the_site_answers_on_bo
     run.events.extend(started);
     run.tick_until("nginx and the pool to be running", |r| {
         r.stack.nginx_state() == Some(&crisol_core::service::ServiceState::Running)
-            && r.stack.pool_state("8.4.26") == Some(&crisol_core::service::ServiceState::Running)
+            && r.stack.pool_state("8.4.27") == Some(&crisol_core::service::ServiceState::Running)
     });
     let both = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let v6 = get_at(ipv6, "shop.test");
         let v4 = get_at(SocketAddr::from(([127, 0, 0, 1], HTTP)), "shop.test");
-        assert!(v6.contains("shop PHP 8.4.26"), "[::1]: {v6}");
-        assert!(v4.contains("shop PHP 8.4.26"), "127.0.0.1: {v4}");
+        assert!(v6.contains("shop PHP 8.4.27"), "[::1]: {v6}");
+        assert!(v4.contains("shop PHP 8.4.27"), "127.0.0.1: {v4}");
         assert_eq!(
             get_at(ipv6, "unknown.test"),
             "",

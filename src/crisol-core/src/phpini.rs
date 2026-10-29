@@ -188,7 +188,7 @@ pub fn render_php_ini(input: &PhpIniInput<'_>) -> Result<GeneratedPhpIni, PhpIni
     let (wanted, skipped): (Vec<&str>, Vec<&str>) = settings
         .extensions
         .iter()
-        .map(String::as_str)
+        .map(|name| shipped_name(name, input.available))
         .partition(|name| input.available.contains(*name));
     let opcache = settings.opcache && input.available.contains("opcache");
 
@@ -378,6 +378,11 @@ fn directives(input: &PhpIniInput<'_>) -> Result<Vec<Directive>, PhpIniError> {
         Directive::active("max_execution_time", s.max_execution_time),
         Directive::active("post_max_size", &s.post_max_size),
         Directive::active("upload_max_filesize", &s.upload_max_filesize),
+        // Off, unlike PHP's default: upload progress with a multipart upload is the way in of
+        // PHP2Shell (CVE-2026-109618), and a page in the browser can send one to a local site.
+        // It is a mitigation on top of the fixed builds, not instead of them; an override can
+        // turn it back on.
+        Directive::commented("session.upload_progress.enabled", "Off", None),
     ];
     if let Some(zone) = &s.timezone {
         list.push(Directive::commented(
@@ -497,6 +502,15 @@ fn commented_extension(content: &str) -> Option<(Kind, &str, &str)> {
     let (name, tail) = rest.split_at(end);
     let tail_ok = tail.trim().is_empty() || tail.trim_start().starts_with(';');
     (!name.is_empty() && tail_ok).then_some((kind, name, tail))
+}
+
+/// The name an extension has in this build: PHP 7.4 ships GD as `php_gd2.dll` (`extension=gd2`),
+/// later versions as `gd`. Any other name is the same everywhere.
+fn shipped_name<'a>(name: &'a str, available: &BTreeSet<String>) -> &'a str {
+    match name {
+        "gd" if !available.contains("gd") && available.contains("gd2") => "gd2",
+        other => other,
+    }
 }
 
 /// The extensions an `ext` folder ships: `php_curl.dll` is `curl` (and `libfoo.so` is `foo`

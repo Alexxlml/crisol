@@ -113,6 +113,22 @@ fn extensions_are_switched_on_only_when_the_build_ships_them() {
 }
 
 #[test]
+fn php_7_4_gets_gd_under_its_old_name_gd2() {
+    // PHP 7.4 ships `ext/php_gd2.dll` and `;extension=gd2`.
+    let base = EXCERPT.replace(";extension=gd\r\n", ";extension=gd2\r\n");
+    let mut shipped: Vec<&str> = SHIPPED.iter().copied().filter(|e| *e != "gd").collect();
+    shipped.push("gd2");
+    let generated = render_with(&base, &shipped, &PhpIniSettings::default(), &[]);
+    assert!(
+        generated.text.contains("\r\nextension=gd2\r\n"),
+        "{}",
+        generated.text
+    );
+    assert!(generated.enabled.contains(&"gd2".to_owned()));
+    assert!(!generated.skipped.contains(&"gd".to_owned()));
+}
+
+#[test]
 fn extensions_that_are_not_requested_stay_off() {
     let text = render(EXCERPT).text;
     for off in [
@@ -777,10 +793,11 @@ fn real_php_builds_load_every_extension_crisol_enables() {
         );
 
         for extension in &written.enabled {
-            let listed = if extension == "opcache" {
-                "zend opcache"
-            } else {
-                extension
+            // `php -m` names a module, not its DLL: `php_gd2.dll` of PHP 7.4 is `gd`.
+            let listed = match extension.as_str() {
+                "opcache" => "zend opcache",
+                "gd2" => "gd",
+                other => other,
             };
             assert!(
                 modules.lines().any(|l| l.trim() == listed),
@@ -788,7 +805,36 @@ fn real_php_builds_load_every_extension_crisol_enables() {
                 package.label()
             );
         }
-        // The extensions the plan names must be among them on every version.
+        // The PHP2Shell mitigation is read by PHP itself, on the line where the shipped file
+        // had it (CVE-2026-109618).
+        let progress = std::process::Command::new(&php)
+            .arg("-c")
+            .arg(&written.path)
+            .args([
+                "-r",
+                "var_export(ini_get('session.upload_progress.enabled'));",
+            ])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        // PHP gives `Off` back as an empty string (`On` would be `'1'`).
+        let value = String::from_utf8_lossy(&progress.stdout);
+        assert!(
+            value == "''" || value == "'0'",
+            "{}: session.upload_progress.enabled is {value}",
+            package.label()
+        );
+        let text = fs::read_to_string(&written.path).unwrap();
+        assert!(
+            text.matches("session.upload_progress.enabled = Off")
+                .count()
+                == 1
+                && !text.contains(";session.upload_progress.enabled = On"),
+            "{}: replaced where PHP ships it, once",
+            package.label()
+        );
+        // The extensions the plan names must be loaded on every version: enabled by Crisol or
+        // built in (PHP 7.4 for Windows has `zip` compiled in, with no DLL).
         for must in [
             "curl",
             "fileinfo",
@@ -803,8 +849,8 @@ fn real_php_builds_load_every_extension_crisol_enables() {
             "zip",
         ] {
             assert!(
-                written.enabled.iter().any(|e| e == must),
-                "{}: {must}",
+                modules.lines().any(|l| l.trim() == must),
+                "{}: {must} is not loaded:\n{modules}",
                 package.label()
             );
         }

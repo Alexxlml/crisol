@@ -124,3 +124,7 @@ zend_extension=opcache
 ; be overridden on a per-stream basis via the "cafile" SSL stream context
 ; option.
 ;openssl.cafile=
+
+
+; ---- Added by Crisol (the shipped file has no line for these) ----
+session.upload_progress.enabled = Off

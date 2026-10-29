@@ -612,10 +612,17 @@ fn the_built_in_catalog_offers_the_planned_tools_for_windows() {
             .version
             .to_string()
     };
-    assert_eq!(resolve("php", "8.3"), "8.3.35");
-    assert_eq!(resolve("php", "8.4"), "8.4.26");
-    assert_eq!(resolve("php", "8.5"), "8.5.11");
-    assert_eq!(resolve("php", "8"), "8.5.11");
+    // The builds that fix PHP2Shell (CVE-2026-109618, CVE-2026-109619); the ones before are gone.
+    assert_eq!(resolve("php", "8.3"), "8.3.36");
+    assert_eq!(resolve("php", "8.4"), "8.4.27");
+    assert_eq!(resolve("php", "8.5"), "8.5.12");
+    assert_eq!(resolve("php", "8"), "8.5.12");
+    for vulnerable in ["8.3.35", "8.4.26", "8.5.11"] {
+        assert!(
+            catalog.find("php", vulnerable, WINDOWS).is_err(),
+            "{vulnerable}"
+        );
+    }
     assert_eq!(resolve("nginx", "1.28"), "1.28.3");
     assert_eq!(resolve("nginx", "1.30"), "1.30.5");
     assert_eq!(resolve("node", "22"), "22.23.3");

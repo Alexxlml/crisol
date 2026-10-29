@@ -61,3 +61,5 @@ expression: "changes(EXCERPT, &generated.text)"
 + extension=sqlite3
 + extension=zip
 + zend_extension=opcache
++ ; ---- Added by Crisol (the shipped file has no line for these) ----
++ session.upload_progress.enabled = Off

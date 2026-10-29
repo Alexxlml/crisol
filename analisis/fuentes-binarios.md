@@ -2,7 +2,7 @@
 
 Qué se descarga, de dónde, qué publica cada proveedor para verificarlo y qué comprobación se hizo antes de poner cada entrada en `src/crisol-core/data/catalog.toml`.
 
-- **Fecha de la verificación:** 2026-10-14.
+- **Fecha de la verificación:** 2026-10-14 (PHP: 2026-10-29; Node: 2026-10-17).
 - **Plataforma:** Windows x86_64.
 - **Regla (plan F3.2):** solo fuentes oficiales, y cada entrada con un SHA-256 **calculado sobre el archivo descargado** y comparado con lo que publica el proveedor. Una prueba del repositorio (`every_built_in_package_comes_from_an_official_host`) rechaza cualquier URL que no sea de estos cuatro sitios.
 
@@ -10,7 +10,7 @@ Qué se descarga, de dónde, qué publica cada proveedor para verificarlo y qué
 
 | Herramienta | Sitio oficial | Qué publica el proveedor | Comprobación hecha | Resultado |
 |---|---|---|---|---|
-| PHP 8.3.35, 8.4.26, 8.5.11 (NTS x64) | `windows.php.net` | SHA-256 en `releases.json` | Hash calculado = hash publicado; la URL de `archives/` entrega los mismos bytes | ✅ coincide |
+| PHP 8.3.36, 8.4.27, 8.5.12 (NTS x64, builds `-1`) | `windows.php.net` | SHA-256 en `releases.json` y en `sha256sum.txt` | Hash calculado sobre la descarga de `archives/` = el de las **dos** fuentes publicadas (2026-10-29, catálogo `serial = 11`); `php.exe -n -v` de cada ZIP da su versión (compiladas el 2026-10-26) | ✅ coincide |
 | PHP 7.4.33 (NTS x64, vc15) | `windows.php.net/downloads/releases/archives/` | **Nada**: ni hash ni firma para versiones archivadas (`releases.json` ya no la lista; `php.net` publica hashes solo del código fuente) | Hash calculado = `14ae3250…8aace`, idéntico en **dos descargas** HTTPS separadas; `unzip -t` sin errores; nombres sin rutas absolutas, `..` ni unidades; `php.exe -v` imprime `PHP 7.4.33 … NTS Visual C++ 2017 x64`; `php -m` limpio con el `php.ini` generado y cURL con el bundle del ADR-0011 llega a un sitio HTTPS | ⚠️ **certeza menor**: integridad de la transferencia, no autenticidad contra el proveedor |
 | Nginx 1.28.3, 1.30.5, 1.31.6 | `nginx.org` | **Solo** firma PGP (`.zip.asc`); sin hash | Firma verificada con `gpg` y la clave publicada por nginx.org | ✅ firma válida |
 | Node 20.20.2 (sin soporte), 22.23.3, 24.22.0 (win-x64) | `nodejs.org` | `SHASUMS256.txt` firmado con PGP (`.sig` separada y `.asc` en claro) | Hash calculado = hash publicado; firma de `SHASUMS256.txt` verificada con `gpg` y las claves de `nodejs/release-keys` (revisión del 2026-10-17, catálogo `serial = 10`) | ✅ coincide y firma válida |
@@ -24,7 +24,9 @@ Descarga total: unos 182 MB en una carpeta temporal fuera del proyecto. Nada se 
 
 - **Fuente:** `https://windows.php.net/downloads/releases/`. El índice `releases.json` trae, por rama, el nombre del ZIP y su `sha256`.
 - **Build elegida:** `nts` (sin hilos), `x64`. Crisol ejecuta PHP con `php-cgi.exe` (sin php-fpm en Windows), y ese modo es el de la build NTS.
-- **Versiones:** una por rama con soporte activo o de seguridad: **8.3.35** (compilada con VS16), **8.4.26** y **8.5.11** (VS17). No se incluyen 8.2 ni anteriores, con **una excepción**: **7.4.33** (`vc15`, 26 132 214 bytes), última versión de la rama, marcada `end_of_life` en el catálogo para poder levantar proyectos viejos (ADR-0012). Sin hash del proveedor (ver la tabla); comprobada con una prueba real (`real_php_7_4_runs_with_the_generated_ini_and_bundle`, `#[ignore]`).
+- **Versiones:** una por rama con soporte activo o de seguridad: **8.3.36** (compilada con VS16), **8.4.27** y **8.5.12** (VS17).
+- **PHP2Shell (2026-10-29):** las versiones anteriores del catálogo (8.3.35, 8.4.26 y 8.5.11) eran vulnerables a CVE-2026-109618 y CVE-2026-109619 (ejecución remota de código, publicados el 2026-10-21 y en la lista de vulnerabilidades explotadas de CISA desde el 2026-10-26). Se sustituyeron por las versiones que las corrigen. windows.php.net las publica como builds `-1` (`php-8.4.27-1-nts-Win32-vs17-x64.zip`), recompiladas el 2026-10-26. Además, el `php.ini` generado pone `session.upload_progress.enabled = Off` (la vía de entrada del 109618), como mitigación añadida, no como sustituto. **PHP 7.4.33 sigue siendo vulnerable**: el proyecto PHP publicó la corrección para 7.4 solo en código fuente, sin build para Windows.
+- No se incluyen 8.2 ni anteriores, con **una excepción**: **7.4.33** (`vc15`, 26 132 214 bytes), última versión de la rama, marcada `end_of_life` en el catálogo para poder levantar proyectos viejos (ADR-0012). Sin hash del proveedor (ver la tabla); comprobada con una prueba real (`real_php_7_4_runs_with_the_generated_ini_and_bundle`, `#[ignore]`).
 - **URL permanente:** la carpeta `releases/` solo conserva el último release de cada rama (8.4.25 ya devuelve 404 ahí); `releases/archives/` conserva **todos**, incluidos los vigentes. Las entradas usan `archives/`, así la URL no caduca cuando sale el siguiente parche. Se descargó también desde `archives/` y los tres hashes coinciden con los publicados.
 - **Ejecutable:** `php.exe`; `php-cgi.exe` queda a su lado. El ZIP no trae carpeta raíz.
 - **Dependencia del sistema:** las builds VS16 y VS17 necesitan el *Microsoft Visual C++ Redistributable* (2015–2022, x64). Debe revisarlo `crisol doctor` (F11.1).
