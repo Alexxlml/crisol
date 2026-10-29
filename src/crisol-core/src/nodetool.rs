@@ -37,6 +37,10 @@ pub const COREPACK_HOME: &str = "COREPACK_HOME";
 pub const NPM_PREFIX: &str = "npm_config_prefix";
 /// The variable that makes npm use a cache folder.
 pub const NPM_CACHE: &str = "npm_config_cache";
+/// The variable that records the prefix a shim set. A shim that finds `npm_config_prefix` equal
+/// to it knows the value came from an outer shim (the global folder of another Node version),
+/// not from the user, so it puts its own: the same as `CRISOL_PHPRC` for `PHPRC`.
+pub const OWN_NPM_PREFIX: &str = "CRISOL_NPM_PREFIX";
 
 /// What the shim of a Node command starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,17 +181,24 @@ pub fn plan_launch(input: &LaunchInput<'_>) -> Result<NodeLaunch, LaunchError> {
         env: Vec::new(),
         path_prepend: Vec::new(),
     };
-    let global = paths.node_global(version).ok();
+    // The global folder is Crisol's unless the user chose their own prefix. One an outer shim
+    // set (and recorded in `OWN_NPM_PREFIX`) is not the user's.
+    let inherited = lookup(NPM_PREFIX)
+        .or_else(|| lookup(&NPM_PREFIX.to_ascii_uppercase()))
+        .is_some_and(|value| lookup(OWN_NPM_PREFIX).as_ref() == Some(&value));
+    let users_own = (env_has(lookup, NPM_PREFIX) && !inherited) || npmrc_sets(user_npmrc, "prefix");
+    let ours = paths.node_global(version).ok().filter(|_| !users_own);
 
     if let Some(parts) = script_of(command) {
-        // A copy of npm (or of Corepack) installed globally wins over the one in the ZIP, which
-        // is what `npm.cmd` does for `npm install -g npm`.
+        // A copy of npm (or of Corepack) installed in our global folder wins over the one in the
+        // ZIP, which is what `npm.cmd` does for `npm install -g npm`. With a prefix of the
+        // user's, the one in the ZIP is used.
         let under = |root: &Path| {
             parts
                 .iter()
                 .fold(root.to_path_buf(), |p, part| p.join(part))
         };
-        let script = global
+        let script = ours
             .as_deref()
             .map(under)
             .filter(|s| s.is_file())
@@ -215,13 +226,10 @@ pub fn plan_launch(input: &LaunchInput<'_>) -> Result<NodeLaunch, LaunchError> {
             set(COREPACK_HOME, &home);
         }
     }
-    // The global folder is Crisol's unless the user chose their own prefix.
-    let ours = global
-        .as_ref()
-        .filter(|_| !env_has(lookup, NPM_PREFIX) && !npmrc_sets(user_npmrc, "prefix"));
     if matches!(command, Command::Node | Command::Npm | Command::Npx) {
-        if let Some(global) = ours {
+        if let Some(global) = &ours {
             set(NPM_PREFIX, global);
+            set(OWN_NPM_PREFIX, global);
         }
         if !env_has(lookup, NPM_CACHE) && !npmrc_sets(user_npmrc, "cache") {
             if let Ok(cache) = paths.cache_for("npm") {
@@ -230,7 +238,7 @@ pub fn plan_launch(input: &LaunchInput<'_>) -> Result<NodeLaunch, LaunchError> {
         }
     }
     // The global programs of this version, then this version of Node itself.
-    launch.path_prepend.extend(ours.cloned());
+    launch.path_prepend.extend(ours);
     launch.path_prepend.push(install.to_path_buf());
     Ok(launch)
 }
@@ -383,12 +391,17 @@ const OTHERS: &[&str] = &[
     "ic",
 ];
 
+/// The npm commands that change the global folder with or without `-g`: `npm link` in a
+/// package links it there, bins included.
+const ALWAYS_GLOBAL: &[&str] = &["link", "ln"];
+
 /// Whether the arguments of an `npm` command are for the global folder: it is installing,
 /// removing or updating programs there, and the shim must refresh the commands that stand for
 /// them ([`crate::globals`]).
 #[must_use]
 pub fn changes_globals(args: &[OsString]) -> bool {
     let mut global = false;
+    let mut always = false;
     let mut changing = None;
     let mut location_value = false;
     for arg in args.iter().map(|a| a.to_string_lossy()) {
@@ -402,7 +415,8 @@ pub fn changes_globals(args: &[OsString]) -> bool {
             continue;
         }
         match word {
-            "-g" | "--global" | "--location=global" => global = true,
+            "-g" | "--global" | "--global=true" | "-g=true" | "--location=global" => global = true,
+            "--global=false" | "-g=false" | "--no-global" => global = false,
             "--location" => location_value = true,
             // Short flags can be glued together: `-gD`.
             short if short.starts_with('-') && !short.starts_with("--") => {
@@ -412,6 +426,7 @@ pub fn changes_globals(args: &[OsString]) -> bool {
             other if changing.is_none() => {
                 if CHANGING.contains(&other) {
                     changing = Some(true);
+                    always = ALWAYS_GLOBAL.contains(&other);
                 } else if OTHERS.contains(&other) {
                     changing = Some(false);
                 }
@@ -419,7 +434,7 @@ pub fn changes_globals(args: &[OsString]) -> bool {
             _ => {}
         }
     }
-    global && changing == Some(true)
+    (global || always) && changing == Some(true)
 }
 
 /// Whether `name` is the name of a Node command a shim can stand for.

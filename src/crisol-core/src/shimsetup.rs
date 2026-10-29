@@ -146,6 +146,13 @@ pub fn path_status(
     })
 }
 
+/// The line that puts the shims first in a PowerShell. It names the shell: `crisol env` alone
+/// guesses it, and a wrong guess prints a line PowerShell runs without an error and without
+/// effect.
+pub const ENV_POWERSHELL: &str = "crisol env --shell powershell | Invoke-Expression";
+/// The same for Git Bash.
+pub const ENV_BASH: &str = "eval \"$(crisol env --shell bash)\"";
+
 /// One sentence per folder that wins over the shims: which commands run from it, why Crisol
 /// cannot change that, and the way out.
 #[must_use]
@@ -183,7 +190,7 @@ pub fn describe_shadows(shadows: &[Shadow]) -> Vec<String> {
                 format!(
                     "{names} in a terminal {verb} {which} in {folder}{who}, not Crisol's: that folder is in the machine PATH, which \
                      Windows searches before your user PATH, and Crisol never changes the machine PATH. A terminal where Crisol's \
-                     shims come first: `crisol env` (PowerShell: `crisol env | Invoke-Expression`)"
+                     shims come first: `{ENV_POWERSHELL}` in PowerShell, `{ENV_BASH}` in Git Bash"
                 )
             } else {
                 format!(
@@ -206,10 +213,33 @@ pub enum Shell {
     Bash,
 }
 
-/// The shell the user is probably in, from its environment: `SHELL` is set by POSIX shells,
-/// `PROMPT` by `cmd.exe` (PowerShell does not define it), and the rest is PowerShell.
+impl Shell {
+    /// The shell a program is, from its file name (`pwsh.exe`, `C:\…\cmd.exe`, `bash`).
+    #[must_use]
+    pub fn from_program(program: &str) -> Option<Self> {
+        let name = Path::new(program)
+            .file_name()?
+            .to_str()?
+            .to_ascii_lowercase();
+        let stem = name.strip_suffix(".exe").unwrap_or(&name);
+        match stem {
+            "pwsh" | "powershell" | "powershell_ise" => Some(Self::PowerShell),
+            "cmd" => Some(Self::Cmd),
+            "bash" | "sh" | "dash" | "zsh" | "ksh" => Some(Self::Bash),
+            _ => None,
+        }
+    }
+}
+
+/// The shell the user is probably in. The program that started this one (`parent`) says it
+/// best. Without it, the variables shells leave: `SHELL` is set by POSIX shells, `PROMPT` by
+/// `cmd.exe`, and the rest is PowerShell. Those are inherited, though: a PowerShell opened
+/// from `cmd` has `PROMPT`, and every terminal of a VS Code started from Git Bash has `SHELL`.
 #[must_use]
-pub fn detect_shell(lookup: &dyn Fn(&str) -> Option<String>) -> Shell {
+pub fn detect_shell(parent: Option<&str>, lookup: &dyn Fn(&str) -> Option<String>) -> Shell {
+    if let Some(shell) = parent.and_then(Shell::from_program) {
+        return shell;
+    }
     if lookup("SHELL").is_some_and(|s| !s.is_empty()) {
         Shell::Bash
     } else if lookup("PROMPT").is_some_and(|s| !s.is_empty()) {
@@ -231,7 +261,8 @@ fn posix_path(dir: &Path) -> String {
 }
 
 /// The lines that put `shims/` first in the `PATH` **of that terminal only** (nothing is
-/// written anywhere), safe to run twice.
+/// written anywhere). Run twice, the PowerShell and Bash ones change nothing the second time;
+/// the `cmd` one puts the folder in front once more, which is harmless.
 #[must_use]
 pub fn env_script(shims: &Path, shell: Shell) -> String {
     let dir = shims.to_string_lossy();

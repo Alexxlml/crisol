@@ -102,7 +102,10 @@ fn the_machine_node_is_reported_as_winning_and_the_way_out_is_named() {
         text.contains("machine PATH") && text.contains("never changes"),
         "{text}"
     );
-    assert!(text.contains("crisol env"), "{text}");
+    assert!(
+        text.contains(ENV_POWERSHELL) && text.contains(ENV_BASH),
+        "{text}"
+    );
 }
 
 #[test]
@@ -129,9 +132,38 @@ fn the_shell_is_guessed_from_the_variables_the_shells_leave() {
     let with = |names: &'static [&'static str]| {
         move |name: &str| names.contains(&name).then(|| "x".to_owned())
     };
-    assert_eq!(detect_shell(&with(&["SHELL", "PROMPT"])), Shell::Bash);
-    assert_eq!(detect_shell(&with(&["PROMPT"])), Shell::Cmd);
-    assert_eq!(detect_shell(&with(&[])), Shell::PowerShell);
+    assert_eq!(detect_shell(None, &with(&["SHELL", "PROMPT"])), Shell::Bash);
+    assert_eq!(detect_shell(None, &with(&["PROMPT"])), Shell::Cmd);
+    assert_eq!(detect_shell(None, &with(&[])), Shell::PowerShell);
+    // A parent that is not a shell (an editor, `cargo`) says nothing.
+    assert_eq!(
+        detect_shell(Some("Code.exe"), &with(&["PROMPT"])),
+        Shell::Cmd
+    );
+}
+
+#[test]
+fn the_program_that_started_crisol_wins_over_inherited_variables() {
+    let with = |names: &'static [&'static str]| {
+        move |name: &str| names.contains(&name).then(|| "x".to_owned())
+    };
+    // A PowerShell opened from cmd has PROMPT; one in a VS Code started from Git Bash, SHELL.
+    for parent in ["pwsh.exe", "powershell.exe", "PowerShell.EXE"] {
+        assert_eq!(
+            detect_shell(Some(parent), &with(&["PROMPT", "SHELL"])),
+            Shell::PowerShell,
+            "{parent}"
+        );
+    }
+    assert_eq!(detect_shell(Some("cmd.exe"), &with(&["SHELL"])), Shell::Cmd);
+    assert_eq!(
+        detect_shell(Some("bash.exe"), &with(&["PROMPT"])),
+        Shell::Bash
+    );
+    assert_eq!(
+        Shell::from_program(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        Some(Shell::Bash)
+    );
 }
 
 #[test]

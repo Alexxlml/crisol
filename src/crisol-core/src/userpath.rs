@@ -245,5 +245,87 @@ pub fn shadowing(
     Ok(found)
 }
 
+/// The extensions Windows runs without being typed, when `PATHEXT` cannot be read.
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+
+/// The programs of the machine and user `PATH` that a command in `shims/` would hide: `shims/`
+/// comes first, so a global npm program called `ssh` or `git` would take their place (ADR-0018
+/// §4). Left out are the folders the shims are meant to win over: `shims/` itself, anything in
+/// the Crisol home, a Node installation (a folder with `node.exe`) and npm's own global folder,
+/// `%APPDATA%\npm`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathPrograms {
+    folders: Vec<PathBuf>,
+    extensions: Vec<String>,
+}
+
+impl PathPrograms {
+    /// Reads the machine and user `PATH` and `PATHEXT`.
+    pub fn read(
+        store: &dyn UserPath,
+        shims: &Path,
+        home: &Path,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> io::Result<Self> {
+        let shims = shims.to_string_lossy();
+        let home = home.to_string_lossy();
+        let npm = store.expand(r"%APPDATA%\npm");
+        let mut text = store.system_path()?.unwrap_or_default();
+        if let Some(user) = store.read()? {
+            text.push(';');
+            text.push_str(&user.text);
+        }
+        let folders = text
+            .split(';')
+            .map(|e| store.expand(e.trim().trim_matches('"')))
+            .filter(|e| !e.is_empty())
+            .filter(|e| !same_folder(e, &shims) && !is_inside(e, &home))
+            // An `%APPDATA%` that could not be expanded names no folder.
+            .filter(|e| npm.contains('%') || !same_folder(e, &npm))
+            .map(PathBuf::from)
+            .filter(|folder| !exists(&folder.join("node.exe")))
+            .collect();
+        let pathext = store.expand("%PATHEXT%");
+        let pathext = if pathext.contains('%') || pathext.trim().is_empty() {
+            DEFAULT_PATHEXT.to_owned()
+        } else {
+            pathext
+        };
+        let extensions = pathext
+            .split(';')
+            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect();
+        Ok(Self {
+            folders,
+            extensions,
+        })
+    }
+
+    /// The file a command called `name` would run, if a folder of the `PATH` has one.
+    #[must_use]
+    pub fn find(&self, name: &str, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+        self.folders.iter().find_map(|folder| {
+            self.extensions
+                .iter()
+                .map(|extension| folder.join(format!("{name}.{extension}")))
+                .find(|file| exists(file))
+        })
+    }
+}
+
+/// Whether the `PATH` entry `entry` is the folder `dir` or inside it.
+fn is_inside(entry: &str, dir: &str) -> bool {
+    let normal = |text: &str| {
+        text.trim()
+            .trim_matches('"')
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let (entry, dir) = (normal(entry), normal(dir));
+    !dir.is_empty() && (entry == dir || entry.starts_with(&format!("{dir}\\")))
+}
+
 #[cfg(test)]
 mod tests;

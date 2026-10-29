@@ -10,6 +10,10 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use crisol_core::paths::CrisolPaths;
+use crisol_core::userpath::PathPrograms;
 
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::LibraryLoader::{
@@ -17,6 +21,8 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+
+use crate::RegistryUserPath;
 
 /// The folder of Crisol's privileged program inside `Program Files`.
 pub const HELPER_FOLDER: &str = "Crisol";
@@ -49,6 +55,27 @@ pub fn is_system_program(name: &str) -> bool {
             .iter()
             .any(|extension| folder.join(format!("{name}.{extension}")).is_file())
     })
+}
+
+/// Whether a global npm program called `name` must not get a command in the shims folder: a
+/// program of Windows has that name ([`is_system_program`]), or one in a folder of the machine
+/// or user `PATH` does (`ssh` in `System32\OpenSSH`, `git`, `code`). The `PATH` is read once,
+/// the first time a name is asked about, and folders of Node and of Crisol are not counted (see
+/// [`PathPrograms`]).
+pub fn path_program_guard(paths: &CrisolPaths) -> impl Fn(&str) -> bool {
+    let (shims, home) = (paths.shims_dir(), paths.home().to_path_buf());
+    let programs = OnceLock::new();
+    move |name| {
+        let exists = |p: &Path| p.is_file();
+        is_system_program(name)
+            || programs
+                .get_or_init(|| {
+                    PathPrograms::read(&RegistryUserPath::new(), &shims, &home, &exists).ok()
+                })
+                .as_ref()
+                // A PATH that cannot be read is no reason to let a program take a place.
+                .is_none_or(|programs| programs.find(name, &exists).is_some())
+    }
 }
 
 /// `C:\Program Files`, from the known-folder API (not from `%ProgramFiles%`).
@@ -109,6 +136,20 @@ mod tests {
         for name in ["tsc", "semver", "crisol-no-such-program"] {
             assert!(!is_system_program(name), "{name}");
         }
+    }
+
+    #[test]
+    fn the_guard_reads_the_real_path_and_only_reads_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+        let reserved = path_program_guard(&paths);
+        // `cmd` is in System32, `where` too; OpenSSH is a folder of its own in the PATH.
+        assert!(reserved("cmd") && reserved("where"));
+        let openssh = system_directory().unwrap().join("OpenSSH").join("ssh.exe");
+        if openssh.is_file() {
+            assert!(reserved("ssh"), r"ssh lives in System32\OpenSSH");
+        }
+        assert!(!reserved("crisol-no-such-program"));
     }
 
     #[test]

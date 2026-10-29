@@ -21,6 +21,8 @@ mod job_object;
 #[cfg(windows)]
 mod nrpt;
 #[cfg(windows)]
+mod parent_process;
+#[cfg(windows)]
 mod port_probe;
 #[cfg(windows)]
 mod private_dir;
@@ -61,6 +63,8 @@ pub use job_object::JobObjectSupervisor;
 #[cfg(windows)]
 pub use nrpt::{ElevatedNrpt, PowerShellNrpt};
 #[cfg(windows)]
+pub use parent_process::parent_program;
+#[cfg(windows)]
 pub use port_probe::WindowsPortProbe;
 #[cfg(windows)]
 pub use private_dir::WindowsPrivateDirs;
@@ -70,7 +74,8 @@ pub use root_certs::WindowsRootCertificates;
 pub use system::{default_deps, WindowsSystemChecks};
 #[cfg(windows)]
 pub use system_paths::{
-    is_system_program, restrict_dll_search, system_directory, HELPER_EXE, HELPER_FOLDER,
+    is_system_program, path_program_guard, restrict_dll_search, system_directory, HELPER_EXE,
+    HELPER_FOLDER,
 };
 #[cfg(windows)]
 pub use trust_store::WindowsTrustStore;
@@ -85,6 +90,20 @@ use std::path::PathBuf;
 #[allow(clippy::unnecessary_wraps)]
 pub fn survive_ctrl_c() -> std::io::Result<()> {
     Ok(())
+}
+
+/// The program that started this process. Not looked up off Windows yet.
+#[cfg(not(windows))]
+#[must_use]
+pub fn parent_program() -> Option<String> {
+    None
+}
+
+/// Whether a global program called `name` must not get a command. Off Windows nothing is
+/// reserved yet.
+#[cfg(not(windows))]
+pub fn path_program_guard(_paths: &CrisolPaths) -> impl Fn(&str) -> bool {
+    |_| false
 }
 
 /// Whether the system has a program called `name`. Off Windows nothing is reserved.

@@ -121,7 +121,7 @@ fn path_check(paths: &CrisolPaths) -> Check {
                 shims.display(),
                 shadows.join("; ")
             ),
-            Some("crisol env"),
+            Some(crisol_core::shimsetup::ENV_POWERSHELL),
         ),
         (false, _) => {
             let mut detail = format!(

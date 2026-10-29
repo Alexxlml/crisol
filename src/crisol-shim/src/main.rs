@@ -17,7 +17,7 @@ use std::process::{self, Command as Process};
 use crisol_core::catalog::Catalog;
 use crisol_core::globals::{find_global, is_global_shim, not_installed_message, sync_global_shims};
 use crisol_core::nodetool::{
-    changes_globals, corepack_enable_note, plan_launch, LaunchInput, NodeLaunch,
+    changes_globals, corepack_enable_note, plan_launch, LaunchInput, NodeLaunch, NPM_PREFIX,
 };
 use crisol_core::paths::CrisolPaths;
 use crisol_core::project::FileOwners;
@@ -189,10 +189,18 @@ fn launch_global(name: &str, args: &[OsString]) -> Result<i32, String> {
     let resolution = resolve_here(Tool::Node, &paths)?;
     let install = &resolution.resolved.version.path;
     let version = resolution.resolved.version.version.to_string();
+    let launch = node_launch(Command::Node, install, &version, &paths)?;
     let Some(program) = find_global(&paths, name, &version) else {
+        // Without Crisol's prefix the global programs are in the user's own folder.
+        if !launch.env.iter().any(|(n, _)| n == NPM_PREFIX) {
+            return Err(format!(
+                "`{name}` is a command for Crisol's global folder of Node {version}, but your own npm prefix is in use \
+                 (`npm_config_prefix`, or `prefix` in your .npmrc), so global programs go there. Run the one in that \
+                 folder; `crisol shims sync` removes this command once no Node version of Crisol has it"
+            ));
+        }
         return Err(not_installed_message(&paths, name, &version));
     };
-    let launch = node_launch(Command::Node, install, &version, &paths)?;
     let mut process = Process::new(&program);
     process.args(args).envs(launch.env);
     prepend_to_path(&mut process, &launch.path_prepend);
@@ -280,7 +288,8 @@ fn sync_globals(paths: &CrisolPaths) {
     let Ok(me) = std::env::current_exe() else {
         return;
     };
-    match sync_global_shims(paths, &me, &crisol_platform::is_system_program) {
+    let reserved = crisol_platform::path_program_guard(paths);
+    match sync_global_shims(paths, &me, &reserved) {
         Ok(done) => {
             for (name, why) in done.skipped {
                 report(&format!("warning: no command `{name}`: {why}"));

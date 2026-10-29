@@ -12,7 +12,8 @@
 //! The copies are made by the `npm` shim itself when an `npm install|uninstall|update --global`
 //! ends well, and by `crisol shims install|sync`. The names are written down in
 //! `shims/.crisol-globals`, which is how a file in `shims/` is known to be ours: a file with the
-//! same name that is not in the list is never overwritten or deleted.
+//! same name that is not in the list is never overwritten or deleted. The names are kept in
+//! lowercase, because Windows does not tell `Foo.exe` from `foo.exe`.
 //!
 //! A program that is installed for one Node version only says so when it is run under another
 //! (and which one has it), instead of failing as if it did not exist.
@@ -29,6 +30,10 @@ use crate::shims::{replace_running, shim_file_name, write_atomically, SHIM_COMMA
 
 /// The file in `shims/` that lists the commands that stand for global programs.
 pub const MANIFEST: &str = ".crisol-globals";
+
+/// Crisol's own programs. A global program with one of these names would take the place of
+/// Crisol itself in every terminal where the shims come first.
+const CRISOL_PROGRAMS: [&str; 4] = ["crisol", "crisold", "crisol-elevate", "crisol-shim"];
 
 /// The longest command name that gets a shim.
 const MAX_NAME: usize = 64;
@@ -56,7 +61,9 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         && !name.ends_with('.')
         && !SHIM_COMMANDS.contains(&name.to_ascii_lowercase().as_str())
-        && !name.eq_ignore_ascii_case("crisol-shim")
+        && !CRISOL_PROGRAMS
+            .iter()
+            .any(|program| name.eq_ignore_ascii_case(program))
         && !crate::paths::is_reserved_device_name(name)
 }
 
@@ -91,7 +98,7 @@ fn read_manifest(paths: &CrisolPaths) -> BTreeSet<String> {
             text.lines()
                 .map(str::trim)
                 .filter(|l| valid_name(l))
-                .map(str::to_owned)
+                .map(str::to_ascii_lowercase)
                 .collect()
         })
         .unwrap_or_default()
@@ -122,7 +129,7 @@ pub fn shimmed_globals(paths: &CrisolPaths) -> Vec<String> {
 /// Whether `name` is one of the commands in the list: only those answer as global programs.
 #[must_use]
 pub fn is_global_shim(paths: &CrisolPaths, name: &str) -> bool {
-    valid_name(name) && read_manifest(paths).contains(name)
+    valid_name(name) && read_manifest(paths).contains(&name.to_ascii_lowercase())
 }
 
 /// The installed Node versions.
@@ -159,8 +166,9 @@ pub fn installed_under(paths: &CrisolPaths, name: &str) -> Vec<String> {
 
 /// Makes the shims of the global programs match what the installed Node versions have: one for
 /// every program of any of them, none for a program that is gone. `shim` is the program that is
-/// copied (`crisol-shim`). `reserved` says which names belong to the system (`ping`): they get
-/// no command, because the shims folder comes first in the `PATH` and would hide it.
+/// copied (`crisol-shim`). `reserved` says which names already belong to a program in the
+/// `PATH` (`ping`, `ssh`, `git`): they get no command, because the shims folder comes first in
+/// the `PATH` and would hide it.
 pub fn sync_global_shims(
     paths: &CrisolPaths,
     shim: &Path,
@@ -178,11 +186,13 @@ pub fn sync_global_shims(
             if valid_name(&name) && reserved(&name) {
                 skipped.push((
                     name,
-                    "Windows has a program with that name, and a command of the shims would hide it"
+                    "a program with that name is already in your PATH (part of Windows or of another \
+                     tool), and a command of the shims would hide it"
                         .to_owned(),
                 ));
             } else if valid_name(&name) {
-                wanted.insert(name);
+                // Windows does not tell `Foo.exe` from `foo.exe`: one command for both.
+                wanted.insert(name.to_ascii_lowercase());
             } else if !SHIM_COMMANDS.contains(&name.to_ascii_lowercase().as_str()) {
                 skipped.push((name, "the name cannot be a command of the shims".to_owned()));
             }

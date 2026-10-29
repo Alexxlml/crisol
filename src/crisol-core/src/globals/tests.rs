@@ -75,6 +75,10 @@ fn only_plain_names_that_are_not_crisols_own_can_be_commands() {
         "php",
         "composer",
         "crisol-shim",
+        "crisol",
+        "Crisol",
+        "crisold",
+        "crisol-elevate",
         "con",
         "nul",
         "a b",
@@ -214,7 +218,7 @@ fn a_program_is_found_only_under_the_version_that_has_it_and_the_message_says_wh
 }
 
 #[test]
-fn a_program_called_like_a_windows_program_gets_no_command() {
+fn a_program_called_like_one_in_the_path_gets_no_command() {
     let (_tmp, paths, shim) = home();
     install_global(&paths, "24.22.0", "ping");
     install_global(&paths, "24.22.0", "tsc");
@@ -222,6 +226,20 @@ fn a_program_called_like_a_windows_program_gets_no_command() {
     assert_eq!(names(&done.added), ["tsc"]);
     assert_eq!(done.skipped.len(), 1);
     assert_eq!(done.skipped[0].0, "ping");
-    assert!(done.skipped[0].1.contains("Windows has a program"));
+    assert!(done.skipped[0].1.contains("already in your PATH"));
     assert!(!paths.shims_dir().join("ping.exe").exists());
+}
+
+#[test]
+fn names_that_differ_only_in_case_are_one_command_that_stays_while_either_is_there() {
+    let (_tmp, paths, shim) = home();
+    install_global(&paths, "24.22.0", "MyTool");
+    install_global(&paths, "22.23.3", "mytool");
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
+    assert_eq!(names(&done.added), ["mytool"]);
+    assert!(is_global_shim(&paths, "MyTool") && is_global_shim(&paths, "mytool"));
+    uninstall_global(&paths, "24.22.0", "MyTool");
+    let done = sync_global_shims(&paths, &shim, &|_| false).unwrap();
+    assert!(done.removed.is_empty(), "{done:?}");
+    assert!(paths.shims_dir().join(shim_file_name("mytool")).is_file());
 }

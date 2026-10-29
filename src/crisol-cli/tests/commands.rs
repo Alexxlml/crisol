@@ -161,6 +161,8 @@ struct Env {
     autostart: Arc<FakeAutostart>,
     user_path: Arc<FakeUserPath>,
     shim_exe: std::path::PathBuf,
+    /// The program that "started" `crisol` (none: the shell is guessed from the variables).
+    parent_program: Option<String>,
     setup: Arc<FakeSetup>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
@@ -219,6 +221,7 @@ impl Env {
             autostart: Arc::new(FakeAutostart::new()),
             user_path: Arc::new(FakeUserPath::with_user(r"C:\Tools;%USERPROFILE%\bin")),
             shim_exe,
+            parent_program: None,
             setup: Arc::new(FakeSetup::new()),
             driver_stop,
             driver,
@@ -256,8 +259,9 @@ impl Env {
             daemon_exe: Some(self.daemon_exe.clone()),
             user_path: Box::new(SharedUserPath(Arc::clone(&self.user_path))),
             shim_exe: Some(self.shim_exe.clone()),
-            is_system_program: Box::new(|name| name == "ping"),
+            reserved_name: Box::new(|name| name == "ping"),
             env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
+            parent_program: self.parent_program.clone(),
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(25),
@@ -982,7 +986,7 @@ fn shims_sync_gives_a_command_to_each_global_program_and_install_and_remove_foll
 
     let out = env.ok(&["shims", "sync"]);
     assert!(
-        out.contains("no command `ping`: Windows has a program"),
+        out.contains("no command `ping`: a program with that name is already in your PATH"),
         "{out}"
     );
     assert!(!env.paths.shims_dir().join("ping.exe").exists());
@@ -1061,7 +1065,8 @@ fn path_says_what_wins_over_the_shims_and_how_to_get_around_it() {
         "{out}"
     );
     assert!(
-        out.contains("machine PATH") && out.contains("crisol env"),
+        out.contains("machine PATH")
+            && out.contains("crisol env --shell powershell | Invoke-Expression"),
         "{out}"
     );
     let json = env.ok(&["--json", "path", "status"]);
@@ -1088,6 +1093,19 @@ fn env_prints_only_the_lines_for_the_shell_and_writes_nothing() {
         .starts_with(r#"{"script":"set"#));
     assert_eq!(env.user_path.writes(), 0);
     assert!(!env.paths.shims_dir().join("php.exe").exists());
+}
+
+#[test]
+fn env_speaks_the_shell_that_started_it_even_with_the_variables_of_another() {
+    // A PowerShell opened from cmd keeps PROMPT (the test context has it): the line for cmd
+    // would run there without an error and without changing anything.
+    let mut env = Env::new(&[]);
+    env.parent_program = Some("pwsh.exe".to_owned());
+    assert!(env
+        .ok(&["env"])
+        .starts_with("if (($env:Path -split ';')[0] -ne '"));
+    env.parent_program = Some("bash.exe".to_owned());
+    assert!(env.ok(&["env"]).contains("export PATH="));
 }
 
 // ---- the one-time setup that needs an administrator ----------------------------------------

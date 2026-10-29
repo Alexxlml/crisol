@@ -102,10 +102,13 @@ pub struct Context {
     pub user_path: Box<dyn UserPath>,
     /// The `crisol-shim` that `shims install` copies (the one next to this program).
     pub shim_exe: Option<PathBuf>,
-    /// Whether Windows has a program with that name (a command of the shims would hide it).
-    pub is_system_program: Box<dyn Fn(&str) -> bool>,
+    /// Whether a program with that name is already in the `PATH` (a command of the shims would
+    /// hide it).
+    pub reserved_name: Box<dyn Fn(&str) -> bool>,
     /// The environment of this process, to tell which shell this is.
     pub env: EnvLookup,
+    /// The program that started this one (`pwsh.exe`), which tells the shell better.
+    pub parent_program: Option<String>,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
@@ -221,7 +224,7 @@ impl Session<'_> {
             &self.context.paths,
             &exe,
             self.context.dirs.as_ref(),
-            self.context.is_system_program.as_ref(),
+            self.context.reserved_name.as_ref(),
         ) {
             Ok(done) => done,
             Err(error) => return self.shims_error(&error),
@@ -247,12 +250,18 @@ impl Session<'_> {
             .iter()
             .map(|(n, w)| serde_json::json!({"shim": n, "why": w}))
             .collect();
+        let globals_skipped: Vec<_> = done
+            .globals_skipped
+            .iter()
+            .map(|(n, w)| serde_json::json!({"command": n, "why": w}))
+            .collect();
         let json = serde_json::json!({
             "written": done.written,
             "unchanged": done.unchanged,
             "failed": failed,
             "globals_added": done.globals_added,
             "globals_removed": done.globals_removed,
+            "globals_skipped": globals_skipped,
         });
         self.say(&text, &json);
         if done.failed.is_empty() {
@@ -271,7 +280,7 @@ impl Session<'_> {
             &self.context.paths,
             &exe,
             self.context.dirs.as_ref(),
-            self.context.is_system_program.as_ref(),
+            self.context.reserved_name.as_ref(),
         ) {
             Ok(done) => done,
             Err(error) => return self.shims_error(&error),
@@ -408,7 +417,10 @@ impl Session<'_> {
             Some(ShellArg::Powershell) => Shell::PowerShell,
             Some(ShellArg::Cmd) => Shell::Cmd,
             Some(ShellArg::Bash) => Shell::Bash,
-            None => shimsetup::detect_shell(self.context.env.as_ref()),
+            None => shimsetup::detect_shell(
+                self.context.parent_program.as_deref(),
+                self.context.env.as_ref(),
+            ),
         };
         // The script itself, nothing else, so that it can be piped into the shell.
         let script = shimsetup::env_script(&self.context.paths.shims_dir(), shell);

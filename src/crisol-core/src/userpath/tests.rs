@@ -252,3 +252,49 @@ fn a_folder_with_a_separator_or_a_variable_sign_is_refused_and_nothing_is_writte
         assert_eq!(text(&fake), r"C:\Tools");
     }
 }
+
+#[test]
+fn a_global_program_must_not_hide_what_the_path_has_except_node_and_crisol() {
+    let fake = FakeUserPath::with_user(
+        r"C:\Crisol\shims;%APPDATA%\npm;C:\Crisol\data\node\24.22.0\global;C:\Tools",
+    );
+    fake.set_system(
+        r"C:\Windows\System32\OpenSSH;C:\Program Files\nodejs;C:\Program Files\Git\cmd",
+    );
+    fake.variable("APPDATA", r"C:\Users\me\AppData\Roaming");
+    fake.variable("PATHEXT", ".COM;.EXE;.BAT;.CMD;.MSC");
+    let files: BTreeSet<&str> = [
+        r"C:\Windows\System32\OpenSSH\ssh.exe",
+        r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Tools\services.msc",
+        // What the shims stand for, or stand in front of on purpose:
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files\nodejs\npm.cmd",
+        r"C:\Program Files\nodejs\corepack.cmd",
+        r"C:\Users\me\AppData\Roaming\npm\tsc.cmd",
+        r"C:\Crisol\data\node\24.22.0\global\tsc.cmd",
+        r"C:\Crisol\shims\eslint.exe",
+    ]
+    .into_iter()
+    .collect();
+    let exists = |p: &Path| files.contains(p.to_string_lossy().as_ref());
+    let programs = PathPrograms::read(&fake, shims(), Path::new(r"C:\Crisol"), &exists).unwrap();
+    for name in ["ssh", "git", "services"] {
+        assert!(programs.find(name, &exists).is_some(), "{name}");
+    }
+    for name in ["tsc", "corepack", "eslint", "nothing-like-it"] {
+        assert_eq!(programs.find(name, &exists), None, "{name}");
+    }
+    assert_eq!(
+        programs.find("ssh", &exists).unwrap(),
+        Path::new(r"C:\Windows\System32\OpenSSH\ssh.exe")
+    );
+}
+
+#[test]
+fn without_pathext_the_usual_extensions_are_assumed() {
+    let fake = FakeUserPath::with_user(r"C:\Tools");
+    let exists = |p: &Path| p == Path::new(r"C:\Tools\backup.vbs");
+    let programs = PathPrograms::read(&fake, shims(), Path::new(r"C:\Crisol"), &exists).unwrap();
+    assert!(programs.find("backup", &exists).is_some());
+}

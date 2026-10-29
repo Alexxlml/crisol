@@ -1154,7 +1154,8 @@ fn stopping_mongodb_asks_it_to_shut_down_logged_in_and_data_without_a_password_a
     let mut db = mongo_running(&rig, &admin);
     let password = password_of(&rig, DbKind::Mongodb);
     db.stop(rig.at(9000));
-    // The hook runs in a thread of its own. The first shutdown was the temporary server's.
+    // Each shutdown runs in a thread of its own (the temporary server's, then this one), so
+    // they can be recorded in either order: wait for both and compare them as a set.
     let end = Instant::now() + Duration::from_secs(5);
     while !admin
         .shutdowns
@@ -1162,13 +1163,16 @@ fn stopping_mongodb_asks_it_to_shut_down_logged_in_and_data_without_a_password_a
         .unwrap()
         .iter()
         .any(|(p, _)| *p == 19017)
+        || admin.shutdowns.lock().unwrap().len() < 2
     {
         assert!(Instant::now() < end, "the shutdown was never asked for");
         std::thread::sleep(Duration::from_millis(10));
     }
+    let mut shutdowns = admin.shutdowns.lock().unwrap().clone();
+    shutdowns.sort();
     assert_eq!(
-        *admin.shutdowns.lock().unwrap(),
-        [(TEMPORARY, Some(password.clone())), (19017, Some(password))]
+        shutdowns,
+        [(19017, Some(password.clone())), (TEMPORARY, Some(password))]
     );
 
     // Data made before there were passwords: no secret, no --auth, no login.

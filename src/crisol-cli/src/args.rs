@@ -190,7 +190,7 @@ pub enum Command {
         action: PathAction,
     },
     /// Prints the lines that put Crisol's shims first in the PATH of **one terminal**, without
-    /// writing anything: `crisol env | Invoke-Expression` in PowerShell.
+    /// writing anything: `crisol env --shell powershell | Invoke-Expression` in PowerShell.
     Env {
         /// `powershell`, `cmd` or `bash`; by default the one you are in.
         #[arg(long, value_enum)]

@@ -28,6 +28,7 @@ fn main() -> ExitCode {
     let daemon = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("crisold.exe")));
+    let reserved_name = crisol_platform::path_program_guard(&paths);
     let context = Context {
         cwd: std::env::current_dir().unwrap_or_default(),
         paths,
@@ -49,8 +50,9 @@ fn main() -> ExitCode {
         shim_exe: std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|dir| dir.join("crisol-shim.exe"))),
-        is_system_program: Box::new(crisol_platform::is_system_program),
+        reserved_name: Box::new(reserved_name),
         env: Box::new(|name| std::env::var(name).ok()),
+        parent_program: crisol_platform::parent_program(),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {
             Some(path) if path.is_file() => spawn_daemon(path),

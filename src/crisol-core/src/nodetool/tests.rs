@@ -155,6 +155,48 @@ fn what_the_user_chose_is_left_alone_in_the_environment_and_in_their_npmrc() {
 }
 
 #[test]
+fn a_prefix_set_by_an_outer_shim_is_replaced_and_one_of_the_user_is_not() {
+    let (_tmp, paths, dir) = install(true);
+    // An outer shim for Node 22 left its prefix and its record of it in the environment.
+    let outer = paths.node_global("22.23.3").unwrap().into_os_string();
+    let from_shim = {
+        let outer = outer.clone();
+        move |name: &str| matches!(name, NPM_PREFIX | OWN_NPM_PREFIX).then(|| outer.clone())
+    };
+    let launch = plan_with(Command::Npm, &dir, &paths, &from_shim, "").unwrap();
+    let ours = paths.node_global("24.22.0").unwrap();
+    assert_eq!(env_of(&launch, NPM_PREFIX), Some(ours.clone()));
+    assert_eq!(env_of(&launch, OWN_NPM_PREFIX), Some(ours.clone()));
+    assert_eq!(launch.path_prepend, [ours, dir.clone()]);
+
+    // The user changed it afterwards: the record no longer matches, so it is theirs.
+    let changed = move |name: &str| match name {
+        NPM_PREFIX => Some(OsString::from(r"D:\mine")),
+        OWN_NPM_PREFIX => Some(outer.clone()),
+        _ => None,
+    };
+    let launch = plan_with(Command::Npm, &dir, &paths, &changed, "").unwrap();
+    assert_eq!(env_of(&launch, NPM_PREFIX), None);
+}
+
+#[test]
+fn with_a_prefix_of_the_user_a_copy_of_npm_in_ours_is_not_used() {
+    let (_tmp, paths, dir) = install(true);
+    let global = paths
+        .node_global("24.22.0")
+        .unwrap()
+        .join("node_modules")
+        .join("npm")
+        .join("bin");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("npm-cli.js"), "").unwrap();
+    let mine = |name: &str| (name == NPM_PREFIX).then(|| OsString::from(r"D:\mine"));
+    let launch = plan_with(Command::Npm, &dir, &paths, &mine, "").unwrap();
+    assert!(launch.leading[0].to_string_lossy().contains("24.22.0"));
+    assert!(!launch.leading[0].to_string_lossy().contains("global"));
+}
+
+#[test]
 fn a_copy_of_npm_installed_globally_wins_over_the_one_of_the_zip() {
     let (_tmp, paths, dir) = install(true);
     let global = paths
@@ -290,6 +332,10 @@ fn only_the_npm_commands_that_change_the_global_programs_count() {
         &["link", "-g"],
         &["install", "-gD", "typescript"],
         &["--loglevel", "warn", "install", "-g", "typescript"],
+        // `npm link` in a package links it into the global folder without `-g`.
+        &["link"],
+        &["ln", "../my-cli"],
+        &["install", "--global=true", "typescript"],
     ] {
         assert!(changes_globals(&args(list)), "{list:?}");
     }
@@ -302,6 +348,9 @@ fn only_the_npm_commands_that_change_the_global_programs_count() {
         &["run", "build", "--", "-g"],
         &["config", "get", "prefix"],
         &["view", "install", "-g"],
+        &["install", "--global=false", "typescript"],
+        &["install", "-g", "--no-global", "typescript"],
+        &["unlink", "left-pad"],
         &[],
     ] {
         assert!(!changes_globals(&args(list)), "{list:?}");
