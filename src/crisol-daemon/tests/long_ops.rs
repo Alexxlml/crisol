@@ -330,6 +330,8 @@ fn while_a_download_goes_on_the_daemon_answers_restarts_workers_and_reports_prog
             .call(&Call::Install {
                 service: service.to_owned(),
                 version: version.to_owned(),
+                from: None,
+                sha256: None,
             })
             .unwrap();
     }
@@ -355,6 +357,8 @@ fn while_a_download_goes_on_the_daemon_answers_restarts_workers_and_reports_prog
         client.call(&Call::Install {
             service: "node".to_owned(),
             version: "22".to_owned(),
+            from: None,
+            sha256: None,
         })
     });
     let progress = loop {
@@ -424,7 +428,12 @@ fn several_installations_at_once_all_finish_and_doctor_still_answers() {
             let (service, version) = (service.to_owned(), version.to_owned());
             std::thread::spawn(move || {
                 let mut client = connect_to_daemon(&pipe).unwrap();
-                client.call(&Call::Install { service, version })
+                client.call(&Call::Install {
+                    service,
+                    version,
+                    from: None,
+                    sha256: None,
+                })
             })
         })
         .collect();
@@ -451,6 +460,8 @@ fn shut_down_with_a_stuck_nginx(timing: Timing, unkillable: bool) -> (Running, D
         .call(&Call::Install {
             service: "nginx".to_owned(),
             version: "1.28.3".to_owned(),
+            from: None,
+            sha256: None,
         })
         .unwrap();
     client.call(&Call::Start { service: None }).unwrap();

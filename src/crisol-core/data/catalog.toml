@@ -14,7 +14,7 @@
 # raise `serial`. `cargo test -p crisol-core catalog` checks the whole file.
 
 schema = 1
-serial = 11
+serial = 12
 generated = "2026-10-29"
 
 # The line Crisol uses by default for each tool (ADR-0012): used when nothing asks for a version
@@ -22,6 +22,17 @@ generated = "2026-10-29"
 [recommended]
 php = "8.4"
 node = "24"
+
+# Known vulnerabilities (ADR-0020). `install` and `doctor` tell about them; they never block an
+# install. PHP 7.4 has no fixed build for Windows (the fix exists only as source), so its line
+# has no entry in `fixed_in`.
+[[advisory]]
+id = "PHP2Shell"
+service = "php"
+affects = ["7.4", "8.3", "8.4", "8.5"]
+fixed_in = ["8.3.36", "8.4.27", "8.5.12"]
+summary = "Remote code execution in PHP (CVE-2026-109618 and CVE-2026-109619), exploited in the wild"
+url = "https://www.cve.org/CVERecord?id=CVE-2026-109618"
 
 # PHP 7.4 is here only so that old projects can be started (ADR-0012). It no longer receives
 # security fixes (`end_of_life`), so it is never a default. It is vulnerable to PHP2Shell

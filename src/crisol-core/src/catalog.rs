@@ -46,6 +46,9 @@ use serde::Deserialize;
 use crate::config::{deserialize_reporting_unknown, ConfigWarning};
 use crate::version::{Version, VersionError, VersionReq};
 
+mod advisory;
+pub use advisory::Advisory;
+
 /// The catalog compiled into the binary.
 pub const EMBEDDED_CATALOG: &str = include_str!("../data/catalog.toml");
 
@@ -152,6 +155,8 @@ struct RawCatalog {
     recommended: BTreeMap<String, String>,
     #[serde(default)]
     package: Vec<RawPackage>,
+    #[serde(default)]
+    advisory: Vec<advisory::RawAdvisory>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +275,7 @@ pub struct Catalog {
     generated: Option<String>,
     recommended: BTreeMap<String, String>,
     packages: Vec<Package>,
+    advisories: Vec<Advisory>,
     warnings: Vec<ConfigWarning>,
 }
 
@@ -332,6 +338,14 @@ impl Catalog {
             packages.push(validate(index, entry)?);
         }
         reject_duplicates(&packages)?;
+        let mut advisories = Vec::with_capacity(raw.advisory.len());
+        for (index, entry) in raw.advisory.into_iter().enumerate() {
+            let advisory = advisory::validate(index, entry)?;
+            if advisories.iter().any(|a: &Advisory| a.id == advisory.id) {
+                return Err(CatalogError::Duplicate(format!("advisory {}", advisory.id)));
+            }
+            advisories.push(advisory);
+        }
         for (service, line) in &raw.recommended {
             let invalid = |field: &'static str, reason: &str| CatalogError::Invalid {
                 entry: format!("[recommended] {service}"),
@@ -363,6 +377,7 @@ impl Catalog {
             generated: raw.generated,
             recommended: raw.recommended,
             packages,
+            advisories,
             warnings,
         })
     }
@@ -422,6 +437,30 @@ impl Catalog {
         self.packages
             .iter()
             .any(|p| p.end_of_life && p.service == service && &p.version == version)
+    }
+
+    /// The advisories that affect this version of `service` (ADR-0020).
+    #[must_use]
+    pub fn advisories_for(&self, service: &str, version: &Version) -> Vec<&Advisory> {
+        self.advisories
+            .iter()
+            .filter(|a| a.affects(service, version))
+            .collect()
+    }
+
+    /// Every advisory in the catalog.
+    #[must_use]
+    pub fn advisories(&self) -> &[Advisory] {
+        &self.advisories
+    }
+
+    /// The highest stable build of `service` for `target`: the one whose layout (format,
+    /// `root`, executable) `install --from` assumes for a version the catalog lacks (ADR-0020).
+    #[must_use]
+    pub fn template(&self, service: &str, target: Target) -> Option<&Package> {
+        self.available(service, target)
+            .into_iter()
+            .rfind(|p| !p.version.is_prerelease())
     }
 
     /// Every package, ordered by service, platform and version.

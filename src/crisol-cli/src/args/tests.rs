@@ -33,14 +33,18 @@ fn each_command_is_one_call() {
         call(&["install", "php", "8.4"]),
         Call::Install {
             service: "php".to_owned(),
-            version: "8.4".to_owned()
+            version: "8.4".to_owned(),
+            from: None,
+            sha256: None
         }
     );
     assert_eq!(
         call(&["install", "nginx"]),
         Call::Install {
             service: "nginx".to_owned(),
-            version: "latest".to_owned()
+            version: "latest".to_owned(),
+            from: None,
+            sha256: None
         }
     );
     assert_eq!(
@@ -246,5 +250,53 @@ fn every_call_the_cli_can_make_is_one_the_protocol_knows() {
             crisol_protocol::to_line(&crisol_protocol::Request::new(1, call.clone())).unwrap();
         let back: crisol_protocol::Request = crisol_protocol::from_line(&line).unwrap();
         assert_eq!(back.call, call);
+    }
+}
+
+#[test]
+fn install_from_a_file_needs_its_hash_and_sends_an_absolute_path() {
+    let hash = "ab".repeat(32);
+    assert_eq!(
+        call(&[
+            "install",
+            "php",
+            "8.4.28",
+            "--from",
+            r"..\dl\php.zip",
+            "--sha256",
+            &hash
+        ]),
+        Call::Install {
+            service: "php".to_owned(),
+            version: "8.4.28".to_owned(),
+            from: Some(r"D:\work\dl\php.zip".to_owned()),
+            sha256: Some(hash.clone()),
+        }
+    );
+    assert_eq!(
+        call(&[
+            "install",
+            "php",
+            "8.4.28",
+            "--from",
+            r"E:\dl\php.zip",
+            "--sha256",
+            &hash
+        ]),
+        Call::Install {
+            service: "php".to_owned(),
+            version: "8.4.28".to_owned(),
+            from: Some(r"E:\dl\php.zip".to_owned()),
+            sha256: Some(hash.clone()),
+        }
+    );
+    // Neither one alone: `--from` without a hash must not turn into a download.
+    for words in [
+        vec!["install", "php", "8.4.28", "--from", "php.zip"],
+        vec!["install", "php", "8.4.28", "--sha256", hash.as_str()],
+    ] {
+        let mut arguments = vec!["crisol"];
+        arguments.extend(words);
+        assert!(parse(arguments).is_err());
     }
 }

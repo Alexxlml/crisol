@@ -22,6 +22,8 @@ fn a_request_is_json_rpc_with_method_and_params() {
         Call::Install {
             service: "php".to_owned(),
             version: "8.4".to_owned(),
+            from: None,
+            sha256: None,
         },
     );
     assert_eq!(
@@ -59,6 +61,8 @@ fn every_call_survives_a_round_trip_and_names_itself() {
         Call::Install {
             service: "node".to_owned(),
             version: "latest".to_owned(),
+            from: None,
+            sha256: None,
         },
         Call::Uninstall {
             service: "php".to_owned(),

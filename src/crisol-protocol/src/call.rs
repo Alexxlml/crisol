@@ -57,8 +57,15 @@ pub enum Call {
     Install {
         /// `php`, `nginx`, `node`, …
         service: String,
-        /// `8.4`, `8.4.26` or `latest`.
+        /// `8.4`, `8.4.26` or `latest`; with `from`, the exact version of the archive.
         version: String,
+        /// An archive already downloaded (an absolute path): the way out when the catalog
+        /// lacks the version (ADR-0020). Needs `sha256`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        /// The SHA-256 the user vouches for, for `from`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
     },
     /// Removes an installed version.
     Uninstall {

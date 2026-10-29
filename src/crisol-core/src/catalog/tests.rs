@@ -886,3 +886,150 @@ format =",
         "7.4.33"
     );
 }
+
+// ---- vulnerability advisories (ADR-0020) ----------------------------------------------
+
+fn with_advisory(extra: &str) -> String {
+    format!(
+        "{}\n[[advisory]]\nid = \"PHP2Shell\"\nservice = \"php\"\nsummary = \"Remote code execution\"\n\
+         url = \"https://example.invalid/a\"\n{extra}\n",
+        catalog(&[entry("php", "8.4.26")])
+    )
+}
+
+fn php2shell() -> Catalog {
+    Catalog::parse(&with_advisory(
+        "affects = [\"7.4\", \"8.3\", \"8.4\"]\nfixed_in = [\"8.3.36\", \"8.4.27\"]",
+    ))
+    .unwrap()
+}
+
+fn affected(catalog: &Catalog, service: &str, version: &str) -> bool {
+    !catalog
+        .advisories_for(service, &Version::parse(version).unwrap())
+        .is_empty()
+}
+
+#[test]
+fn an_advisory_affects_a_line_until_the_fix_of_that_same_line() {
+    let catalog = php2shell();
+    for vulnerable in ["8.3.35", "8.4.0", "8.4.26", "7.4.33"] {
+        assert!(affected(&catalog, "php", vulnerable), "{vulnerable}");
+    }
+    for fixed in ["8.3.36", "8.3.40", "8.4.27", "8.4.99"] {
+        assert!(!affected(&catalog, "php", fixed), "{fixed}");
+    }
+    // 8.4.27 fixes the 8.4 line, not 8.3; and a line the advisory does not name is untouched.
+    assert!(affected(&catalog, "php", "8.3.0"));
+    assert!(!affected(&catalog, "php", "8.5.1"));
+    assert!(!affected(&catalog, "node", "8.4.26"));
+}
+
+#[test]
+fn a_line_without_a_fixed_version_stays_affected() {
+    let catalog = php2shell();
+    let advisory = &catalog.advisories()[0];
+    let old = Version::parse("7.4.33").unwrap();
+    assert!(advisory.affects("php", &old));
+    assert_eq!(advisory.fix_for(&old), None);
+    assert_eq!(
+        advisory
+            .fix_for(&Version::parse("8.4.26").unwrap())
+            .map(ToString::to_string),
+        Some("8.4.27".to_owned())
+    );
+    assert_eq!(advisory.fix_for(&Version::parse("8.4.27").unwrap()), None);
+}
+
+#[test]
+fn an_advisory_without_lines_covers_every_version_below_its_fix() {
+    let catalog = Catalog::parse(&with_advisory("fixed_in = [\"8.4.27\"]")).unwrap();
+    assert!(affected(&catalog, "php", "7.4.33"));
+    assert!(affected(&catalog, "php", "8.4.26"));
+    assert!(!affected(&catalog, "php", "8.4.27"));
+    let nothing_fixed = Catalog::parse(&with_advisory("")).unwrap();
+    assert!(affected(&nothing_fixed, "php", "9.9.9"));
+}
+
+#[test]
+fn a_catalog_without_advisories_is_still_valid() {
+    let catalog = Catalog::parse(&catalog(&[entry("php", "8.4.26")])).unwrap();
+    assert_eq!(catalog.advisories(), []);
+}
+
+#[test]
+fn malformed_advisories_are_rejected() {
+    let reject = |text: String, field: &str| match Catalog::parse(&text) {
+        Err(CatalogError::Invalid { field: got, .. }) => assert_eq!(got, field, "{text}"),
+        other => panic!("expected `{field}` to be rejected, got {other:?}\n{text}"),
+    };
+    reject(
+        with_advisory("").replace("https://example.invalid/a", "http://example.invalid/a"),
+        "url",
+    );
+    reject(
+        with_advisory("").replace(
+            "https://example.invalid/a",
+            "https://user@example.invalid/a",
+        ),
+        "url",
+    );
+    reject(
+        with_advisory("").replace("service = \"php\"\nsummary", "service = \"PHP\"\nsummary"),
+        "service",
+    );
+    reject(
+        with_advisory("").replace("Remote code execution", "  "),
+        "summary",
+    );
+    reject(with_advisory("").replace("PHP2Shell", "two words"), "id");
+    reject(with_advisory("affects = [\"eight\"]"), "affects");
+    reject(with_advisory("fixed_in = [\"8.4.x\"]"), "fixed_in");
+}
+
+#[test]
+fn two_advisories_with_the_same_id_are_refused() {
+    let text =
+        with_advisory("") + &with_advisory("").replace(&catalog(&[entry("php", "8.4.26")]), "");
+    assert!(
+        matches!(Catalog::parse(&text), Err(CatalogError::Duplicate(what)) if what.contains("PHP2Shell"))
+    );
+}
+
+#[test]
+fn the_template_for_a_missing_version_is_the_highest_stable_build() {
+    let catalog = sample();
+    assert_eq!(
+        catalog
+            .template("php", WINDOWS)
+            .unwrap()
+            .version
+            .to_string(),
+        "8.4.10"
+    );
+    assert!(catalog.template("redis", WINDOWS).is_none());
+}
+
+#[test]
+fn the_built_in_catalog_flags_php2shell_only_where_there_is_no_fixed_build() {
+    let catalog = Catalog::embedded().unwrap();
+    let advisory = catalog
+        .advisories()
+        .iter()
+        .find(|a| a.id == "PHP2Shell")
+        .expect("the built-in catalog carries the PHP2Shell advisory");
+    // The builds the catalog offers are the fixed ones, except PHP 7.4, which has none.
+    for package in catalog.packages().iter().filter(|p| p.service == "php") {
+        let vulnerable = advisory.affects("php", &package.version);
+        let seven_four = package.version.parts().first() == Some(&7);
+        assert_eq!(vulnerable, seven_four, "{}", package.label());
+    }
+    // And the ones it replaced are flagged.
+    for old in ["8.3.35", "8.4.26", "8.5.11"] {
+        assert!(affected(&catalog, "php", old), "{old}");
+    }
+    for fixed in ["8.3.36", "8.4.27", "8.5.12"] {
+        assert!(!affected(&catalog, "php", fixed), "{fixed}");
+    }
+    assert!(!affected(&catalog, "node", "22.23.3"));
+}

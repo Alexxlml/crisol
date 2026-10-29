@@ -1,6 +1,6 @@
 use crisol_protocol::{
-    Check, DoneInfo, HelloInfo, InstalledInfo, LogChunk, RemovedInfo, ServiceInfo, SiteInfo,
-    StatusInfo, UsedInfo, VersionInfo, VersionList,
+    AdvisoryInfo, Check, DoneInfo, HelloInfo, InstalledInfo, LogChunk, RemovedInfo, ServiceInfo,
+    SiteInfo, StatusInfo, UsedInfo, VersionInfo, VersionList,
 };
 
 use super::*;
@@ -55,6 +55,8 @@ fn installing_removing_and_choosing_read_as_sentences() {
         already: false,
         end_of_life: true,
         downloaded: 35_103_568,
+        unverified: false,
+        advisories: Vec::new(),
     }));
     assert!(
         installed.starts_with(
@@ -73,6 +75,8 @@ fn installing_removing_and_choosing_read_as_sentences() {
         already: true,
         end_of_life: false,
         downloaded: 0,
+        unverified: false,
+        advisories: Vec::new(),
     }));
     assert_eq!(already, "php 8.4.26 was already installed (p)\n");
     assert_eq!(
@@ -110,6 +114,8 @@ fn lists_mark_what_is_installed_recommended_and_old() {
         installed,
         recommended,
         end_of_life,
+        unverified: false,
+        advisories: Vec::new(),
     };
     let text = reply(&Reply::Versions(VersionList {
         installed: vec![version("8.4.26", true, true, false)],
@@ -254,4 +260,75 @@ fn progress_prints_a_line_every_ten_percent_and_at_the_end() {
     );
     assert_eq!(progress(&unknown, &mut last), None);
     assert_eq!(progress(&Event::Reloaded, &mut last), None);
+}
+
+#[test]
+fn an_install_from_a_file_and_known_vulnerabilities_are_said_out_loud() {
+    let advisory = |fixed_in: Option<&str>| AdvisoryInfo {
+        id: "PHP2Shell".to_owned(),
+        summary: "Remote code execution".to_owned(),
+        url: "https://example.org/a".to_owned(),
+        fixed_in: fixed_in.map(str::to_owned),
+    };
+    let info = |version: &str, unverified, advisories| {
+        reply(&Reply::Installed(InstalledInfo {
+            service: "php".to_owned(),
+            version: version.to_owned(),
+            path: "p".to_owned(),
+            already: false,
+            end_of_life: false,
+            downloaded: 1024,
+            unverified,
+            advisories,
+        }))
+    };
+    let from_file = info("8.4.28", true, Vec::new());
+    assert!(
+        from_file.starts_with("Installed php 8.4.28 in p (1.0 KB copied from the file)\n"),
+        "{from_file}"
+    );
+    assert!(
+        from_file.contains("warning: php 8.4.28 was not verified by Crisol"),
+        "{from_file}"
+    );
+    let fixable = info("8.4.26", false, vec![advisory(Some("8.4.27"))]);
+    assert!(
+        fixable.contains("known vulnerability, PHP2Shell: Remote code execution (fixed in php 8.4.27: `crisol install php 8.4.27`; https://example.org/a)"),
+        "{fixable}"
+    );
+    let unfixable = info("7.4.33", false, vec![advisory(None)]);
+    assert!(unfixable.contains("there is no fixed build"), "{unfixable}");
+    let clean = info("8.4.27", false, Vec::new());
+    assert!(!clean.contains("warning"), "{clean}");
+}
+
+#[test]
+fn a_list_marks_unverified_and_vulnerable_versions() {
+    let text = reply(&Reply::Versions(VersionList {
+        installed: vec![
+            VersionInfo {
+                service: "php".to_owned(),
+                version: "8.4.26".to_owned(),
+                installed: true,
+                recommended: false,
+                end_of_life: false,
+                unverified: false,
+                advisories: vec!["PHP2Shell".to_owned()],
+            },
+            VersionInfo {
+                service: "php".to_owned(),
+                version: "8.4.28".to_owned(),
+                installed: true,
+                recommended: false,
+                end_of_life: false,
+                unverified: true,
+                advisories: Vec::new(),
+            },
+        ],
+        available: vec![],
+    }));
+    assert_eq!(
+        text,
+        "Installed:\n  php 8.4.26  (vulnerable: PHP2Shell)\n  php 8.4.28  (not verified by Crisol)\n"
+    );
 }

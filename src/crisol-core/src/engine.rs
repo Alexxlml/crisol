@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crisol_protocol::{
-    Call, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, ErrorCode, Event, InstalledInfo,
-    LogChunk, RemovedInfo, Reply, RpcError, SiteInfo, Tool as WireTool, UsedInfo, VersionInfo,
-    VersionList,
+    AdvisoryInfo, Call, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, ErrorCode, Event,
+    InstalledInfo, LogChunk, RemovedInfo, Reply, RpcError, SiteInfo, Tool as WireTool, UsedInfo,
+    VersionInfo, VersionList,
 };
 
 use crate::cacert::RootCertificates;
@@ -30,7 +30,8 @@ use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
 use crate::install::{InstallError, InstallOptions, Progress};
 use crate::manage::{
-    install_version, list_available, list_installed, uninstall, Environment, ManageError,
+    install_version, install_version_from, is_unverified_install, list_available, list_installed,
+    uninstall, Environment, LocalArchive, ManageError,
 };
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
 use crate::phpsetup::{installed_php_versions, refresh_php};
@@ -43,6 +44,7 @@ use crate::shims::{shim_file_name, SHIM_COMMANDS};
 use crate::sites::{
     discover, link, park, set_secure, unlink, unpark, Site, SiteKind, SitesError, SitesFile,
 };
+use crate::version::Version;
 use crate::web::ConfigProbe;
 
 /// Checks that depend on the operating system, for `doctor`. The Windows implementation (the
@@ -170,7 +172,12 @@ impl Engine {
         }
         Some(match call {
             Call::List { available } => self.list(*available),
-            Call::Install { service, version } => self.install(service, version, events),
+            Call::Install {
+                service,
+                version,
+                from,
+                sha256,
+            } => self.install(service, version, from.as_deref(), sha256.as_deref(), events),
             Call::Uninstall { service, version } => self.uninstall(service, version),
             Call::Use { tool, version, dir } => self.use_version(*tool, version, dir.as_deref()),
             Call::Park { path } => self.park(path),
@@ -328,8 +335,18 @@ impl Engine {
 
     fn list(&self, available: bool) -> Result<Reply, RpcError> {
         let installed = list_installed(&self.paths).map_err(manage_error)?;
-        let info =
-            |service: &str, version: String, installed: bool, eol: bool| VersionInfo {
+        let info = |service: &str, version: String, installed: bool, eol: bool| {
+            let advisories = Version::parse(&version)
+                .map(|v| {
+                    self.deps
+                        .catalog
+                        .advisories_for(service, &v)
+                        .into_iter()
+                        .map(|a| a.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            VersionInfo {
                 service: service.to_owned(),
                 recommended: self.deps.catalog.recommended(service).is_some_and(|line| {
                     version == line || version.starts_with(&format!("{line}."))
@@ -337,12 +354,18 @@ impl Engine {
                 version,
                 installed,
                 end_of_life: eol,
-            };
+                unverified: false,
+                advisories,
+            }
+        };
         let installed_info = installed
             .iter()
             .map(|i| {
                 let eol = self.deps.catalog.is_end_of_life(&i.service, &i.version);
-                info(&i.service, i.version.to_string(), true, eol)
+                VersionInfo {
+                    unverified: is_unverified_install(i),
+                    ..info(&i.service, i.version.to_string(), true, eol)
+                }
             })
             .collect();
         let available_info = if available {
@@ -371,6 +394,8 @@ impl Engine {
         &self,
         service: &str,
         version: &str,
+        from: Option<&str>,
+        sha256: Option<&str>,
         events: &mut dyn FnMut(Event),
     ) -> Result<Reply, RpcError> {
         let env = Environment {
@@ -381,23 +406,47 @@ impl Engine {
         };
         let what = format!("{service} {version}");
         let mut total: Option<u64> = None;
-        let result = install_version(
-            &env,
-            service,
-            version,
-            &InstallOptions::default(),
-            &mut |progress| {
-                if let Progress::Downloading { done, total: t } = progress {
-                    total = t.or(total);
-                    events(Event::Progress {
-                        what: what.clone(),
-                        done,
-                        total,
-                    });
-                }
-            },
-            self.deps.dirs.as_ref(),
-        );
+        let mut progress = |progress| {
+            if let Progress::Downloading { done, total: t } = progress {
+                total = t.or(total);
+                events(Event::Progress {
+                    what: what.clone(),
+                    done,
+                    total,
+                });
+            }
+        };
+        let options = InstallOptions::default();
+        // `--from` without its hash (or the reverse) must never fall back to a download.
+        let result = match (from, sha256) {
+            (None, None) => install_version(
+                &env,
+                service,
+                version,
+                &options,
+                &mut progress,
+                self.deps.dirs.as_ref(),
+            ),
+            (Some(archive), Some(hash)) => install_version_from(
+                &env,
+                service,
+                version,
+                LocalArchive {
+                    path: Path::new(archive),
+                    sha256: hash,
+                },
+                &options,
+                &mut progress,
+                self.deps.dirs.as_ref(),
+            ),
+            _ => {
+                return Err(RpcError::new(
+                    ErrorCode::InvalidParams,
+                    "`from` and `sha256` go together: an archive is installed only with the \
+                     hash the user vouches for",
+                ));
+            }
+        };
         if matches!(
             result,
             Ok(_) | Err(ManageError::Install(InstallError::AlreadyInstalled(_)))
@@ -407,19 +456,25 @@ impl Engine {
         match result {
             Ok(installed) => {
                 let (name, number) = installed_name(&installed.path);
+                let service = name.unwrap_or_else(|| service.to_owned());
                 Ok(Reply::Installed(InstalledInfo {
-                    service: name.unwrap_or_else(|| service.to_owned()),
+                    advisories: self.advisories_of(&service, &number),
+                    service,
                     version: number,
                     path: installed.path.display().to_string(),
                     already: false,
                     end_of_life: installed.end_of_life,
                     downloaded: installed.downloaded,
+                    unverified: installed.unverified,
                 }))
             }
             Err(ManageError::Install(InstallError::AlreadyInstalled(path))) => {
                 let (name, number) = installed_name(&path);
+                let service = name.unwrap_or_else(|| service.to_owned());
                 Ok(Reply::Installed(InstalledInfo {
-                    service: name.unwrap_or_else(|| service.to_owned()),
+                    advisories: self.advisories_of(&service, &number),
+                    unverified: crate::install::is_unverified(&path),
+                    service,
                     version: number,
                     path: path.display().to_string(),
                     already: true,
@@ -429,6 +484,25 @@ impl Engine {
             }
             Err(error) => Err(manage_error(error)),
         }
+    }
+
+    /// The known vulnerabilities that affect `service` `version`, for the CLI and the GUI
+    /// (ADR-0020).
+    fn advisories_of(&self, service: &str, version: &str) -> Vec<AdvisoryInfo> {
+        let Ok(parsed) = Version::parse(version) else {
+            return Vec::new();
+        };
+        self.deps
+            .catalog
+            .advisories_for(service, &parsed)
+            .into_iter()
+            .map(|a| AdvisoryInfo {
+                id: a.id.clone(),
+                summary: a.summary.clone(),
+                url: a.url.clone(),
+                fixed_in: a.fix_for(&parsed).map(ToString::to_string),
+            })
+            .collect()
     }
 
     /// PHP needs its generated files as soon as it is installed, with or without the daemon: the
@@ -619,11 +693,71 @@ impl Engine {
             self.check_shims(),
             self.check_sites(),
         ];
+        checks.extend(self.check_advisories());
+        checks.extend(self.check_unverified());
         checks.extend(self.check_ca_bundle());
         checks.extend(self.check_memcached());
         checks.extend(self.check_data_series());
         checks.extend(self.deps.system.checks(&self.paths));
         Reply::Doctor { checks }
+    }
+
+    /// Installed versions with a known vulnerability (ADR-0020): what it is, and the version
+    /// that fixes it, or that there is none. An empty list gives no line.
+    fn check_advisories(&self) -> Option<Check> {
+        let installed = list_installed(&self.paths).ok()?;
+        let mut lines = Vec::new();
+        let mut fix = None;
+        for i in &installed {
+            for advisory in self.deps.catalog.advisories_for(&i.service, &i.version) {
+                let remedy = match advisory.fix_for(&i.version) {
+                    Some(fixed) => {
+                        fix.get_or_insert_with(|| format!("crisol install {} {fixed}", i.service));
+                        format!("fixed in {} {fixed}", i.service)
+                    }
+                    None => "no fixed build exists".to_owned(),
+                };
+                lines.push(format!(
+                    "{} {}: {} ({}; {remedy}; {})",
+                    i.service, i.version, advisory.id, advisory.summary, advisory.url
+                ));
+            }
+        }
+        (!lines.is_empty()).then(|| Check {
+            name: "known vulnerabilities".to_owned(),
+            status: CheckStatus::Warning,
+            detail: lines.join("; "),
+            // When the catalog of this `crisol.exe` lacks the fix, the way out is `--from`.
+            fix: fix.or_else(|| {
+                Some(
+                    "install a fixed version if the line has one; if this crisol.exe does not \
+                     list it yet: crisol install <tool> <version> --from <zip> --sha256 <hash>"
+                        .to_owned(),
+                )
+            }),
+        })
+    }
+
+    /// Installs made with `--from`: Crisol did not verify those archives (ADR-0020).
+    fn check_unverified(&self) -> Option<Check> {
+        let installed = list_installed(&self.paths).ok()?;
+        let names: Vec<String> = installed
+            .iter()
+            .filter(|i| is_unverified_install(i))
+            .map(|i| format!("{} {}", i.service, i.version))
+            .collect();
+        (!names.is_empty()).then(|| Check {
+            name: "unverified installs".to_owned(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{} installed from a file with a hash you gave, not verified by Crisol",
+                names.join(", ")
+            ),
+            fix: Some(
+                "when a newer crisol.exe lists the version, `crisol uninstall` it and install it again"
+                    .to_owned(),
+            ),
+        })
     }
 
     /// A service with data in more than one series (MariaDB 10.11 and 11.8, say): each series is
@@ -905,7 +1039,13 @@ fn manage_error(error: ManageError) -> RpcError {
         ManageError::Home(home) => home_error(&home),
         ManageError::Catalog(e) => RpcError::new(ErrorCode::NotFound, e.to_string()),
         ManageError::NotInstalled { .. } => RpcError::new(ErrorCode::NotFound, error.to_string()),
-        ManageError::Ambiguous { .. } | ManageError::Version(_) | ManageError::Paths(_) => {
+        ManageError::Ambiguous { .. }
+        | ManageError::Version(_)
+        | ManageError::Paths(_)
+        | ManageError::FromNeedsExactVersion(_)
+        | ManageError::FromBadHash
+        | ManageError::FromContradictsCatalog { .. }
+        | ManageError::FromUnknownService(_) => {
             RpcError::new(ErrorCode::InvalidParams, error.to_string())
         }
         ManageError::InUse(_) => RpcError::new(ErrorCode::Conflict, error.to_string()),

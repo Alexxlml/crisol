@@ -33,8 +33,9 @@ fn url_of(service: &str, version: &str) -> String {
     format!("https://example.invalid/{service}-{version}.zip")
 }
 
-/// A catalog (and a fetcher that serves it) offering these builds.
-fn world(builds: &[(&str, &str)]) -> (Catalog, FakeFetcher) {
+/// A catalog (and a fetcher that serves it) offering these builds, with `extra` appended to the
+/// catalog text (advisories, say).
+fn world_with(builds: &[(&str, &str)], extra: &str) -> (Catalog, FakeFetcher) {
     let fetcher = FakeFetcher::new();
     let mut text = String::from("schema = 1\nserial = 1\n");
     for (service, version) in builds {
@@ -54,6 +55,7 @@ fn world(builds: &[(&str, &str)]) -> (Catalog, FakeFetcher) {
         );
         fetcher.serve(&url_of(service, version), bytes);
     }
+    text.push_str(extra);
     (Catalog::parse(&text).unwrap(), fetcher)
 }
 
@@ -77,10 +79,14 @@ impl Rig {
     }
 
     fn with_system(builds: &[(&str, &str)], system: Arc<dyn SystemChecks>) -> Self {
+        Self::build(builds, system, "")
+    }
+
+    fn build(builds: &[(&str, &str)], system: Arc<dyn SystemChecks>, extra: &str) -> Self {
         let dir = TempDir::new().unwrap();
         let paths = CrisolPaths::new(dir.path().join("home")).unwrap();
         paths.ensure_layout().unwrap();
-        let (catalog, fetcher) = world(builds);
+        let (catalog, fetcher) = world_with(builds, extra);
         let dirs = Arc::new(FakePrivateDirs::new());
         let deps = Deps {
             supervisor: Arc::new(FakeSupervisor::new()),
@@ -117,6 +123,8 @@ impl Rig {
         self.call(&Call::Install {
             service: service.to_owned(),
             version: version.to_owned(),
+            from: None,
+            sha256: None,
         })
         .unwrap()
     }
@@ -266,6 +274,8 @@ fn install_reports_download_progress_through_events() {
             &Call::Install {
                 service: "nginx".to_owned(),
                 version: "latest".to_owned(),
+                from: None,
+                sha256: None,
             },
             &mut |e| events.push(e),
         )
@@ -284,14 +294,18 @@ fn version_errors_have_codes_a_client_can_act_on() {
     assert_eq!(
         code(Call::Install {
             service: "php".to_owned(),
-            version: "9.9".to_owned()
+            version: "9.9".to_owned(),
+            from: None,
+            sha256: None,
         }),
         ErrorCode::NotFound
     );
     assert_eq!(
         code(Call::Install {
             service: "php".to_owned(),
-            version: "not-a-version".to_owned()
+            version: "not-a-version".to_owned(),
+            from: None,
+            sha256: None,
         }),
         ErrorCode::NotFound
     );
@@ -328,6 +342,8 @@ fn an_open_home_blocks_install_and_uninstall_with_the_command_to_close_it() {
         Call::Install {
             service: "php".to_owned(),
             version: "8.4".to_owned(),
+            from: None,
+            sha256: None,
         },
         Call::Uninstall {
             service: "php".to_owned(),
@@ -997,4 +1013,138 @@ fn installing_php_leaves_its_php_ini_for_the_shim_and_a_missing_bundle_is_no_err
     assert!(ini.contains("extension=curl"), "{ini}");
     // The catalog of this test has no bundle: PHP is installed all the same.
     assert!(!rig.paths().php_cacert().exists());
+}
+
+// ---- `install --from` and known vulnerabilities (ADR-0020) ---------------------------------
+
+const PHP2SHELL: &str = "
+[[advisory]]
+id = \"PHP2Shell\"
+service = \"php\"
+affects = [\"8.4\"]
+fixed_in = [\"8.4.27\"]
+summary = \"Remote code execution\"
+url = \"https://example.invalid/php2shell\"
+";
+
+fn installed_info(reply: Reply) -> InstalledInfo {
+    match reply {
+        Reply::Installed(info) => info,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn install_call(version: &str, from: Option<&Path>, sha256: Option<&str>) -> Call {
+    Call::Install {
+        service: "php".to_owned(),
+        version: version.to_owned(),
+        from: from.map(|p| p.display().to_string()),
+        sha256: sha256.map(str::to_owned),
+    }
+}
+
+fn archive_in(rig: &Rig) -> (PathBuf, String) {
+    let bytes = zip_of("php.exe");
+    let path = rig.paths().home().join("php-8.4.28.zip");
+    fs::write(&path, &bytes).unwrap();
+    let hash = sha2::Sha256::digest(&bytes)
+        .iter()
+        .fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        });
+    (path, hash)
+}
+
+#[test]
+fn a_file_without_its_hash_or_a_hash_without_its_file_is_never_a_download() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (archive, hash) = archive_in(&rig);
+    for call in [
+        install_call("8.4.28", Some(&archive), None),
+        install_call("8.4.28", None, Some(&hash)),
+    ] {
+        let error = rig.call(&call).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams, "{error:?}");
+    }
+    assert_eq!(list_installed(rig.paths()).unwrap().len(), 0);
+}
+
+#[test]
+fn installing_from_a_file_says_it_was_not_verified() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (archive, hash) = archive_in(&rig);
+
+    let info = installed_info(
+        rig.call(&install_call("8.4.28", Some(&archive), Some(&hash)))
+            .unwrap(),
+    );
+    assert!(info.unverified);
+    assert_eq!(info.version, "8.4.28");
+    let listed = match rig.call(&Call::List { available: false }).unwrap() {
+        Reply::Versions(list) => list.installed,
+        other => panic!("{other:?}"),
+    };
+    assert!(listed.iter().any(|v| v.version == "8.4.28" && v.unverified));
+    let doctor = checks(rig.call(&Call::Doctor).unwrap());
+    let line = doctor
+        .iter()
+        .find(|c| c.name == "unverified installs")
+        .expect("doctor lists installs made with --from");
+    assert_eq!(line.status, CheckStatus::Warning);
+    assert!(line.detail.contains("php 8.4.28"), "{}", line.detail);
+}
+
+#[test]
+fn installing_an_affected_version_returns_the_advisory_with_its_fix() {
+    let rig = Rig::build(&[("php", "8.4.26")], Arc::new(NoSystemChecks), PHP2SHELL);
+
+    let info = installed_info(rig.install("php", "8.4.26"));
+    assert!(!info.unverified);
+    assert_eq!(info.advisories.len(), 1);
+    assert_eq!(info.advisories[0].id, "PHP2Shell");
+    assert_eq!(info.advisories[0].fixed_in.as_deref(), Some("8.4.27"));
+    // Asking again still tells it: the warning is about the version, not about the download.
+    let again = installed_info(rig.install("php", "8.4.26"));
+    assert!(again.already);
+    assert_eq!(again.advisories.len(), 1);
+}
+
+#[test]
+fn doctor_lists_installed_versions_with_a_known_vulnerability_and_how_to_fix_it() {
+    let rig = Rig::build(
+        &[("php", "8.4.26"), ("nginx", "1.28.3")],
+        Arc::new(NoSystemChecks),
+        PHP2SHELL,
+    );
+    let clean = checks(rig.call(&Call::Doctor).unwrap());
+    assert!(
+        !clean.iter().any(|c| c.name == "known vulnerabilities"),
+        "nothing installed yet"
+    );
+
+    rig.install("php", "8.4.26");
+    rig.install("nginx", "1.28.3");
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    let line = found
+        .iter()
+        .find(|c| c.name == "known vulnerabilities")
+        .expect("doctor warns about the affected version");
+    assert_eq!(line.status, CheckStatus::Warning);
+    assert!(line.detail.contains("php 8.4.26"), "{}", line.detail);
+    assert!(line.detail.contains("PHP2Shell"), "{}", line.detail);
+    assert!(!line.detail.contains("nginx"), "{}", line.detail);
+    assert_eq!(line.fix.as_deref(), Some("crisol install php 8.4.27"));
+}
+
+#[test]
+fn the_vulnerable_flag_shows_in_the_version_list() {
+    let rig = Rig::build(&[("php", "8.4.26")], Arc::new(NoSystemChecks), PHP2SHELL);
+    rig.install("php", "8.4.26");
+    let list = match rig.call(&Call::List { available: true }).unwrap() {
+        Reply::Versions(list) => list,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(list.installed[0].advisories, ["PHP2Shell"]);
+    assert_eq!(list.available[0].advisories, ["PHP2Shell"]);
 }

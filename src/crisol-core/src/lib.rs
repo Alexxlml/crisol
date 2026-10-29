@@ -45,7 +45,7 @@ pub mod userpath;
 pub mod version;
 pub mod web;
 
-pub use catalog::{Catalog, CatalogError, Package, Target};
+pub use catalog::{Advisory, Catalog, CatalogError, Package, Target};
 pub use config::{Config, ConfigError, ConfigWarning, LoadedConfig};
 pub use edit::{EditError, TomlEditor};
 pub use log::{LogRotation, RotatingLog};

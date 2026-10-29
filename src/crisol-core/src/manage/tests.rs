@@ -627,3 +627,196 @@ fn the_highest_installed_version_that_matches_is_resolved() {
         Err(ManageError::Version(_))
     ));
 }
+
+// ---- `install --from` (ADR-0020) -----------------------------------------------------------
+
+fn sha_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+}
+
+impl Rig {
+    fn install_from(
+        &self,
+        catalog: &Catalog,
+        fetcher: &FakeFetcher,
+        (service, version): (&str, &str),
+        (archive, sha256): (&Path, &str),
+    ) -> Result<Installed, ManageError> {
+        let env = Environment {
+            paths: &self.paths,
+            catalog,
+            target: WINDOWS,
+            fetcher,
+        };
+        install_version_from(
+            &env,
+            service,
+            version,
+            LocalArchive {
+                path: archive,
+                sha256,
+            },
+            &InstallOptions::default(),
+            &mut |_| {},
+            &crate::paths::fake::FakePrivateDirs::new(),
+        )
+    }
+}
+
+/// A downloaded archive of `php` with the layout of `world`, and its hash.
+fn downloaded(dir: &TempDir) -> (PathBuf, String) {
+    let bytes = zip_of("php.exe");
+    let path = dir.path().join("php-8.4.28.zip");
+    fs::write(&path, &bytes).unwrap();
+    (path, sha_of(&bytes))
+}
+
+#[test]
+fn a_version_the_catalog_lacks_installs_from_a_file_and_is_marked_unverified() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+
+    let installed = rig
+        .install_from(&catalog, &fetcher, ("php", "8.4.28"), (&archive, &hash))
+        .unwrap();
+    assert!(installed.unverified);
+    assert_eq!(rig.installed(), ["php 8.4.28"]);
+    let version = list_installed(&rig.paths).unwrap().remove(0);
+    assert!(is_unverified_install(&version));
+    // The layout (the executable) comes from the highest version the catalog has.
+    assert!(installed.path.join("php.exe").is_file());
+    assert_eq!(
+        fetcher.requests(),
+        Vec::<String>::new(),
+        "nothing is downloaded"
+    );
+}
+
+#[test]
+fn the_hash_may_be_written_in_capitals_and_with_spaces_around() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+    let typed = format!("  {}\n", hash.to_uppercase());
+
+    rig.install_from(&catalog, &fetcher, ("php", "8.4.28"), (&archive, &typed))
+        .unwrap();
+    assert_eq!(rig.installed(), ["php 8.4.28"]);
+}
+
+#[test]
+fn a_file_with_the_catalogs_own_hash_installs_offline_and_verified() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+
+    let installed = rig
+        .install_from(&catalog, &fetcher, ("php", "8.4.26"), (&archive, &hash))
+        .unwrap();
+    assert!(!installed.unverified);
+    assert!(!is_unverified_install(
+        &list_installed(&rig.paths).unwrap()[0]
+    ));
+    assert_eq!(fetcher.requests(), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_cannot_replace_a_version_the_catalog_has_with_another_hash() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, _) = downloaded(&dir);
+
+    let error = rig
+        .install_from(
+            &catalog,
+            &fetcher,
+            ("php", "8.4.26"),
+            (&archive, &sha_of(b"another file")),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, ManageError::FromContradictsCatalog { .. }),
+        "{error}"
+    );
+    assert_eq!(rig.installed(), Vec::<String>::new());
+}
+
+#[test]
+fn from_needs_an_exact_version_and_a_real_hash() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+
+    for version in ["8.4", "latest", "8", "8.4.28-rc1"] {
+        let error = rig
+            .install_from(&catalog, &fetcher, ("php", version), (&archive, &hash))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ManageError::FromNeedsExactVersion(_) | ManageError::Version(_)
+            ),
+            "{version}: {error}"
+        );
+    }
+    for bad in ["", "abc", &hash[1..], &"z".repeat(64)] {
+        let error = rig
+            .install_from(&catalog, &fetcher, ("php", "8.4.28"), (&archive, bad))
+            .unwrap_err();
+        assert!(matches!(error, ManageError::FromBadHash), "{bad}: {error}");
+    }
+    assert_eq!(rig.installed(), Vec::<String>::new());
+}
+
+#[test]
+fn from_for_a_tool_the_catalog_does_not_know_is_refused() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, hash) = downloaded(&dir);
+
+    let error = rig
+        .install_from(&catalog, &fetcher, ("ruby", "3.4.1"), (&archive, &hash))
+        .unwrap_err();
+    assert!(
+        matches!(error, ManageError::FromUnknownService(_)),
+        "{error}"
+    );
+    assert_eq!(rig.installed(), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_that_is_not_the_one_vouched_for_installs_nothing() {
+    let rig = Rig::new();
+    let (catalog, fetcher) = world(&[("php", "8.4.26")]);
+    let dir = TempDir::new().unwrap();
+    let (archive, _) = downloaded(&dir);
+
+    let error = rig
+        .install_from(
+            &catalog,
+            &fetcher,
+            ("php", "8.4.28"),
+            (&archive, &sha_of(b"another file")),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ManageError::Install(InstallError::HashMismatch { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(rig.installed(), Vec::<String>::new());
+}

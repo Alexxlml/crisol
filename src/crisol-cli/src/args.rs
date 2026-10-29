@@ -67,6 +67,15 @@ pub enum Command {
         /// `8.4`, `8.4.26` or `latest` (the default).
         #[arg(id = "requested", value_name = "VERSION", default_value = "latest")]
         version: String,
+        /// Installs from an archive you already downloaded instead of the catalog: the way out
+        /// when this `crisol.exe` does not list a version yet (needs the exact version and
+        /// `--sha256`). Crisol marks it "not verified by Crisol".
+        #[arg(long, value_name = "ZIP", requires = "sha256")]
+        from: Option<PathBuf>,
+        /// The SHA-256 of that archive, from the provider's page. It is checked before
+        /// anything is unpacked.
+        #[arg(long, value_name = "HASH", requires = "from")]
+        sha256: Option<String>,
     },
     /// Removes an installed version.
     Uninstall {
@@ -391,7 +400,17 @@ impl Command {
                 daemon: false,
                 service,
             } => Call::Stop { service },
-            Self::Install { service, version } => Call::Install { service, version },
+            Self::Install {
+                service,
+                version,
+                from,
+                sha256,
+            } => Call::Install {
+                service,
+                version,
+                from: from.map(|path| absolute(Some(&path), cwd)),
+                sha256,
+            },
             Self::Uninstall { service, version } => Call::Uninstall { service, version },
             Self::List { available } => Call::List { available },
             Self::Use {

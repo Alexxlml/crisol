@@ -6,7 +6,7 @@ El catálogo lista qué se puede instalar: de qué URL oficial se baja cada buil
 
 ```toml
 schema    = 1             # único formato que existe hoy
-serial    = 7             # sube con cada catálogo publicado
+serial    = 12            # sube con cada catálogo publicado
 generated = "2026-10-14"  # informativo
 
 [recommended]             # opcional: la línea que Crisol usa por defecto (ADR-0012)
@@ -63,6 +63,31 @@ end_of_life = true        # opcional: ya no recibe parches de seguridad (ADR-001
 4. **Cada descarga** se compara con el `sha256` del catálogo antes de extraerse (F3.3).
 
 La clave pública del proyecto está en `CATALOG_PUBLIC_KEY` (`src/crisol-core/src/catalog.rs`); la privada la guarda el propietario fuera del repositorio y nunca debe entrar a él. Si se perdiera, habría que generar otro par y publicar un binario nuevo con la clave pública nueva. Con la constante en `None`, solo se acepta el catálogo incrustado.
+
+## Avisos de vulnerabilidad (ADR-0020)
+
+```toml
+[[advisory]]
+id       = "PHP2Shell"                      # nombre corto, único en el catálogo, sin espacios
+service  = "php"
+affects  = ["7.4", "8.3", "8.4", "8.5"]     # opcional: líneas afectadas; sin él, todas las versiones del servicio
+fixed_in = ["8.3.36", "8.4.27", "8.5.12"]   # primera versión corregida de cada línea; vacío = sin corrección
+summary  = "Remote code execution in PHP (CVE-2026-109618 and CVE-2026-109619), exploited in the wild"
+url      = "https://…"                      # solo https, como los demás
+```
+
+- Una versión está **afectada** si coincide con alguna línea de `affects` y **ninguna** versión de `fixed_in` de esa misma línea es menor o igual que ella. Con el ejemplo, 8.4.26 está afectada, 8.4.27 no, y 7.4.33 lo está siempre (su línea no tiene corrección).
+- Un aviso **informa, no bloquea**: no impide instalar ni usar la versión, y no es lo mismo que `end_of_life` (los dos pueden darse a la vez).
+- `crisol install` imprime los avisos de la versión instalada (también si ya lo estaba), con la versión corregida y el comando; `crisol list` marca las versiones afectadas; `crisol doctor` lista las **instaladas** afectadas con su solución. El shim no avisa en cada ejecución.
+- Se rechazan: `url` que no sea https, `id` repetido o con espacios, `service` inválido, `summary` vacío, y líneas o versiones ilegibles. Un catálogo sin avisos es válido.
+
+## Instalar un archivo que el catálogo no conoce (ADR-0020)
+
+`crisol install <servicio> <versión exacta> --from <archivo> --sha256 <hash>` es la salida de emergencia cuando el catálogo de este `crisol.exe` aún no trae una versión (por ejemplo, una corrección de seguridad publicada después). `--sha256` es obligatorio y se compara antes de extraer nada; quien lo da responde por él.
+
+- La estructura del archivo (`format`, `root`, `executable`) se toma de la **versión más alta** de ese servicio en el catálogo (`Catalog::template`). Si no coincide, el instalador falla con «el archivo no contiene…» y no deja nada instalado.
+- Si el catálogo ya tiene esa versión: con **el mismo hash** es una instalación sin red y queda verificada; con **otro hash** se rechaza (no se puede pisar una entrada del catálogo).
+- Lo instalado así lleva `.crisol-unverified.toml` (hash, nombre del archivo y fecha) dentro de `bin/<servicio>/<versión>/`; `list` lo marca «not verified by Crisol» y `doctor` lo lista. Se borra con la versión.
 
 ## Cómo añadir una entrada (F3.2)
 

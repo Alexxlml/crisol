@@ -113,6 +113,48 @@ pub struct Installed {
     /// The version no longer receives security fixes (the catalog says so): the caller should
     /// tell the user (ADR-0012).
     pub end_of_life: bool,
+    /// The archive came from `--from` with a hash the user gave, not from the catalog
+    /// (ADR-0020): Crisol did not verify it.
+    pub unverified: bool,
+}
+
+/// Where the archive comes from.
+#[derive(Clone, Copy)]
+pub enum Origin<'a> {
+    /// Downloaded from the package's URL; the catalog vouches for its hash.
+    Download(&'a dyn Fetch),
+    /// A local file the user supplied, with `package.sha256` being the hash the user gave
+    /// (ADR-0020). Unless `unverified` is false (the hash is the catalog's own), the install
+    /// is marked [`UNVERIFIED_FILE`].
+    Local {
+        /// The archive on disk.
+        path: &'a Path,
+        /// The hash is the user's word, not the catalog's.
+        unverified: bool,
+    },
+}
+
+impl std::fmt::Debug for Origin<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Download(_) => f.write_str("Download"),
+            Self::Local { path, unverified } => f
+                .debug_struct("Local")
+                .field("path", path)
+                .field("unverified", unverified)
+                .finish(),
+        }
+    }
+}
+
+/// File written inside an installation that came from a local archive: the hash the user
+/// vouched for, the file name and when. `list` and `doctor` read it (ADR-0020).
+pub const UNVERIFIED_FILE: &str = ".crisol-unverified.toml";
+
+/// Whether the installation in `dir` was made with `--from` (ADR-0020).
+#[must_use]
+pub fn is_unverified(dir: &Path) -> bool {
+    dir.join(UNVERIFIED_FILE).is_file()
 }
 
 /// Why an installation failed. In every case nothing is left installed.
@@ -217,6 +259,18 @@ pub fn install(
     options: &InstallOptions,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Installed, InstallError> {
+    install_from(package, paths, Origin::Download(fetcher), options, progress)
+}
+
+/// Like [`install`], with the archive coming from `origin`. A [`Origin::Local`] archive is
+/// copied into the staging folder (hashing as it goes) and goes through the same checks.
+pub fn install_from(
+    package: &Package,
+    paths: &CrisolPaths,
+    origin: Origin<'_>,
+    options: &InstallOptions,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Installed, InstallError> {
     let dest = paths.bin_for(&package.service, &package.version.to_string())?;
     if let Some(existing) = installed_equivalent(&dest, package) {
         return Err(InstallError::AlreadyInstalled(existing));
@@ -232,7 +286,10 @@ pub fn install(
         .map_err(io_error("cannot create a staging folder in", &bin))?;
 
     let archive = staging.path().join("download");
-    let downloaded = download(package, fetcher, options, &archive, progress)?;
+    let downloaded = match origin {
+        Origin::Download(fetcher) => download(package, fetcher, options, &archive, progress)?,
+        Origin::Local { path, .. } => copy_local(package, path, options, &archive, progress)?,
+    };
 
     let content = staging.path().join("content");
     fs::create_dir(&content).map_err(io_error("cannot create", &content))?;
@@ -248,6 +305,21 @@ pub fn install(
     let executable = content.join(&package.executable);
     if !executable.is_file() {
         return Err(InstallError::MissingExecutable(package.executable.clone()));
+    }
+
+    let unverified = matches!(
+        origin,
+        Origin::Local {
+            unverified: true,
+            ..
+        }
+    );
+    if let Origin::Local {
+        path: source,
+        unverified: true,
+    } = origin
+    {
+        write_unverified_mark(&content, source, &package.sha256)?;
     }
 
     check_cancel(options)?;
@@ -276,7 +348,28 @@ pub fn install(
         downloaded,
         files,
         end_of_life: package.end_of_life,
+        unverified,
     })
+}
+
+/// Records, inside the installation, that its archive was vouched for by the user.
+fn write_unverified_mark(content: &Path, source: &Path, sha256: &str) -> Result<(), InstallError> {
+    let installed_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |after| after.as_secs());
+    let file_name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut table = toml::Table::new();
+    table.insert("sha256".to_owned(), sha256.to_owned().into());
+    table.insert("source".to_owned(), file_name.into());
+    table.insert(
+        "installed_unix".to_owned(),
+        i64::try_from(installed_at).unwrap_or(0).into(),
+    );
+    let target = content.join(UNVERIFIED_FILE);
+    fs::write(&target, table.to_string()).map_err(io_error("cannot write", &target))
 }
 
 /// Removes `.staging-*` folders in `bin_dir` that are older than `older_than`. Returns how
@@ -420,6 +513,73 @@ fn download(
             });
         }
     }
+    progress(Progress::Verifying);
+    let actual = hex(&hasher.finalize());
+    if actual != package.sha256 {
+        return Err(InstallError::HashMismatch {
+            expected: package.sha256.clone(),
+            actual,
+        });
+    }
+    Ok(done)
+}
+
+/// Copies a local archive into `target`, hashing it as it goes, and compares the hash with
+/// `package.sha256` (the one the user gave). Nothing is unpacked from a file that does not
+/// match.
+fn copy_local(
+    package: &Package,
+    source: &Path,
+    options: &InstallOptions,
+    target: &Path,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<u64, InstallError> {
+    check_cancel(options)?;
+    let mut input = File::open(source).map_err(io_error("cannot open", source))?;
+    let total = input
+        .metadata()
+        .map_err(io_error("cannot read", source))?
+        .len();
+    if total > options.max_download_bytes {
+        return Err(InstallError::TooLarge {
+            limit: options.max_download_bytes,
+        });
+    }
+    let mut out = File::create(target).map_err(io_error("cannot create", target))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; CHUNK];
+    let (mut done, mut reported) = (0_u64, 0_u64);
+    progress(Progress::Downloading {
+        done,
+        total: Some(total),
+    });
+    loop {
+        check_cancel(options)?;
+        let read = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(io_error("cannot read", source)(e)),
+        };
+        done += u64::try_from(read).unwrap_or(u64::MAX);
+        if done > options.max_download_bytes {
+            return Err(InstallError::TooLarge {
+                limit: options.max_download_bytes,
+            });
+        }
+        hasher.update(&buffer[..read]);
+        out.write_all(&buffer[..read])
+            .map_err(io_error("cannot write", target))?;
+        if done - reported >= PROGRESS_STEP {
+            reported = done;
+            progress(Progress::Downloading {
+                done,
+                total: Some(total),
+            });
+        }
+    }
+    out.flush().map_err(io_error("cannot write", target))?;
+    drop(out);
     progress(Progress::Verifying);
     let actual = hex(&hasher.finalize());
     if actual != package.sha256 {

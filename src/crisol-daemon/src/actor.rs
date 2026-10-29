@@ -290,7 +290,9 @@ impl Ctx<'_> {
         events: tokio::sync::mpsc::Sender<Event>,
     ) {
         let label = match &call {
-            Call::Install { service, version } => format!("installing {service} {version}"),
+            Call::Install {
+                service, version, ..
+            } => format!("installing {service} {version}"),
             Call::Uninstall { service, version } => format!("removing {service} {version}"),
             _ => "doctor".to_owned(),
         };

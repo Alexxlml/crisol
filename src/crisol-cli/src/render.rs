@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use crisol_protocol::{CheckStatus, Event, Reply, RpcError};
+use crisol_protocol::{CheckStatus, Event, Reply, RpcError, VersionInfo};
 
 /// The text of a reply. Ends with a newline, or is empty.
 // One flat arm per kind of answer reads better than a function for each.
@@ -49,6 +49,15 @@ pub fn reply(reply: &Reply) -> String {
                     "{} {} was already installed ({})",
                     info.service, info.version, info.path
                 );
+            } else if info.unverified {
+                let _ = writeln!(
+                    out,
+                    "Installed {} {} in {} ({} copied from the file)",
+                    info.service,
+                    info.version,
+                    info.path,
+                    bytes(info.downloaded)
+                );
             } else {
                 let _ = writeln!(
                     out,
@@ -59,11 +68,32 @@ pub fn reply(reply: &Reply) -> String {
                     bytes(info.downloaded)
                 );
             }
+            if info.unverified {
+                let _ = writeln!(
+                    out,
+                    "warning: {} {} was not verified by Crisol: it was installed with the hash you gave, not one from the catalog",
+                    info.service, info.version
+                );
+            }
             if info.end_of_life {
                 let _ = writeln!(
                     out,
                     "warning: {} {} no longer receives security fixes; use it only for an old project",
                     info.service, info.version
+                );
+            }
+            for advisory in &info.advisories {
+                let remedy = match &advisory.fixed_in {
+                    Some(fixed) => format!(
+                        "fixed in {} {fixed}: `crisol install {} {fixed}`",
+                        info.service, info.service
+                    ),
+                    None => "there is no fixed build".to_owned(),
+                };
+                let _ = writeln!(
+                    out,
+                    "warning: {} {} has a known vulnerability, {}: {} ({remedy}; {})",
+                    info.service, info.version, advisory.id, advisory.summary, advisory.url
                 );
             }
         }
@@ -76,13 +106,7 @@ pub fn reply(reply: &Reply) -> String {
                 out.push_str("  (nothing yet)\n");
             }
             for v in &list.installed {
-                let _ = writeln!(
-                    out,
-                    "  {} {}{}",
-                    v.service,
-                    v.version,
-                    flags(v.recommended, v.end_of_life)
-                );
+                let _ = writeln!(out, "  {} {}{}", v.service, v.version, flags(v));
             }
             if !list.available.is_empty() {
                 out.push_str("Available:\n");
@@ -93,7 +117,7 @@ pub fn reply(reply: &Reply) -> String {
                         v.service,
                         v.version,
                         if v.installed { "  [installed]" } else { "" },
-                        flags(v.recommended, v.end_of_life)
+                        flags(v)
                     );
                 }
             }
@@ -159,13 +183,19 @@ pub fn reply(reply: &Reply) -> String {
     out
 }
 
-fn flags(recommended: bool, end_of_life: bool) -> String {
+fn flags(v: &VersionInfo) -> String {
     let mut text = String::new();
-    if recommended {
+    if v.recommended {
         text.push_str("  (recommended)");
     }
-    if end_of_life {
+    if v.end_of_life {
         text.push_str("  (end of life)");
+    }
+    if v.unverified {
+        text.push_str("  (not verified by Crisol)");
+    }
+    if !v.advisories.is_empty() {
+        let _ = write!(text, "  (vulnerable: {})", v.advisories.join(", "));
     }
     text
 }

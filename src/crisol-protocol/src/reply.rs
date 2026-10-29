@@ -118,6 +118,26 @@ pub struct InstalledInfo {
     pub end_of_life: bool,
     /// Bytes downloaded.
     pub downloaded: u64,
+    /// Installed with `--from`: Crisol did not verify the archive (ADR-0020).
+    #[serde(default)]
+    pub unverified: bool,
+    /// Known vulnerabilities of this version (ADR-0020).
+    #[serde(default)]
+    pub advisories: Vec<AdvisoryInfo>,
+}
+
+/// A known vulnerability that affects a version (ADR-0020).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryInfo {
+    /// Short name (`PHP2Shell`).
+    pub id: String,
+    /// One sentence on what is wrong.
+    pub summary: String,
+    /// Where to read more.
+    pub url: String,
+    /// The version that fixes it for this line, if there is one.
+    #[serde(default)]
+    pub fixed_in: Option<String>,
 }
 
 /// A removed version.
@@ -131,6 +151,8 @@ pub struct RemovedInfo {
 
 /// A version, installed or offered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Independent yes/no facts on the wire (a JSON object of booleans), not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct VersionInfo {
     /// The tool.
     pub service: String,
@@ -144,6 +166,12 @@ pub struct VersionInfo {
     /// No longer receives security fixes.
     #[serde(default)]
     pub end_of_life: bool,
+    /// Installed with `--from`, not verified by Crisol (ADR-0020).
+    #[serde(default)]
+    pub unverified: bool,
+    /// Ids of the known vulnerabilities that affect it (ADR-0020).
+    #[serde(default)]
+    pub advisories: Vec<String>,
 }
 
 /// The answer to `list`.

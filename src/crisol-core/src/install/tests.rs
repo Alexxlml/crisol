@@ -1109,3 +1109,140 @@ fn real_network_install_of_composer() {
     );
     rig.assert_only("composer");
 }
+
+// ---- a local archive (`install --from`, ADR-0020) -----------------------------------------
+
+impl Rig {
+    fn write_archive(&self, bytes: &[u8]) -> PathBuf {
+        let path = self.dir.path().join("php-8.4.28.zip");
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn install_local(
+        &self,
+        package: &Package,
+        archive: &Path,
+        unverified: bool,
+    ) -> Result<Installed, InstallError> {
+        install_from(
+            package,
+            &self.paths,
+            Origin::Local {
+                path: archive,
+                unverified,
+            },
+            &InstallOptions::default(),
+            &mut |_| {},
+        )
+    }
+}
+
+#[test]
+fn a_local_archive_is_installed_marked_and_never_downloaded() {
+    let rig = Rig::new();
+    let bytes = zip_bytes(&[("php.exe", b"MZ php"), ("ext/php_curl.dll", b"dll")]);
+    let archive = rig.write_archive(&bytes);
+    let pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+
+    let installed = rig.install_local(&pkg, &archive, true).unwrap();
+    assert!(installed.unverified);
+    assert_eq!(installed.downloaded, u64::try_from(bytes.len()).unwrap());
+    assert_eq!(read(&installed.path.join("php.exe")), "MZ php");
+    assert!(is_unverified(&installed.path));
+    let mark = read(&installed.path.join(UNVERIFIED_FILE));
+    assert!(mark.contains(&digest(&bytes)), "{mark}");
+    assert!(mark.contains("php-8.4.28.zip"), "{mark}");
+    assert_eq!(
+        rig.fetcher.requests(),
+        Vec::<String>::new(),
+        "nothing is downloaded"
+    );
+    assert_eq!(rig.bin_listing(), ["php"], "no staging leftovers");
+    assert!(archive.is_file(), "the user's file is left alone");
+}
+
+#[test]
+fn a_local_archive_with_the_catalogs_own_hash_is_not_marked() {
+    let rig = Rig::new();
+    let bytes = zip_bytes(&[("php.exe", b"MZ php")]);
+    let archive = rig.write_archive(&bytes);
+    let pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+
+    let installed = rig.install_local(&pkg, &archive, false).unwrap();
+    assert!(!installed.unverified);
+    assert!(!is_unverified(&installed.path));
+}
+
+#[test]
+fn a_local_archive_that_is_not_the_one_vouched_for_unpacks_nothing() {
+    let rig = Rig::new();
+    // It would be refused if opened (`..`): only the hash error proves the check comes first.
+    let bytes = zip_bytes(&[("../evil.txt", b"x"), ("php.exe", b"MZ")]);
+    let archive = rig.write_archive(&bytes);
+    let mut pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+    pkg.sha256 = digest(b"something else entirely");
+
+    match rig.install_local(&pkg, &archive, true).unwrap_err() {
+        InstallError::HashMismatch { expected, actual } => {
+            assert_eq!(expected, pkg.sha256);
+            assert_eq!(actual, digest(&bytes));
+        }
+        other => panic!("expected a hash mismatch, got {other}"),
+    }
+    rig.assert_nothing_installed();
+    assert_eq!(rig.outside_bin(), ["home", "php-8.4.28.zip"]);
+}
+
+#[test]
+fn a_local_archive_goes_through_the_same_extraction_guards() {
+    let rig = Rig::new();
+    let bytes = zip_bytes(&[("../evil.txt", b"x"), ("php.exe", b"MZ")]);
+    let archive = rig.write_archive(&bytes);
+    let pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+
+    assert!(matches!(
+        rig.install_local(&pkg, &archive, true).unwrap_err(),
+        InstallError::UnsafeEntry { .. }
+    ));
+    rig.assert_nothing_installed();
+}
+
+#[test]
+fn a_missing_local_archive_is_an_io_error_and_leaves_nothing() {
+    let rig = Rig::new();
+    let bytes = zip_bytes(&[("php.exe", b"MZ")]);
+    let pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+    let missing = rig.dir.path().join("nope.zip");
+
+    assert!(matches!(
+        rig.install_local(&pkg, &missing, true).unwrap_err(),
+        InstallError::Io { .. }
+    ));
+    rig.assert_nothing_installed();
+}
+
+#[test]
+fn a_local_archive_over_the_size_limit_is_refused() {
+    let rig = Rig::new();
+    let bytes = zip_bytes(&[("php.exe", b"MZ")]);
+    let archive = rig.write_archive(&bytes);
+    let pkg = package("php", "8.4.28", &bytes, None, "php.exe");
+    let options = InstallOptions {
+        max_download_bytes: 10,
+        ..InstallOptions::default()
+    };
+
+    let result = install_from(
+        &pkg,
+        &rig.paths,
+        Origin::Local {
+            path: &archive,
+            unverified: true,
+        },
+        &options,
+        &mut |_| {},
+    );
+    assert!(matches!(result, Err(InstallError::TooLarge { limit: 10 })));
+    rig.assert_nothing_installed();
+}

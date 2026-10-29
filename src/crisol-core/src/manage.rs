@@ -13,7 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::catalog::{Catalog, CatalogError, Package, Target};
 use crate::fetch::Fetch;
-use crate::install::{install, InstallError, InstallOptions, Installed, Progress, STAGING_PREFIX};
+use crate::install::{
+    install, install_from, is_unverified, InstallError, InstallOptions, Installed, Origin,
+    Progress, STAGING_PREFIX,
+};
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::version::{Version, VersionError, VersionReq};
 
@@ -94,6 +97,30 @@ pub enum ManageError {
     /// changed. Carries the file that is busy (or the folder, if the folder itself is).
     #[error("`{}` is in use (is one of its programs running?); nothing was removed", .0.display())]
     InUse(PathBuf),
+    /// `--from` needs the exact version (`8.4.28`), not a line or `latest`.
+    #[error("`--from` needs an exact version such as 8.4.28, not `{0}`")]
+    FromNeedsExactVersion(String),
+    /// `--sha256` is not 64 hexadecimal digits.
+    #[error("`--sha256` must be 64 hexadecimal digits")]
+    FromBadHash,
+    /// The catalog already has that version with another hash: `--from` cannot override it.
+    #[error(
+        "the catalog already has {service} {version} with sha256 {expected}; \
+         `--from` cannot replace it (the file you gave has {given})"
+    )]
+    FromContradictsCatalog {
+        /// Tool.
+        service: String,
+        /// Version.
+        version: String,
+        /// The catalog's hash.
+        expected: String,
+        /// The hash given.
+        given: String,
+    },
+    /// The catalog does not know the tool, so there is no layout to unpack it with.
+    #[error("the catalog has no {0} to take the archive layout from; `--from` needs one")]
+    FromUnknownService(String),
     /// A file operation failed.
     #[error("{action} `{}`: {source}", path.display())]
     Io {
@@ -198,6 +225,89 @@ pub fn install_version(
         env.catalog.find(service, request, env.target)?
     };
     Ok(install(package, env.paths, env.fetcher, options, progress)?)
+}
+
+/// An archive the user downloaded and the SHA-256 they vouch for (`install --from`, ADR-0020).
+#[derive(Debug, Clone, Copy)]
+pub struct LocalArchive<'a> {
+    /// The file on disk.
+    pub path: &'a Path,
+    /// Its SHA-256 as the user typed it, from the provider's page.
+    pub sha256: &'a str,
+}
+
+/// Installs `service` `version` from an archive the user already downloaded (ADR-0020).
+///
+/// The way out when the catalog built into this `crisol.exe` lacks a version (a security fix
+/// published after it was built). `sha256` is the hash the user vouches for and it is checked
+/// before anything is unpacked. The archive layout (`format`, `root`, executable) is that of
+/// the highest version of the tool in the catalog. The result is `unverified` unless the
+/// catalog has this exact version with this same hash, in which case this is just an offline
+/// install; a catalog version with another hash is refused.
+pub fn install_version_from(
+    env: &Environment<'_>,
+    service: &str,
+    version: &str,
+    archive: LocalArchive<'_>,
+    options: &InstallOptions,
+    progress: &mut dyn FnMut(Progress),
+    dirs: &dyn PrivateDirs,
+) -> Result<Installed, ManageError> {
+    require_private_home(env.paths, dirs)?;
+    let parsed = Version::parse(version)?;
+    if parsed.is_prerelease() || parsed.parts().len() < 3 {
+        return Err(ManageError::FromNeedsExactVersion(version.to_owned()));
+    }
+    let given = normalize_hash(archive.sha256).ok_or(ManageError::FromBadHash)?;
+
+    let in_catalog = env
+        .catalog
+        .available(service, env.target)
+        .into_iter()
+        .find(|p| p.version == parsed);
+    let (package, unverified) = if let Some(known) = in_catalog {
+        if known.sha256 != given {
+            return Err(ManageError::FromContradictsCatalog {
+                service: service.to_owned(),
+                version: known.version.to_string(),
+                expected: known.sha256.clone(),
+                given,
+            });
+        }
+        (known.clone(), false)
+    } else {
+        let template = env
+            .catalog
+            .template(service, env.target)
+            .ok_or_else(|| ManageError::FromUnknownService(service.to_owned()))?;
+        let package = Package {
+            version: parsed,
+            sha256: given,
+            size: None,
+            end_of_life: false,
+            ..template.clone()
+        };
+        (package, true)
+    };
+    let origin = Origin::Local {
+        path: archive.path,
+        unverified,
+    };
+    Ok(install_from(
+        &package, env.paths, origin, options, progress,
+    )?)
+}
+
+fn normalize_hash(text: &str) -> Option<String> {
+    let text = text.trim();
+    (text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| text.to_ascii_lowercase())
+}
+
+/// Whether the installation in `version.path` was made with `--from` (ADR-0020).
+#[must_use]
+pub fn is_unverified_install(version: &InstalledVersion) -> bool {
+    is_unverified(&version.path)
 }
 
 /// The highest installed version of `service` that satisfies `request`, if any.
