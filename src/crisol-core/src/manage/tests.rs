@@ -814,7 +814,7 @@ fn a_file_that_is_not_the_one_vouched_for_installs_nothing() {
     assert!(
         matches!(
             error,
-            ManageError::Install(InstallError::HashMismatch { .. })
+            ManageError::Install(InstallError::FileHashMismatch { .. })
         ),
         "{error}"
     );

@@ -238,8 +238,20 @@ pub fn error(error: &RpcError) -> String {
 /// kind, or no news since the last percentage shown).
 #[must_use]
 pub fn progress(event: &Event, last_percent: &mut Option<u64>) -> Option<String> {
-    let Event::Progress { what, done, total } = event else {
+    let Event::Progress {
+        what,
+        done,
+        total,
+        from_file,
+    } = event
+    else {
         return None;
+    };
+    // Say "copying" for `install --from`: nothing comes from the network then (ADR-0020).
+    let doing = if *from_file {
+        format!("Copying {what} from the file")
+    } else {
+        format!("Downloading {what}")
     };
     match total {
         Some(total) if *total > 0 => {
@@ -249,14 +261,14 @@ pub fn progress(event: &Event, last_percent: &mut Option<u64>) -> Option<String>
                 return None;
             }
             *last_percent = Some(percent);
-            Some(format!("Downloading {what}: {percent}% ({})", bytes(*done)))
+            Some(format!("{doing}: {percent}% ({})", bytes(*done)))
         }
         _ => {
             if last_percent.is_some() {
                 return None;
             }
             *last_percent = Some(0);
-            Some(format!("Downloading {what}..."))
+            Some(format!("{doing}..."))
         }
     }
 }

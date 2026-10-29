@@ -1208,3 +1208,73 @@ fn doctor_says_when_an_unverified_install_is_not_the_official_build() {
         Some("crisol uninstall php 8.4.28 && crisol install php 8.4.28")
     );
 }
+
+#[test]
+fn a_vulnerable_version_is_never_shown_as_recommended() {
+    let extra = format!("{PHP2SHELL}\n[recommended]\nphp = \"8.4\"\n");
+    let rig = Rig::build(
+        &[("php", "8.4.26"), ("php", "8.4.27")],
+        Arc::new(NoSystemChecks),
+        &extra,
+    );
+    let list = match rig.call(&Call::List { available: true }).unwrap() {
+        Reply::Versions(list) => list,
+        other => panic!("{other:?}"),
+    };
+    let recommended = |version: &str| {
+        list.available
+            .iter()
+            .find(|v| v.version == version)
+            .unwrap()
+            .recommended
+    };
+    assert!(!recommended("8.4.26"), "8.4.26 is vulnerable");
+    assert!(recommended("8.4.27"));
+}
+
+#[test]
+fn installing_from_a_file_reports_copying_progress_up_to_the_end() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (archive, hash) = archive_in(&rig);
+    let mut events = Vec::new();
+    rig.engine
+        .handle(
+            &install_call("8.4.28", Some(&archive), Some(&hash)),
+            &mut |e| events.push(e),
+        )
+        .unwrap()
+        .unwrap();
+    let size = fs::metadata(&archive).unwrap().len();
+    assert!(events.iter().all(|e| matches!(
+        e,
+        Event::Progress {
+            from_file: true,
+            ..
+        }
+    )));
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Progress { done, total: Some(t), .. } if *done == size && *t == size)
+        ),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_file_that_does_not_match_the_given_hash_says_so_in_its_own_words() {
+    let rig = Rig::new(&[("php", "8.4.26")]);
+    let (archive, _) = archive_in(&rig);
+    let error = rig
+        .call(&install_call(
+            "8.4.28",
+            Some(&archive),
+            Some(&"ab".repeat(32)),
+        ))
+        .unwrap_err();
+    assert!(
+        error.message.contains("does not match the sha256 you gave"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains("catalog"), "{}", error.message);
+}

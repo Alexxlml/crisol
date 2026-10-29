@@ -47,6 +47,9 @@ pub enum Event {
         /// Bytes in total, when the server said.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         total: Option<u64>,
+        /// The bytes come from a file the user gave (`install --from`), not from the network.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        from_file: bool,
     },
     /// The daemon is going away.
     ShuttingDown,

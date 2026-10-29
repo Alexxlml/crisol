@@ -238,6 +238,7 @@ fn progress_prints_a_line_every_ten_percent_and_at_the_end() {
         what: "php 8.4".to_owned(),
         done,
         total: Some(1000),
+        from_file: false,
     };
     let mut last = None;
     let lines: Vec<String> = (0..=100)
@@ -253,6 +254,7 @@ fn progress_prints_a_line_every_ten_percent_and_at_the_end() {
         what: "x".to_owned(),
         done: 5,
         total: None,
+        from_file: false,
     };
     assert_eq!(
         progress(&unknown, &mut last).as_deref(),
@@ -330,5 +332,20 @@ fn a_list_marks_unverified_and_vulnerable_versions() {
     assert_eq!(
         text,
         "Installed:\n  php 8.4.26  (vulnerable: PHP2Shell)\n  php 8.4.28  (not verified by Crisol)\n"
+    );
+}
+
+#[test]
+fn progress_from_a_file_says_copying_not_downloading() {
+    let event = Event::Progress {
+        what: "php 8.4.25".to_owned(),
+        done: 0,
+        total: Some(1000),
+        from_file: true,
+    };
+    let mut last = None;
+    assert_eq!(
+        progress(&event, &mut last).as_deref(),
+        Some("Copying php 8.4.25 from the file: 0% (0 B)")
     );
 }

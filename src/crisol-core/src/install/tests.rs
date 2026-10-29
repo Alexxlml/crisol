@@ -1184,8 +1184,8 @@ fn a_local_archive_that_is_not_the_one_vouched_for_unpacks_nothing() {
     pkg.sha256 = digest(b"something else entirely");
 
     match rig.install_local(&pkg, &archive, true).unwrap_err() {
-        InstallError::HashMismatch { expected, actual } => {
-            assert_eq!(expected, pkg.sha256);
+        InstallError::FileHashMismatch { given, actual } => {
+            assert_eq!(given, pkg.sha256);
             assert_eq!(actual, digest(&bytes));
         }
         other => panic!("expected a hash mismatch, got {other}"),

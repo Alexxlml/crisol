@@ -336,7 +336,7 @@ impl Engine {
     fn list(&self, available: bool) -> Result<Reply, RpcError> {
         let installed = list_installed(&self.paths).map_err(manage_error)?;
         let info = |service: &str, version: String, installed: bool, eol: bool| {
-            let advisories = Version::parse(&version)
+            let advisories: Vec<String> = Version::parse(&version)
                 .map(|v| {
                     self.deps
                         .catalog
@@ -348,9 +348,11 @@ impl Engine {
                 .unwrap_or_default();
             VersionInfo {
                 service: service.to_owned(),
-                recommended: self.deps.catalog.recommended(service).is_some_and(|line| {
-                    version == line || version.starts_with(&format!("{line}."))
-                }),
+                // A version with a known vulnerability is never shown as the one to use (ADR-0020).
+                recommended: advisories.is_empty()
+                    && self.deps.catalog.recommended(service).is_some_and(|line| {
+                        version == line || version.starts_with(&format!("{line}."))
+                    }),
                 version,
                 installed,
                 end_of_life: eol,
@@ -406,6 +408,7 @@ impl Engine {
         };
         let what = format!("{service} {version}");
         let mut total: Option<u64> = None;
+        let from_file = from.is_some();
         let mut progress = |progress| {
             if let Progress::Downloading { done, total: t } = progress {
                 total = t.or(total);
@@ -413,6 +416,7 @@ impl Engine {
                     what: what.clone(),
                     done,
                     total,
+                    from_file,
                 });
             }
         };
@@ -788,7 +792,7 @@ impl Engine {
                 waiting.join(", ")
             ),
             fix: Some(format!(
-                "when this crisol.exe lists the version, `crisol install {}` verifies it",
+                "when a newer crisol.exe lists the version, `crisol install {}` with it verifies it",
                 waiting[0]
             )),
         })

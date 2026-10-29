@@ -291,6 +291,7 @@ fn events_are_notifications_with_no_id_and_every_kind_round_trips() {
             what: "php 8.4.26".to_owned(),
             done: 10,
             total: Some(20),
+            from_file: false,
         },
         Event::ShuttingDown,
     ];

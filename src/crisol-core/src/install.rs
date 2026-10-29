@@ -212,6 +212,18 @@ pub enum InstallError {
         /// Hash of the download.
         actual: String,
     },
+    /// The SHA-256 of a local archive (`install --from`) is not the one the user gave.
+    /// Nothing was unpacked.
+    #[error(
+        "the file does not match the sha256 you gave (you gave {given}, the file has {actual}); \
+         nothing was unpacked"
+    )]
+    FileHashMismatch {
+        /// Hash given with `--sha256`.
+        given: String,
+        /// Hash of the file.
+        actual: String,
+    },
     /// An entry of the archive would be written somewhere it must not.
     #[error("unsafe entry `{entry}` in the archive: {reason}")]
     UnsafeEntry {
@@ -598,11 +610,15 @@ fn copy_local(
     }
     out.flush().map_err(io_error("cannot write", target))?;
     drop(out);
+    progress(Progress::Downloading {
+        done,
+        total: Some(total),
+    });
     progress(Progress::Verifying);
     let actual = hex(&hasher.finalize());
     if actual != package.sha256 {
-        return Err(InstallError::HashMismatch {
-            expected: package.sha256.clone(),
+        return Err(InstallError::FileHashMismatch {
+            given: package.sha256.clone(),
             actual,
         });
     }
