@@ -87,4 +87,26 @@ mod tests {
         .is_none());
         assert!(list_script().contains("Get-MpPreference -ErrorAction Stop"));
     }
+
+    #[test]
+    fn a_home_with_accents_comes_back_from_powershell_as_it_is() {
+        // Review of phase 11, finding 2: the real PowerShell (no administrator, nothing of
+        // Defender touched) prints a list shaped like `list_script`'s, with paths that are not
+        // ASCII; they must come back unchanged and be recognised as inside the home.
+        let home = std::path::Path::new(r"C:\Users\José Ñandú\Crisol");
+        let json = crate::nrpt::powershell(
+            "[pscustomobject]@{ Path = @('C:\\Users\\José Ñandú\\Crisol\\data', 'D:\\日本'); \
+             Process = @() } | ConvertTo-Json -Compress",
+        )
+        .unwrap();
+        let found = parse_list_json(&json).unwrap();
+        let values: Vec<&str> = found.iter().map(|e| e.value.as_str()).collect();
+        assert_eq!(
+            values,
+            [r"C:\Users\José Ñandú\Crisol\data", r"D:\日本"],
+            "{json}"
+        );
+        assert!(crisol_core::exclusions::inside(home, values[0]));
+        assert!(!crisol_core::exclusions::inside(home, values[1]));
+    }
 }

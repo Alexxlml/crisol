@@ -57,6 +57,11 @@ pub fn remove_script(namespace: &str) -> String {
     )
 }
 
+/// Set before every script: Windows PowerShell writes in the console's OEM code page (850 in a
+/// Spanish Windows), so `José` would come out as `Jos` and a byte that is not UTF-8, and a path
+/// with it would never match (review of phase 11, finding 2).
+const UTF8_OUTPUT: &str = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ";
+
 pub(crate) fn powershell(script: &str) -> io::Result<String> {
     // The absolute path of the system's PowerShell: a bare name is looked for in other places.
     let output = Command::new(powershell_exe_in(&system_directory()?))
@@ -66,7 +71,7 @@ pub(crate) fn powershell(script: &str) -> io::Result<String> {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            script,
+            &format!("{UTF8_OUTPUT}{script}"),
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
@@ -78,7 +83,13 @@ pub(crate) fn powershell(script: &str) -> io::Result<String> {
             stderr.trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    // Not lossy: text that is not UTF-8 is an error, never a path compared after being changed.
+    String::from_utf8(output.stdout).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "PowerShell wrote something that is not UTF-8",
+        )
+    })
 }
 
 fn read_rules() -> io::Result<Vec<NrptRule>> {
