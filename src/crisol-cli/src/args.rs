@@ -93,11 +93,14 @@ pub enum Command {
         /// Undo everything Crisol changed in Windows: the sign-in entry, the PATH, the
         /// certificates it made Windows trust and, with one administrator prompt, the DNS rule,
         /// the hosts block, the Defender exclusions inside its folder and the helper. It lists
-        /// all of it first and asks. The Crisol folder is kept.
+        /// all of it first and asks. Your databases, their passwords, your settings and your
+        /// projects stay in the Crisol folder; everything else of Crisol goes, its programs
+        /// included.
         #[arg(long, conflicts_with_all = ["service", "requested"])]
         all: bool,
-        /// With `--all`: delete the Crisol folder too, with the data of the databases, the
-        /// installed versions and the settings. Back them up first.
+        /// With `--all`: delete what stays too: the whole Crisol folder, with the data of the
+        /// databases, their passwords, the settings and the projects in `www`. Back them up
+        /// first.
         #[arg(long, requires = "all", conflicts_with = "service")]
         purge: bool,
         /// With `--all`: do not ask before doing it.

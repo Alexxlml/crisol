@@ -36,6 +36,8 @@ Hay dos detalles de Windows:
 4. Quita del almacén del usuario **todas** las CA de Crisol: la actual y las antiguas. Windows pregunta por cada una.
 5. Con un solo UAC, el ayudante instalado quita la regla NRPT, el bloque de `hosts`, las exclusiones de Defender dentro de la home y, al final, el propio ayudante.
 
+> **Corregido abajo**, en «Corrección: desinstalación segura»: sin `--purge` sí se borra casi toda la home y también los programas; solo se quedan las bases, sus contraseñas, la configuración y los proyectos.
+
 **Sin `--purge` no borra la home** (`CRISOL_HOME`): ahí están los datos de las bases, la configuración y las versiones instaladas. Lo dice al final, con la ruta y con `--purge` como forma de borrarla. `crisol.exe` y sus compañeros no se borran nunca: el usuario los quita a mano.
 
 **Con `--purge`** (pedido por el propietario, para quien ya respaldó):
