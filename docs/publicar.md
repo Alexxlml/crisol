@@ -26,4 +26,6 @@ bash scripts/package.sh 0.1.0 /ruta/de/salida
 bash scripts/sign-release.sh /ruta/de/salida clave.key clave.pub   # MINISIGN_PASSWORD si la clave la tiene
 ```
 
+`package.sh` genera `LICENSES-RUST.md` con `cargo-about` 0.9.3 (`cargo install cargo-about --locked --version 0.9.3`); sin él, `CRISOL_LICENSES_FILE=<archivo>` aporta uno ya generado.
+
 Los ZIP salen sin firma Authenticode (ADR-0024, §5).

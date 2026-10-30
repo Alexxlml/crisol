@@ -19,6 +19,15 @@ done
 cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/THIRD-PARTY-NOTICES.md" "$stage/"
 cp "$root/src/scripts/release/LEEME.txt" "$stage/"
 
+# The licenses of the Rust dependencies compiled into the programs (src/about.toml fails on a license
+# that has not been reviewed). CRISOL_LICENSES_FILE lets a caller without cargo-about supply the file.
+if [ -n "${CRISOL_LICENSES_FILE:-}" ]; then
+  cp "$CRISOL_LICENSES_FILE" "$stage/LICENSES-RUST.md"
+else
+  (cd "$root/src" && cargo about generate about.hbs -o "$(cygpath -w "$stage")\LICENSES-RUST.md")
+fi
+[ -s "$stage/LICENSES-RUST.md" ] || { echo "LICENSES-RUST.md is missing or empty" >&2; exit 1; }
+
 mkdir -p "$out"
 rm -f "$out/$name.zip" "$out/SHA256SUMS" "$out/SHA256SUMS.minisig"
 

@@ -21,7 +21,7 @@ Copyright (c) 1999 - 2024 The PHP Group. All rights reserved.
 
 El código de las dependencias no está en este repositorio: Cargo lo descarga al compilar (versiones fijadas en `src/Cargo.lock`). Todas tienen licencias permisivas y compatibles con MIT y Apache-2.0: MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unicode-3.0 y CDLA-Permissive-2.0.
 
-Quien distribuya ejecutables compilados de Crisol debe acompañarlos con los avisos de copyright y los textos de licencia de esas dependencias. Se pueden generar con [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) a partir de `Cargo.lock`.
+Quien distribuya ejecutables compilados de Crisol debe acompañarlos con los avisos de copyright y los textos de licencia de esas dependencias. El ZIP de cada versión los trae en `LICENSES-RUST.md`, generado con [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) a partir de `Cargo.lock` (configuración en `src/about.toml`, plantilla en `src/about.hbs`; una licencia que no esté en la lista aceptada hace fallar la publicación).
 
 ## Programas que Crisol descarga
 

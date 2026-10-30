@@ -22,6 +22,8 @@ env:
   CARGO_TERM_COLOR: never
   # minisign is downloaded with its hash pinned, not taken from whatever the runner has.
   MINISIGN_VERSION: "0.12"
+  CARGO_ABOUT_VERSION: "0.9.3"
+  CARGO_ABOUT_SHA256: "9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02"
   MINISIGN_ZIP_SHA256: "37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479"
 
 jobs:
@@ -50,6 +52,14 @@ jobs:
       - name: Build release programs
         working-directory: src
         run: cargo build --release --workspace
+
+      - name: Install cargo-about
+        run: |
+          f="cargo-about-${CARGO_ABOUT_VERSION}-x86_64-pc-windows-msvc.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$f" "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/$f"
+          echo "$CARGO_ABOUT_SHA256 *$RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$(cygpath -w "$RUNNER_TEMP/cargo-about-${CARGO_ABOUT_VERSION}-x86_64-pc-windows-msvc")" >> "$GITHUB_PATH"
 
       - name: Package
         run: bash src/scripts/package.sh "$VERSION" dist

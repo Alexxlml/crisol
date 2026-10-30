@@ -1,0 +1,15 @@
+# cargo-about config: the licenses of the Rust dependencies that go inside the release ZIP.
+# A dependency under a license that is not listed here makes the build fail on purpose, so a new
+# license is reviewed by a person before it ships.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+targets = ["x86_64-pc-windows-msvc"]
+workarounds = ["ring"]
