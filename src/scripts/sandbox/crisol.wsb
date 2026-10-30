@@ -3,10 +3,15 @@
   No double hyphen may appear inside this comment: XML refuses it.
   The host folders are absolute paths of this computer: change them if the repository or the
   output folder live elsewhere. Build the release programs first (cargo build, release profile,
-  in src), and create the output folder. Everything inside the sandbox is thrown away when its window is closed;
-  only `C:\sandbox\out` reaches the host.
+  in src), and create the output folder. Everything inside the sandbox is thrown away when its
+  window is closed; only C:\sandbox\out reaches the host.
+  No network (Windows would add root certificates and sign-in entries by itself, which the
+  pictures would catch) and no virtual GPU (the sandbox closed by itself with it, 0x80370106).
 -->
 <Configuration>
+  <Networking>Disable</Networking>
+  <vGPU>Disable</vGPU>
+  <MemoryInMB>4096</MemoryInMB>
   <MappedFolders>
     <MappedFolder>
       <HostFolder>D:\Documents\CodingMX\Proyectos\Crisol\src\scripts\sandbox</HostFolder>

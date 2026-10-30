@@ -103,15 +103,14 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 2. Crea la carpeta `D:\scratch\sandbox-out` (vacía; si ya tiene fotos de otra prueba, bórralas).
 3. Si el repositorio no está en `D:\Documents\CodingMX\Proyectos\Crisol`, corrige las rutas de `src\scripts\sandbox\crisol.wsb`.
 
-**La prueba:**
+**La prueba:** los pasos están en `src\scripts\sandbox\COMANDOS.txt`, que `preparar.ps1` copia al escritorio del Sandbox (dentro de él sí funciona copiar y pegar; hacia el equipo, no). En resumen:
 
-1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, `preparar.ps1` corre **sin ventana**: copia Crisol y saca la foto `1-antes`. Sabrás que terminó cuando exista `C:\sandbox\out\1-antes\meta.txt`.
-2. Dentro del Sandbox abre **dos** terminales de PowerShell (si abre `cmd`, escribe `powershell`): una **normal**, para Crisol, que nunca debe correr elevado, y una **como administrador** (clic derecho en Inicio → Terminal (administrador)), para las fotos, porque Defender esconde sus exclusiones a quien no lo es. El Sandbox no tiene portapapeles hacia el equipo: cada script deja lo que imprime en `C:\sandbox\out` (`D:\scratch\sandbox-out`), y de ahí se lee.
-   - **Normal:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\instalar-crisol.ps1`. Hace `--version`, `system install`, `path add`, `autostart on`, `trust` y `doctor`, y guarda cada salida (`10-…` a `15-…`). Di que sí al diálogo del certificado y al UAC si aparece.
-   - **Administrador:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 2-instalado`. Debe dar diferencias.
-   - **Normal:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\desinstalar.ps1`. Guarda la lista (`20-lista.json`), ejecuta `uninstall --all --purge --yes` (`21-uninstall.txt`) y vuelve a listar (`22-otra-vez.json`, que debe estar vacía). Di que sí a cada diálogo de certificado.
-   - **Administrador:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 3-despues`. Debe decir «identical».
-3. Avisa al terminar: todo queda en `D:\scratch\sandbox-out`.
+1. Doble clic en `src\scripts\sandbox\crisol.wsb`, que abre el Sandbox sin red ni GPU virtual: con ella se cerraba solo (`0x80370106`), y con red Windows añadía por su cuenta certificados raíz y una entrada de Edge en `Run`. `preparar.ps1` corre sin ventana: copia Crisol, espera a que Defender responda (tarda minutos), añade la exclusión ajena y saca la foto `1-antes`.
+2. Cuando exista `C:\sandbox\out\1-antes\meta.txt`, en una terminal **de administrador**: `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\prueba.ps1`. Hace todo y guarda cada salida en `C:\sandbox\out` (`D:\scratch\sandbox-out`): instala (`system install`, `path add`, `autostart on`, `trust`, la exclusión `C:\Crisol\data`), saca `2-instalado`, ejecuta `uninstall --all --purge --yes`, vuelve a listar (vacío) y saca `3-despues`.
+3. `comparar-fotos.ps1` separa las diferencias que nombran a Crisol de las que Windows hizo solo. La prueba pasa con «Nothing of Crisol differs between 1-antes and 3-despues».
+
+Con la terminal ya elevada no aparece el UAC. Los diálogos del certificado, al añadirlo y al quitarlo, sí aparecen.
+
 4. Opcional, en otro Sandbox nuevo: repite hasta `uninstall --all` y di **no** en el diálogo de la CA o en el UAC. Debe decir `[declined]`, salir con código 1 y, con `--purge`, `[skipped]` sin borrar `C:\Crisol`. Volver a ejecutarlo y aceptar debe terminar.
 5. Cierra la ventana del Sandbox: todo lo de dentro desaparece.
 

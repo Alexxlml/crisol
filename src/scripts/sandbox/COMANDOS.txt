@@ -1,0 +1,39 @@
+PRUEBA DE crisol uninstall --all EN WINDOWS SANDBOX (ADR-0022)
+================================================================
+
+Copia y pega dentro del Sandbox (el portapapeles funciona dentro de él).
+Todo lo que imprime cada paso se guarda en C:\sandbox\out, que es
+D:\scratch\sandbox-out en tu equipo: si el Sandbox se cierra, no se pierde
+lo que ya se hizo.
+
+1. ESPERA a que exista este archivo (preparar.ps1 corre solo, sin ventana,
+   y puede tardar hasta 3 minutos esperando a Defender):
+
+   C:\sandbox\out\1-antes\meta.txt
+
+2. Abre una terminal DE ADMINISTRADOR (clic derecho en Inicio >
+   Terminal (administrador)). Si abre cmd, escribe primero: powershell
+
+3. Ejecuta la prueba completa:
+
+   powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\prueba.ps1
+
+   Windows mostrará el diálogo del certificado dos veces (al añadirlo y al
+   quitarlo): responde Sí las dos veces. Como la terminal ya es de
+   administrador, el UAC no aparece.
+
+4. Al final muestra la comparación. Debe terminar con:
+
+   Nothing of Crisol differs between 1-antes and 3-despues.
+
+   Avisa en el chat; ahí se leen los archivos de C:\sandbox\out.
+
+
+SI ALGO FALLA A MEDIAS
+----------------------
+
+Ver cómo quedó el sistema en cualquier momento (terminal de administrador):
+
+   powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 9-ahora
+
+Si el Sandbox se cerró: vuelve a abrir crisol.wsb y empieza en el paso 1.

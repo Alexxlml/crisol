@@ -36,8 +36,8 @@ Save 'nrpt.txt' (Get-DnsClientNrptRule | Sort-Object { "$($_.Namespace)" } |
 
 try {
     $mp = Get-MpPreference
-    Save 'defender.txt' (@($mp.ExclusionPath | ForEach-Object { "path $_" }) +
-        @($mp.ExclusionProcess | ForEach-Object { "process $_" }) | Sort-Object)
+    Save 'defender.txt' (@($mp.ExclusionPath | Where-Object { $_ } | ForEach-Object { "path $_" }) +
+        @($mp.ExclusionProcess | Where-Object { $_ } | ForEach-Object { "process $_" }) | Sort-Object)
 } catch {
     Save 'defender.txt' "unavailable: $_"
 }
