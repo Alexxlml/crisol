@@ -44,8 +44,18 @@ fn file_offset(sections: &[Section], rva: u32) -> Option<u64> {
         .map(|s| u64::from(rva - s.va) + u64::from(s.raw))
 }
 
-/// The names of the DLLs `program` imports, in lowercase, in the order of its import table.
-pub fn imports(program: &Path) -> io::Result<Vec<String>> {
+/// What Crisol reads from the headers of a program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    /// The DLLs it imports, in lowercase, in the order of its import table.
+    pub imports: Vec<String>,
+    /// The version of the linker that made it (`14.44`): the Visual C++ runtime it runs with
+    /// must be at least as new (review of phase 11, finding 5).
+    pub linker: (u8, u8),
+}
+
+/// The imports of `program` and the version of the linker that made it.
+pub fn read_image(program: &Path) -> io::Result<Image> {
     let mut file = File::open(program)?;
     let mut dos = [0_u8; 64];
     read_at(&mut file, 0, &mut dos)?;
@@ -60,11 +70,14 @@ pub fn imports(program: &Path) -> io::Result<Vec<String>> {
     }
     let sections_count = usize::from(u16_at(&header, 6));
     let optional_size = usize::from(u16_at(&header, 20));
-    if optional_size < 2 || sections_count > 96 {
+    if optional_size < 4 || sections_count > 96 {
         return Err(invalid("a damaged PE header"));
     }
     let mut optional = vec![0_u8; optional_size];
     read_at(&mut file, pe + 24, &mut optional)?;
+    // After the magic number: the major and minor version of the linker, one byte each.
+    let linker = (optional[2], optional[3]);
+    let image = |imports| Image { imports, linker };
     // The data directories start at 96 in a 32-bit image and at 112 in a 64-bit one; the
     // import directory is the second (8 bytes each).
     let directories = match u16_at(&optional, 0) {
@@ -73,11 +86,11 @@ pub fn imports(program: &Path) -> io::Result<Vec<String>> {
         _ => return Err(invalid("an unknown kind of PE image")),
     };
     if optional_size < directories + 16 {
-        return Ok(Vec::new());
+        return Ok(image(Vec::new()));
     }
     let import_rva = u32_at(&optional, directories + 8);
     if import_rva == 0 {
-        return Ok(Vec::new());
+        return Ok(image(Vec::new()));
     }
     let mut table = vec![0_u8; sections_count * 40];
     read_at(&mut file, pe + 24 + optional_size as u64, &mut table)?;
@@ -113,7 +126,7 @@ pub fn imports(program: &Path) -> io::Result<Vec<String>> {
         names.push(String::from_utf8_lossy(&name[..end]).to_ascii_lowercase());
         at += 20;
     }
-    Ok(names)
+    Ok(image(names))
 }
 
 /// Whether a program that imports `dlls` needs the Visual C++ runtime: its `vcruntime` or its
@@ -133,12 +146,15 @@ mod tests {
         // This test program itself: Crisol links the C runtime statically (src/.cargo), so it
         // imports kernel32 and not the Visual C++ runtime.
         let me = std::env::current_exe().unwrap();
-        let dlls = imports(&me).unwrap();
+        let image = read_image(&me).unwrap();
+        let dlls = &image.imports;
         assert!(dlls.contains(&"kernel32.dll".to_owned()), "{dlls:?}");
-        assert!(!needs_vc_runtime(&dlls), "{dlls:?}");
+        assert!(!needs_vc_runtime(dlls), "{dlls:?}");
+        // The linker version, which Rust's MSVC toolchain also writes (14.x).
+        assert_eq!(image.linker.0, 14, "{:?}", image.linker);
         // A program of Windows, too.
         let system = crate::system_paths::system_directory().unwrap();
-        let cmd = imports(&system.join("cmd.exe")).unwrap();
+        let cmd = read_image(&system.join("cmd.exe")).unwrap().imports;
         assert_ne!(cmd, Vec::<String>::new());
     }
 
@@ -152,9 +168,9 @@ mod tests {
         ] {
             let path = tmp.path().join(name);
             std::fs::write(&path, bytes).unwrap();
-            assert!(imports(&path).is_err(), "{name}");
+            assert!(read_image(&path).is_err(), "{name}");
         }
-        assert!(imports(&tmp.path().join("missing.exe")).is_err());
+        assert!(read_image(&tmp.path().join("missing.exe")).is_err());
     }
 
     #[test]

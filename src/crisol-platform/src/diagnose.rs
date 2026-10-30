@@ -81,26 +81,80 @@ fn vc_runtime_dlls_in(system: &Path) -> bool {
     VC_RUNTIME_DLLS.iter().all(|dll| system.join(dll).is_file())
 }
 
+/// `v14.51.36247.00`, as the installer records it, to `(14, 51)`.
+fn parse_runtime_version(text: &str) -> Option<(u8, u8)> {
+    let mut parts = text.trim().trim_start_matches(['v', 'V']).split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// What is known of the Visual C++ runtime of this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runtime {
+    /// Its installer recorded this version (major, minor).
+    Version(u8, u8),
+    /// Its DLLs are in the system folder, but no installer recorded a version.
+    Unknown,
+    /// It is not installed.
+    Missing,
+}
+
+fn installed_runtime() -> Runtime {
+    if let Some((major, minor)) = vc_runtime_version()
+        .as_deref()
+        .and_then(parse_runtime_version)
+    {
+        return Runtime::Version(major, minor);
+    }
+    if system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir)) {
+        Runtime::Unknown
+    } else {
+        Runtime::Missing
+    }
+}
+
 fn vc_runtime_present() -> bool {
-    vc_runtime_version().is_some() || system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir))
+    installed_runtime() != Runtime::Missing
 }
 
 /// Whether the programs installed in `install_dir` (its `.exe` files and those of its `bin`)
-/// import the Visual C++ runtime while it is not installed: then the reason and what to do.
-/// PHP and the database servers do; Nginx, Node, Mailpit and Redis do not.
+/// cannot run with the Visual C++ runtime of this computer: it is missing, or older than the
+/// tools they were made with. Then the reason and what to do. PHP and the database servers
+/// import it; Nginx, Node, Mailpit and Redis do not.
 #[must_use]
 pub fn missing_runtime(install_dir: &Path) -> Option<(String, String)> {
-    if vc_runtime_present() || !installation_needs_vc_runtime(install_dir) {
+    let installed = installed_runtime();
+    if installed == Runtime::Unknown {
+        // Nothing to compare with: the service fails as before, with its exit code explained.
         return None;
     }
-    Some((
-        "it needs the Microsoft Visual C++ runtime (x64), which is not installed".to_owned(),
-        format!("install it from {VC_RUNTIME_URL}, then start it again"),
-    ))
+    runtime_problem(required_runtime(install_dir)?, installed)
 }
 
-/// Whether any `.exe` in `install_dir` or in its `bin` imports the Visual C++ runtime.
-fn installation_needs_vc_runtime(install_dir: &Path) -> bool {
+/// What is wrong when programs made with the linker `required` meet the runtime `installed`.
+/// Microsoft's rule: the runtime must be at least as new as the tools (review of phase 11,
+/// finding 5).
+fn runtime_problem(required: (u8, u8), installed: Runtime) -> Option<(String, String)> {
+    match installed {
+        Runtime::Missing => Some((
+            "it needs the Microsoft Visual C++ runtime (x64), which is not installed".to_owned(),
+            format!("install it from {VC_RUNTIME_URL}, then start it again"),
+        )),
+        Runtime::Version(major, minor) if (major, minor) < required => Some((
+            format!(
+                "it needs the Microsoft Visual C++ runtime (x64) {}.{} or newer, and {major}.{minor} is installed",
+                required.0, required.1
+            ),
+            format!("install the current one from {VC_RUNTIME_URL}, then start it again"),
+        )),
+        Runtime::Version(..) | Runtime::Unknown => None,
+    }
+}
+
+/// The newest linker among the `.exe` in `install_dir` or in its `bin` that import the Visual
+/// C++ runtime: the oldest runtime they all run with. `None` if none imports it.
+fn required_runtime(install_dir: &Path) -> Option<(u8, u8)> {
     [install_dir.to_path_buf(), install_dir.join("bin")]
         .iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
@@ -111,7 +165,10 @@ fn installation_needs_vc_runtime(install_dir: &Path) -> bool {
             path.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
         })
-        .any(|path| crate::pe_imports::imports(&path).is_ok_and(|dlls| needs_vc_runtime(&dlls)))
+        .filter_map(|path| crate::pe_imports::read_image(&path).ok())
+        .filter(|image| needs_vc_runtime(&image.imports))
+        .map(|image| image.linker)
+        .max()
 }
 
 /// The line of `doctor` about the Visual C++ runtime: PHP and the database servers do not
@@ -243,15 +300,15 @@ mod tests {
     #[test]
     fn an_installation_needs_the_runtime_only_if_one_of_its_programs_imports_it() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(!installation_needs_vc_runtime(tmp.path()), "empty");
+        assert_eq!(required_runtime(tmp.path()), None, "empty");
         // Crisol's own programs link the runtime statically: they do not need it.
         let bin = tmp.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::copy(std::env::current_exe().unwrap(), bin.join("server.exe")).unwrap();
         std::fs::write(tmp.path().join("broken.exe"), "MZ").unwrap();
-        assert!(!installation_needs_vc_runtime(tmp.path()));
-        // The real ones, where this computer has them (the owner's): PHP and MySQL import it,
-        // Nginx does not.
+        assert_eq!(required_runtime(tmp.path()), None);
+        // The real ones, where this computer has them (the owner's): PHP, MySQL and PostgreSQL
+        // import it, made with tools 14.29 to 14.44; Nginx does not.
         let real = std::path::Path::new(r"C:\Crisol\bin");
         for (tool, needs) in [
             ("php", true),
@@ -263,13 +320,42 @@ mod tests {
                 continue;
             };
             for version in versions.flatten() {
-                assert_eq!(
-                    installation_needs_vc_runtime(&version.path()),
-                    needs,
-                    "{}",
-                    version.path().display()
-                );
+                let required = required_runtime(&version.path());
+                assert_eq!(required.is_some(), needs, "{}", version.path().display());
+                if let Some(required) = required {
+                    assert!(
+                        required >= (14, 0),
+                        "{}: {required:?}",
+                        version.path().display()
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_runtime_must_be_as_new_as_the_tools_the_programs_were_made_with() {
+        assert_eq!(parse_runtime_version("v14.51.36247.00"), Some((14, 51)));
+        assert_eq!(parse_runtime_version("14.29.30133"), Some((14, 29)));
+        assert_eq!(parse_runtime_version("garbage"), None);
+        // PHP 8.4 was made with tools 14.44 (seen in the owner's computer).
+        let php = (14, 44);
+        assert_eq!(runtime_problem(php, Runtime::Version(14, 51)), None);
+        assert_eq!(runtime_problem(php, Runtime::Version(14, 44)), None);
+        let (why, fix) = runtime_problem(php, Runtime::Version(14, 29)).unwrap();
+        assert!(
+            why.contains("14.44 or newer, and 14.29 is installed"),
+            "{why}"
+        );
+        assert!(fix.contains(VC_RUNTIME_URL), "{fix}");
+        let (why, _) = runtime_problem(php, Runtime::Missing).unwrap();
+        assert!(why.contains("not installed"), "{why}");
+        assert_eq!(
+            runtime_problem(php, Runtime::Unknown),
+            None,
+            "nothing to compare"
+        );
+        // A major version newer than 14 is newer whatever its minor.
+        assert_eq!(runtime_problem(php, Runtime::Version(15, 0)), None);
     }
 }
