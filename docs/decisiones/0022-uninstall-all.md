@@ -99,41 +99,19 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 
 **En tu equipo, una vez:**
 
-1. En `src/`: `cargo build --release` (deja los cuatro `.exe` en `src\target\release`).
+1. En `src/`: `cargo build --release` (deja los cuatro `.exe` en `src\target\release`). Se compilan con el runtime de C estático (`src/.cargo/config.toml`): el Sandbox no trae el Visual C++ Redistributable, y sin él no arrancan.
 2. Crea la carpeta `D:\scratch\sandbox-out` (vacía; si ya tiene fotos de otra prueba, bórralas).
 3. Si el repositorio no está en `D:\Documents\CodingMX\Proyectos\Crisol`, corrige las rutas de `src\scripts\sandbox\crisol.wsb`.
 
 **La prueba:**
 
 1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, `preparar.ps1` corre **sin ventana**: copia Crisol y saca la foto `1-antes`. Sabrás que terminó cuando exista `C:\sandbox\out\1-antes\meta.txt`.
-2. Dentro del Sandbox abre **dos** terminales: una **normal** (para Crisol, que nunca debe correr elevado) y una **como administrador** (clic derecho en Inicio → Terminal (administrador), solo para las fotos y Defender, que esconde sus exclusiones a quien no lo es).
-   - En la de **administrador**:
-     ```powershell
-     Get-Content C:\sandbox\out\1-antes\meta.txt   # debe decir administrator: True
-     # Si dice False, sácala otra vez aquí antes de seguir:
-     C:\sandbox\scripts\foto-sistema.ps1 -Name 1-antes
-     ```
-   - En la **normal**:
-     ```powershell
-     cd $HOME\crisol-bin
-     .\crisol.exe system install        # UAC: sí
-     .\crisol.exe path add
-     .\crisol.exe autostart on
-     .\crisol.exe trust                 # diálogo de Windows: sí
-     ```
-   - En la de **administrador**:
-     ```powershell
-     Add-MpPreference -ExclusionPath 'C:\Crisol\data'   # la que sugiere doctor
-     C:\sandbox\scripts\foto-sistema.ps1 -Name 2-instalado
-     C:\sandbox\scripts\comparar-fotos.ps1 1-antes 2-instalado   # debe dar diferencias
-     ```
-   - En la **normal**: `.\crisol.exe uninstall --all --purge`. Lee la lista, escribe `yes`, acepta cada diálogo de certificado y el UAC.
-   - En la de **administrador**:
-     ```powershell
-     C:\sandbox\scripts\foto-sistema.ps1 -Name 3-despues
-     C:\sandbox\scripts\comparar-fotos.ps1 1-antes 3-despues     # debe decir «identical»
-     ```
-3. Copia la salida de `uninstall --all --purge` y de las dos comparaciones (o haz capturas) y pásamelas. Las fotos quedan en `D:\scratch\sandbox-out`.
+2. Dentro del Sandbox abre **dos** terminales de PowerShell (si abre `cmd`, escribe `powershell`): una **normal**, para Crisol, que nunca debe correr elevado, y una **como administrador** (clic derecho en Inicio → Terminal (administrador)), para las fotos, porque Defender esconde sus exclusiones a quien no lo es. El Sandbox no tiene portapapeles hacia el equipo: cada script deja lo que imprime en `C:\sandbox\out` (`D:\scratch\sandbox-out`), y de ahí se lee.
+   - **Normal:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\instalar-crisol.ps1`. Hace `--version`, `system install`, `path add`, `autostart on`, `trust` y `doctor`, y guarda cada salida (`10-…` a `15-…`). Di que sí al diálogo del certificado y al UAC si aparece.
+   - **Administrador:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 2-instalado`. Debe dar diferencias.
+   - **Normal:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\desinstalar.ps1`. Guarda la lista (`20-lista.json`), ejecuta `uninstall --all --purge --yes` (`21-uninstall.txt`) y vuelve a listar (`22-otra-vez.json`, que debe estar vacía). Di que sí a cada diálogo de certificado.
+   - **Administrador:** `powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 3-despues`. Debe decir «identical».
+3. Avisa al terminar: todo queda en `D:\scratch\sandbox-out`.
 4. Opcional, en otro Sandbox nuevo: repite hasta `uninstall --all` y di **no** en el diálogo de la CA o en el UAC. Debe decir `[declined]`, salir con código 1 y, con `--purge`, `[skipped]` sin borrar `C:\Crisol`. Volver a ejecutarlo y aceptar debe terminar.
 5. Cierra la ventana del Sandbox: todo lo de dentro desaparece.
 

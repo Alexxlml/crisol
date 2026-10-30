@@ -1,0 +1,8 @@
+# The C runtime is linked into every program, so Crisol runs on a Windows without the Visual C++
+# Redistributable (found in Windows Sandbox, F11.2: without it the programs do not even start,
+# exit code 0xC0000135, and print nothing).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
