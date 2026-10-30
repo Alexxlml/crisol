@@ -14,12 +14,12 @@
   <MemoryInMB>4096</MemoryInMB>
   <MappedFolders>
     <MappedFolder>
-      <HostFolder>D:\Documents\CodingMX\Proyectos\Crisol\src\scripts\sandbox</HostFolder>
+      <HostFolder>C:\Users\inkis\dev\Crisol\src\scripts\sandbox</HostFolder>
       <SandboxFolder>C:\sandbox\scripts</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
     <MappedFolder>
-      <HostFolder>D:\Documents\CodingMX\Proyectos\Crisol\src\target\release</HostFolder>
+      <HostFolder>C:\Users\inkis\dev\Crisol\src\target\release</HostFolder>
       <SandboxFolder>C:\sandbox\bin</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>

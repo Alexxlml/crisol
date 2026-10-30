@@ -105,7 +105,7 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 
 1. En `src/`: `cargo build --release` (deja los cuatro `.exe` en `src\target\release`). Se compilan con el runtime de C estático (`src/.cargo/config.toml`): el Sandbox no trae el Visual C++ Redistributable, y sin él no arrancan.
 2. Crea la carpeta `D:\scratch\sandbox-out` (vacía; si ya tiene fotos de otra prueba, bórralas).
-3. Si el repositorio no está en `D:\Documents\CodingMX\Proyectos\Crisol`, corrige las rutas de `src\scripts\sandbox\crisol.wsb`.
+3. Si el repositorio no está en `C:\Users\inkis\dev\Crisol`, corrige las rutas de `src\scripts\sandbox\crisol.wsb`.
 
 **La prueba:** los pasos están en `src\scripts\sandbox\COMANDOS.txt`, que `preparar.ps1` copia al escritorio del Sandbox (dentro de él sí funciona copiar y pegar; hacia el equipo, no). En resumen:
 
