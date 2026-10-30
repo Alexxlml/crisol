@@ -1,5 +1,6 @@
 <!--
-  Windows Sandbox for the acceptance test of `crisol uninstall --all` (F11.2, ADR-0022).
+  Windows Sandbox for the acceptance test of crisol uninstall, all option (F11.2, ADR-0022).
+  No double hyphen may appear inside this comment: XML refuses it.
   The host folders are absolute paths of this computer: change them if the repository or the
   output folder live elsewhere. Build the release programs first (cargo build, release profile,
   in src), and create the output folder. Everything inside the sandbox is thrown away when its window is closed;
