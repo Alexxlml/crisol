@@ -133,7 +133,11 @@ Lo que encontraron las vueltas anteriores, ya corregido:
 3. **Ruido de Windows:** con red, Windows añadía certificados raíz y una entrada de Edge. El Sandbox va sin red, y la comparación separa lo de Crisol de lo de Windows.
 4. **El Sandbox se cerraba solo** (`0x80370106`). Sin GPU virtual y con un solo script, no volvió a pasar.
 
-**Sin verificar en el Sandbox:**
+**Defender y el UAC, en el equipo del propietario (2026-10-29).** Dentro del Sandbox, Defender casi nunca responde (`0x800106ba`: el servicio no corre de forma estable; una vez respondió a los 7 minutos), así que ahí solo se probó el camino «no disponible». La prueba real se hizo en el equipo del propietario:
 
-- **Quitar exclusiones de Defender de verdad.** Defender nunca respondió dentro del Sandbox (`0x800106ba`); se probó el camino «no disponible» (código 21 y el comando para hacerlo a mano). Falta la prueba en el equipo del propietario.
-- **El UAC.** Las terminales eran de administrador y no hizo falta. En la primera vuelta, sin elevar, el UAC sí apareció.
+- Binarios copiados a `%LOCALAPPDATA%\crisol-prueba-bin` y home de prueba en `%LOCALAPPDATA%\crisol-defender`. Desde `src\target\release`, `system install` se negó con razón: otras cuentas pueden modificar esa carpeta.
+- Exclusiones añadidas a mano: `<home>\data` y una ajena, `D:\scratch\no-es-de-crisol`.
+- Desde una terminal **normal**: `system install` y `uninstall --all` mostraron el UAC una vez cada uno. La desinstalación dijo «Removed the Defender exclusions inside …\crisol-defender».
+- Después, `<home>\data` ya no estaba. La ajena y las 17 exclusiones previas del propietario (Herd, Laragon, Devaron…) seguían intactas.
+
+**F11.2 queda verificada por completo.**
