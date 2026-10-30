@@ -162,4 +162,5 @@ Al responder la revisión, el propietario cambió lo que hace `uninstall --all` 
 - **Las mismas protecciones de la purga:**
   - con algo ajeno a Crisol en la home, no se borra nada de ella;
   - si algo anterior se rechazó o falló, ni la home ni los programas se tocan («skipped»), para poder volver a ejecutarlo con los mismos programas.
+  - **Lo mismo si la lista no pudo comprobar algo** (revisión de la Fase 11, hallazgo 1): un almacén de certificados que no se abre, no saber si el ayudante está instalado, la entrada de inicio de sesión o el PATH ilegibles, o algo ajeno en la home. Eso puede seguir en el sistema, y quitarlo necesita los programas.
 - **Una sola confirmación** también con `--purge`: el aviso ya lo dice todo (propietario).

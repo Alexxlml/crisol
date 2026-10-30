@@ -18,8 +18,9 @@
 //!   and the programs next to it ([`Step::Programs`]). `--purge` deletes the whole home instead.
 //!   Only the entries Crisol makes are ever deleted ([`own_entries`]); a home with anything
 //!   else in it is not touched at all, so a `CRISOL_HOME` pointed at the wrong folder deletes
-//!   nothing of the user's. Nothing is deleted when something before it was declined or failed:
-//!   running it again must still be possible, with the same programs.
+//!   nothing of the user's. Nothing is deleted when something before it was declined or failed,
+//!   or when the plan could not look at something ([`Plan::problems`]): running it again must
+//!   still be possible, with the same programs.
 //! - **What needs an administrator and has no helper to do it** is told as commands for the
 //!   user ([`Plan::by_hand`]).
 
@@ -481,13 +482,30 @@ fn without_helper(system: &System<'_>, suffix: &str, home: &Path, plan: &mut Pla
     ));
 }
 
+/// Why the home or the programs were not deleted.
+fn why_kept(outcomes: &[Outcome]) -> &'static str {
+    if outcomes
+        .iter()
+        .any(|o| matches!(o.kind, OutcomeKind::Declined | OutcomeKind::Failed))
+    {
+        "something above is still in place"
+    } else {
+        "something could not be checked (see above)"
+    }
+}
+
 /// Does what `plan` says, in order. `stop_daemon` stops the daemon (the caller has the link to
-/// it). Each step is tried even if one before failed, except deleting the home.
+/// it). Each step is tried even if one before failed, except deleting the home and the
+/// programs: those wait until every step before them is done, and until nothing was left
+/// unchecked in the plan ([`Plan::problems`]).
 pub fn run(
     system: &System<'_>,
     plan: &Plan,
     stop_daemon: &mut dyn FnMut() -> Result<(), String>,
 ) -> Vec<Outcome> {
+    // Something the plan could not look at may still be in place (a CA, the helper), and
+    // taking it out may need the files and the programs: nothing is deleted then.
+    let unchecked = !plan.problems.is_empty();
     let mut outcomes: Vec<Outcome> = Vec::new();
     for step in &plan.steps {
         let (kind, message) = match step {
@@ -545,18 +563,26 @@ pub fn run(
             },
             // Deleting comes last, and only when everything above is gone: a CA still trusted
             // or a helper still installed needs the files and the programs to be taken out.
-            Step::Clean { home } | Step::Purge { home } if !all_done(&outcomes) => (
-                OutcomeKind::Skipped,
-                format!(
-                    "Nothing in {} was deleted, because something above is still in place; run this again when it is solved",
-                    home.display()
-                ),
-            ),
+            Step::Clean { home } | Step::Purge { home }
+                if unchecked || !all_done(&outcomes) =>
+            {
+                (
+                    OutcomeKind::Skipped,
+                    format!(
+                        "Nothing in {} was deleted, because {}; run this again when it is solved",
+                        home.display(),
+                        why_kept(&outcomes)
+                    ),
+                )
+            }
             Step::Clean { .. } => clean(system.paths),
             Step::Purge { .. } => purge(system.paths),
-            Step::Programs { .. } if !all_done(&outcomes) => (
+            Step::Programs { .. } if unchecked || !all_done(&outcomes) => (
                 OutcomeKind::Skipped,
-                "Crisol's programs were kept, so that this can be run again".to_owned(),
+                format!(
+                    "Crisol's programs were kept, because {}, so that this can be run again",
+                    why_kept(&outcomes)
+                ),
             ),
             Step::Programs { files } => match (system.remove_programs)(files) {
                 Ok(()) => (

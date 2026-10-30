@@ -49,7 +49,7 @@ impl World {
         world
     }
 
-    fn system<'a>(&'a self, setup: &'a FakeSetup, daemon_running: bool) -> System<'a> {
+    fn system<'a>(&'a self, setup: &'a dyn SystemSetup, daemon_running: bool) -> System<'a> {
         System {
             paths: &self.paths,
             autostart: &self.autostart,
@@ -339,6 +339,79 @@ fn without_the_helper_what_needs_an_administrator_is_told_as_commands() {
     assert!(text.contains("# BEGIN CRISOL"), "{text}");
     assert!(text.contains(r"drivers\etc\hosts"), "{text}");
     assert!(!ids(&plan_left).contains(&"helper"));
+}
+
+/// A helper whose installation cannot be looked at.
+struct UnknownHelper;
+
+impl SystemSetup for UnknownHelper {
+    fn install(&self, _suffix: &str) -> io::Result<crate::setup::SetupReport> {
+        unreachable!()
+    }
+    fn uninstall(&self, _suffix: &str, _home: &Path) -> io::Result<crate::setup::SetupReport> {
+        unreachable!()
+    }
+    fn installed(&self) -> io::Result<bool> {
+        Err(io::Error::other("access denied"))
+    }
+}
+
+#[test]
+fn what_could_not_be_checked_keeps_the_home_and_the_programs() {
+    // Review of phase 11, finding 1: a CA or a helper that could not be looked at may still
+    // be in place, and the programs are needed to take it out.
+    let unknown = UnknownHelper;
+    let installed = FakeSetup::new();
+    let absent = FakeSetup::not_installed();
+    let cases: [(&str, &dyn SystemSetup, bool); 3] = [
+        ("helper", &unknown, false),
+        ("trust", &installed, true),
+        ("foreign", &absent, false),
+    ];
+    for (case, setup, store_fails) in cases {
+        for purge in [false, true] {
+            let world = World::new();
+            fs::create_dir_all(world.paths.bin_dir().join("php")).unwrap();
+            if case == "foreign" {
+                fs::create_dir(world.paths.home().join("Documents")).unwrap();
+            }
+            let mut system = world.system(setup, false);
+            if store_fails {
+                system.trust = Err("access denied".to_owned());
+            }
+            system.programs = vec![PathBuf::from(r"C:\Tools\crisol.exe")];
+            system.remove_programs = &|_| panic!("the programs must stay");
+
+            let plan = plan(&system, purge);
+            assert!(!plan.problems.is_empty(), "{case}");
+            let outcomes = run(&system, &plan, &mut || unreachable!());
+            let deleting: Vec<_> = kinds(&outcomes)
+                .into_iter()
+                .filter(|(step, _)| ["clean", "purge", "programs"].contains(step))
+                .collect();
+            assert!(
+                deleting.iter().any(|(step, _)| *step == "programs"),
+                "{case}"
+            );
+            assert!(
+                deleting
+                    .iter()
+                    .all(|(_, kind)| *kind == OutcomeKind::Skipped),
+                "{case} {purge}: {outcomes:?}"
+            );
+            let programs = outcomes.iter().find(|o| o.step == "programs").unwrap();
+            assert!(
+                programs.message.contains("could not be checked"),
+                "{case}: {}",
+                programs.message
+            );
+            assert!(world.paths.bin_dir().join("php").is_dir(), "{case} {purge}");
+            assert!(
+                world.paths.certs_dir().join("ca.pem").is_file(),
+                "{case} {purge}"
+            );
+        }
+    }
 }
 
 #[test]
