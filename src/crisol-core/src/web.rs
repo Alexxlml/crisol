@@ -369,6 +369,14 @@ struct Reload {
     token: Option<String>,
 }
 
+impl Reload {
+    /// Whether [`WebEvent::ReloadStarted`] was sent for this round, which then has to end in
+    /// [`WebEvent::Reloaded`] or [`WebEvent::ReloadFailed`].
+    fn announced(&self) -> bool {
+        !self.then_start && self.phase != Phase::Pools
+    }
+}
+
 struct Pool {
     service: Service,
     /// Where this version of PHP is installed, to build the pool again.
@@ -958,10 +966,17 @@ impl WebStack {
         }
     }
 
-    /// Stops Nginx and the pools, and cancels a reload under way.
+    /// Stops Nginx and the pools, and cancels a reload under way. A reload that was already
+    /// announced ends with [`WebEvent::ReloadFailed`], whether or not Nginx was running.
     pub fn stop(&mut self, now: Instant) -> Vec<WebEvent> {
         let mut events = Vec::new();
         self.running = false;
+        if self.reload.as_ref().is_some_and(Reload::announced) {
+            events.push(WebEvent::ReloadFailed {
+                reason: "the web stack was stopped before the new configuration was applied"
+                    .to_owned(),
+            });
+        }
         self.cancel_reload();
         self.reload_again = false;
         self.retire_at = None;

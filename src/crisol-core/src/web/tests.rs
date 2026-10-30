@@ -544,6 +544,41 @@ fn stopping_stops_everything_and_cancels_a_reload_under_way() {
     assert_eq!(rig.control_commands().len(), 1, "no reload after the stop");
 }
 
+/// Review of phase 12, finding 3: a client shows "reloading" between `reload_started` and its
+/// end, so a stop closes the round itself instead of relying on Nginx saying `stopping` (a
+/// failed Nginx says nothing of the kind).
+#[test]
+fn a_stop_closes_a_reload_that_was_announced_and_only_that_one() {
+    let mut rig = Rig::new(&["8.4.26"]);
+    rig.site("shop", None);
+    rig.run();
+    rig.site("blog", None);
+    let plan = rig.plan();
+    rig.stack.apply(&plan, rig.at(1000)).unwrap();
+    assert!(rig.tick(1100).contains(&WebEvent::ReloadStarted));
+    let events = rig.stack.stop(rig.at(1200));
+    let closed = events
+        .iter()
+        .filter(|e| matches!(e, WebEvent::ReloadFailed { reason } if reason.contains("stopped")))
+        .count();
+    assert_eq!(closed, 1, "{events:?}");
+
+    // A first start is not announced, so stopping it says nothing about a reload.
+    let mut rig = Rig::new(&[]);
+    rig.site("a", None);
+    let plan = rig.plan();
+    rig.stack.apply(&plan, rig.at(0)).unwrap();
+    rig.stack.start(rig.at(0));
+    assert_eq!(rig.control_commands(), [["-t"]]);
+    let events = rig.stack.stop(rig.at(100));
+    assert!(
+        events
+            .iter()
+            .all(|e| !matches!(e, WebEvent::ReloadFailed { .. })),
+        "{events:?}"
+    );
+}
+
 // ---- review of phase 5 ------------------------------------------------------------
 
 #[test]

@@ -282,7 +282,7 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 
 Se está probando una configuración web nueva (empezó `nginx -t`).
 
-Cada `reload_started` va seguido de `reloaded` o de `reload_failed`, salvo que Nginx se pare antes (llega `service_state` de `nginx` con `stopping`) o que el daemon se vaya (`shutting_down`). Un cliente puede mostrar «recargando» entre los dos. Un cambio que deja los archivos como ya estaban no anuncia nada. `reload_failed` puede llegar sin `reload_started`: el fallo fue antes de probar (al preparar los archivos, esperando los procesos nuevos de PHP o en el primer arranque).
+Cada `reload_started` va seguido de `reloaded` o de `reload_failed`, también si la pila se para a mitad de la prueba (entonces `reload_failed` lo dice), salvo que el daemon se vaya (`shutting_down`). Un cliente puede mostrar «recargando» entre los dos. Un cambio que deja los archivos como ya estaban no anuncia nada. `reload_failed` puede llegar sin `reload_started`: el fallo fue antes de probar (al preparar los archivos, esperando los procesos nuevos de PHP o en el primer arranque).
 
 ### `reloaded`
 
