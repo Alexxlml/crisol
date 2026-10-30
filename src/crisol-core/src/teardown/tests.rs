@@ -1,0 +1,248 @@
+use std::path::Path;
+use std::time::SystemTime;
+
+use tempfile::TempDir;
+
+use super::*;
+use crate::autostart::FakeAutostart;
+use crate::ca::ensure_ca;
+use crate::paths::fake::FakePrivateDirs;
+use crate::setup::{FakeSetup, Leftovers};
+use crate::shimsetup::path_add;
+use crate::trust::fake::FakeTrustStore;
+use crate::userpath::fake::FakeUserPath;
+
+/// A home with its layout and a local CA, and a store that trusts that CA.
+struct World {
+    _tmp: TempDir,
+    paths: CrisolPaths,
+    autostart: FakeAutostart,
+    user_path: FakeUserPath,
+    trust: FakeTrustStore,
+    ca_der: Vec<u8>,
+}
+
+impl World {
+    fn new() -> Self {
+        let tmp = TempDir::new().unwrap();
+        let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+        paths.ensure_layout().unwrap();
+        let ca = ensure_ca(&paths, &FakePrivateDirs::new(), "test", SystemTime::now())
+            .unwrap()
+            .ca;
+        let ca_der = ca.cert_der().to_vec();
+        Self {
+            _tmp: tmp,
+            paths,
+            autostart: FakeAutostart::new(),
+            user_path: FakeUserPath::with_user(r"C:\Tools"),
+            trust: FakeTrustStore::with(&[&ca_der]),
+            ca_der,
+        }
+    }
+
+    /// Everything Crisol can change, changed.
+    fn everything() -> Self {
+        let world = Self::new();
+        world.autostart.set(r#""C:\Crisol\crisold.exe""#).unwrap();
+        path_add(&world.user_path, &world.paths).unwrap();
+        world
+    }
+
+    fn system<'a>(&'a self, setup: &'a FakeSetup, daemon_running: bool) -> System<'a> {
+        System {
+            paths: &self.paths,
+            autostart: &self.autostart,
+            user_path: &self.user_path,
+            trust: Ok(&self.trust),
+            setup,
+            daemon_running,
+        }
+    }
+}
+
+fn ids(plan: &Plan) -> Vec<&'static str> {
+    plan.steps.iter().map(Step::id).collect()
+}
+
+fn kinds(outcomes: &[Outcome]) -> Vec<(&'static str, OutcomeKind)> {
+    outcomes.iter().map(|o| (o.step, o.kind)).collect()
+}
+
+#[test]
+fn everything_crisol_changed_is_listed_and_then_undone() {
+    let world = World::everything();
+    let stranger = b"someone else's root".to_vec();
+    world.trust.add(&stranger).unwrap();
+    let setup = FakeSetup::new();
+    let system = world.system(&setup, true);
+
+    let plan = plan(&system, false);
+    assert_eq!(ids(&plan), ["daemon", "autostart", "path", "ca", "helper"]);
+    assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+    assert!(
+        plan.by_hand.is_empty(),
+        "the helper does it: {:?}",
+        plan.by_hand
+    );
+    assert!(plan.kept[0].contains("--purge"), "{:?}", plan.kept);
+    for step in &plan.steps {
+        assert_ne!(step.describe(), "");
+    }
+    // Looking changed nothing.
+    assert!(world.autostart.current().unwrap().is_some());
+    assert_eq!(setup.calls(), Vec::<String>::new());
+
+    let mut stops = 0;
+    let outcomes = run(&system, &plan, &mut || {
+        stops += 1;
+        Ok(())
+    });
+    assert_eq!(stops, 1);
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert_eq!(world.autostart.current().unwrap(), None);
+    assert!(
+        !path_status(&world.user_path, &world.paths, &|_| false)
+            .unwrap()
+            .in_path
+    );
+    assert_eq!(world.trust.certificates().unwrap(), [stranger]);
+    assert_eq!(
+        setup.calls(),
+        [format!("uninstall test {}", world.paths.home().display())]
+    );
+    assert!(world.paths.home().is_dir(), "the home is kept");
+
+    // Again: nothing is left to do.
+    let again = super::plan(&world.system(&setup, false), false);
+    assert_eq!(ids(&again), ["helper"], "only the fake helper stays");
+}
+
+#[test]
+fn every_crisol_ca_goes_the_current_one_and_the_older_ones() {
+    let world = World::new();
+    let (_tmp, _, older) = {
+        let tmp = TempDir::new().unwrap();
+        let paths = CrisolPaths::new(tmp.path().join("old")).unwrap();
+        let ca = ensure_ca(&paths, &FakePrivateDirs::new(), "test", SystemTime::now())
+            .unwrap()
+            .ca;
+        (tmp, paths, ca)
+    };
+    world.trust.add(older.cert_der()).unwrap();
+    let setup = FakeSetup::not_installed();
+    let plan = plan(&world.system(&setup, false), false);
+    assert_eq!(ids(&plan), ["ca", "ca"]);
+}
+
+#[test]
+fn a_no_is_an_answer_the_rest_goes_on_and_the_home_is_not_deleted() {
+    let world = World::everything();
+    world.trust.decline_removals();
+    let setup = FakeSetup::declining();
+    let system = world.system(&setup, false);
+    let plan = plan(&system, true);
+    assert_eq!(ids(&plan), ["autostart", "path", "ca", "helper", "purge"]);
+
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert_eq!(
+        kinds(&outcomes),
+        [
+            ("autostart", OutcomeKind::Done),
+            ("path", OutcomeKind::Done),
+            ("ca", OutcomeKind::Declined),
+            ("helper", OutcomeKind::Declined),
+            ("purge", OutcomeKind::Skipped),
+        ]
+    );
+    assert!(!all_done(&outcomes));
+    assert!(world.trust.contains(&world.ca_der).unwrap());
+    assert!(world.paths.certs_dir().join("ca.pem").is_file());
+    assert!(outcomes[3].message.contains("declined"), "{outcomes:?}");
+}
+
+#[test]
+fn purge_deletes_what_crisol_keeps_in_the_home_and_says_what_is_lost() {
+    let world = World::new();
+    fs::create_dir_all(world.paths.data_dir().join("mysql").join("8.4")).unwrap();
+    fs::create_dir_all(world.paths.www_dir().join("shop")).unwrap();
+    fs::write(world.paths.config_file(), "").unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+
+    let plan = plan(&system, true);
+    let notice = plan.purge.clone().unwrap();
+    assert_eq!(notice.databases, ["mysql"]);
+    assert_eq!(notice.projects, ["shop"]);
+    assert_eq!(notice.foreign, Vec::<std::path::PathBuf>::new());
+    assert_eq!(ids(&plan), ["ca", "purge"]);
+    assert!(
+        !plan.kept.iter().any(|k| k.contains("--purge")),
+        "{:?}",
+        plan.kept
+    );
+
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert!(!world.paths.home().exists());
+}
+
+#[test]
+fn a_home_with_anything_else_in_it_is_never_deleted() {
+    let world = World::new();
+    let theirs = world.paths.home().join("Documents");
+    fs::create_dir(&theirs).unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+
+    let plan = plan(&system, true);
+    assert_eq!(ids(&plan), ["ca"], "no purge step");
+    assert_eq!(
+        plan.purge.as_ref().unwrap().foreign,
+        std::slice::from_ref(&theirs)
+    );
+    assert!(
+        plan.problems.iter().any(|p| p.contains("Documents")),
+        "{:?}",
+        plan.problems
+    );
+    run(&system, &plan, &mut || unreachable!());
+    assert!(theirs.is_dir());
+    assert!(world.paths.data_dir().is_dir());
+}
+
+#[test]
+fn without_the_helper_what_needs_an_administrator_is_told_as_commands() {
+    let world = World::new();
+    let quiet = FakeSetup::not_installed();
+    let plan_quiet = plan(&world.system(&quiet, false), false);
+    assert_eq!(plan_quiet.by_hand.len(), 1, "{:?}", plan_quiet.by_hand);
+    assert!(plan_quiet.by_hand[0].contains("Remove-MpPreference -ExclusionPath"));
+
+    let left = FakeSetup::not_installed_with(Leftovers {
+        nrpt_rule: true,
+        hosts_block: Some(Path::new(r"C:\Windows\System32\drivers\etc\hosts").to_path_buf()),
+    });
+    let plan_left = plan(&world.system(&left, false), false);
+    let text = plan_left.by_hand.join("\n");
+    assert!(text.contains("Remove-DnsClientNrptRule"), "{text}");
+    assert!(text.contains("Comment -eq 'Crisol'"), "{text}");
+    assert!(text.contains("# BEGIN CRISOL"), "{text}");
+    assert!(text.contains(r"drivers\etc\hosts"), "{text}");
+    assert!(!ids(&plan_left).contains(&"helper"));
+}
+
+#[test]
+fn a_trust_store_that_cannot_be_opened_is_told_with_the_way_by_hand() {
+    let world = World::new();
+    let setup = FakeSetup::not_installed();
+    let mut system = world.system(&setup, false);
+    system.trust = Err("access denied".to_owned());
+    let plan = plan(&system, false);
+    assert!(!ids(&plan).contains(&"ca"));
+    assert!(
+        plan.problems[0].contains("certmgr.msc"),
+        "{:?}",
+        plan.problems
+    );
+}

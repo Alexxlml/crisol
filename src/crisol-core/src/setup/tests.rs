@@ -83,10 +83,12 @@ fn the_setup_operations_take_one_valid_suffix_and_nothing_else() {
             suffix: "test".to_owned()
         }
     );
+    let home = encode_home(Path::new(r"C:\Users\First Last\Crisol"));
     assert_eq!(
-        parse(&["uninstall-self", ".Test"]).unwrap().unwrap(),
+        parse(&["uninstall-self", ".Test", &home]).unwrap().unwrap(),
         SetupOp::UninstallSelf {
-            suffix: "test".to_owned()
+            suffix: "test".to_owned(),
+            home: PathBuf::from(r"C:\Users\First Last\Crisol"),
         }
     );
     // Not a setup operation: the caller goes on to the everyday ones.
@@ -97,6 +99,11 @@ fn the_setup_operations_take_one_valid_suffix_and_nothing_else() {
         vec!["install-self"],
         vec!["install-self", "test", "extra"],
         vec!["uninstall-self"],
+        vec!["uninstall-self", "test"],
+        vec!["uninstall-self", "test", "not-hex"],
+        // `C:\`: the drive itself is not a home.
+        vec!["uninstall-self", "test", "433a5c"],
+        vec!["uninstall-self", "test", &home, "extra"],
         vec!["install-self", "com"],
         vec!["install-self", "te st"],
         vec!["install-self", "test; calc"],
@@ -109,16 +116,46 @@ fn the_setup_operations_take_one_valid_suffix_and_nothing_else() {
         },
         SetupOp::UninstallSelf {
             suffix: "localhost".to_owned(),
+            home: PathBuf::from(r"D:\scratch\crisol home"),
         },
     ] {
-        assert_eq!(SetupOp::parse(&op.to_args()).unwrap().unwrap(), op);
+        let args = op.to_args();
+        assert!(args.iter().all(|a| !a.contains(' ')), "{args:?}");
+        assert_eq!(SetupOp::parse(&args).unwrap().unwrap(), op);
     }
+}
+
+#[test]
+fn the_endings_that_worked_have_their_own_codes() {
+    for done in [
+        SetupDone::Done,
+        SetupDone::ExclusionsRemoved,
+        SetupDone::ExclusionsUnavailable,
+    ] {
+        assert_eq!(SetupDone::from_code(done.code().into()), Some(done));
+        assert_eq!(SetupFailure::from_code(done.code().into()), None);
+    }
+    assert_eq!(SetupDone::from_code(1), None);
+    let home = Path::new(r"C:\Users\O'Brien\Crisol");
+    assert_eq!(
+        remove_exclusion_command(home),
+        r"Remove-MpPreference -ExclusionPath 'C:\Users\O''Brien\Crisol\data'"
+    );
+    assert!(SetupDone::ExclusionsUnavailable
+        .exclusions_sentence(home)
+        .contains("Remove-MpPreference"));
 }
 
 #[test]
 fn the_fake_setup_records_what_was_asked() {
     let setup = FakeSetup::new();
     setup.install("test").unwrap();
-    setup.uninstall("test").unwrap();
-    assert_eq!(setup.calls(), ["install test", "uninstall test"]);
+    setup.uninstall("test", Path::new(r"C:\Crisol")).unwrap();
+    assert_eq!(setup.calls(), ["install test", r"uninstall test C:\Crisol"]);
+    assert!(setup.installed().unwrap());
+    assert!(!FakeSetup::not_installed().installed().unwrap());
+    let declined = FakeSetup::declining()
+        .uninstall("test", Path::new(r"C:\Crisol"))
+        .unwrap_err();
+    assert_eq!(declined.kind(), io::ErrorKind::PermissionDenied);
 }

@@ -1,6 +1,8 @@
 //! crisol-elevate: the only part of Crisol that runs as an administrator (ADR-0014).
 //!
-//! It does four things and nothing else, chosen by its arguments:
+//! Besides its own installation and removal (`install-self <suffix>`, `uninstall-self <suffix>
+//! <home>`, which also takes out the Defender exclusions inside the Crisol home, ADR-0022), it
+//! does four things and nothing else, chosen by its arguments:
 //!
 //! ```text
 //! crisol-elevate nrpt-add <suffix> <loopback ip>
@@ -28,7 +30,8 @@ fn finish(
     outcome: &Result<crisol_core::setup::SetupReport, crisol_core::setup::SetupFailure>,
 ) -> ExitCode {
     match outcome {
-        Ok(_) => ExitCode::SUCCESS,
+        // What was found of the Defender exclusions travels in the code too (ADR-0022).
+        Ok(report) => ExitCode::from(report.done.code()),
         Err(failure) => {
             eprintln!("crisol-elevate: {}", failure.message());
             ExitCode::from(failure.code())
@@ -53,7 +56,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
             Ok(SetupOp::InstallSelf { suffix }) => finish(&install_self(&suffix)),
-            Ok(SetupOp::UninstallSelf { suffix }) => finish(&uninstall_self(&suffix)),
+            Ok(SetupOp::UninstallSelf { suffix, home }) => finish(&uninstall_self(&suffix, &home)),
         };
     }
     let op = match ElevatedOp::parse(&args) {

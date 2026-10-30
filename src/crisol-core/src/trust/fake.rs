@@ -3,12 +3,13 @@
 use std::io;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use super::{AddOutcome, TrustStore};
+use super::{AddOutcome, RemoveOutcome, TrustStore};
 
 #[derive(Debug, Default)]
 struct State {
     certs: Vec<Vec<u8>>,
     decline_next: bool,
+    decline_removals: bool,
     fail: Option<String>,
     adds: usize,
     removes: usize,
@@ -39,6 +40,12 @@ impl FakeTrustStore {
     /// user who clicks "No" in the system's dialog.
     pub fn decline_next(&self) {
         self.state().decline_next = true;
+    }
+
+    /// Every [`remove`](TrustStore::remove) of a certificate that is there is refused from now
+    /// on, like a user who clicks "No" each time.
+    pub fn decline_removals(&self) {
+        self.state().decline_removals = true;
     }
 
     /// Every call fails with this message until [`recover`](Self::recover).
@@ -90,16 +97,18 @@ impl TrustStore for FakeTrustStore {
         Ok(AddOutcome::Added)
     }
 
-    fn remove(&self, cert_der: &[u8]) -> io::Result<bool> {
+    fn remove(&self, cert_der: &[u8]) -> io::Result<RemoveOutcome> {
         self.check()?;
         let mut state = self.state();
-        let before = state.certs.len();
-        state.certs.retain(|c| c != cert_der);
-        let removed = state.certs.len() != before;
-        if removed {
-            state.removes += 1;
+        if !state.certs.iter().any(|c| c == cert_der) {
+            return Ok(RemoveOutcome::Absent);
         }
-        Ok(removed)
+        if state.decline_removals {
+            return Ok(RemoveOutcome::Declined);
+        }
+        state.certs.retain(|c| c != cert_der);
+        state.removes += 1;
+        Ok(RemoveOutcome::Removed)
     }
 
     fn certificates(&self) -> io::Result<Vec<Vec<u8>>> {

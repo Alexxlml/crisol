@@ -101,14 +101,15 @@ fn untrusting_removes_only_that_certificate() {
     )
     .unwrap();
 
-    assert!(untrust_ca(&store, &ca).unwrap());
+    assert_eq!(untrust_ca(&store, &ca).unwrap(), RemoveOutcome::Removed);
     assert_eq!(
         store.certificates().unwrap(),
         std::slice::from_ref(&other),
         "the rest stays"
     );
-    assert!(
-        !untrust_ca(&store, &ca).unwrap(),
+    assert_eq!(
+        untrust_ca(&store, &ca).unwrap(),
+        RemoveOutcome::Absent,
         "it was not there any more"
     );
     assert_eq!(store.certificates().unwrap(), [other]);

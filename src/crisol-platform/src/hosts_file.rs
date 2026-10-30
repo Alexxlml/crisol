@@ -71,6 +71,12 @@ impl FileHosts {
         Ok(Self::new(hosts_file_in(&system_directory()?)))
     }
 
+    /// The path of the file.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Where the previous version goes.
     #[must_use]
     pub fn backup_path(&self) -> PathBuf {

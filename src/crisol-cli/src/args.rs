@@ -78,13 +78,31 @@ pub enum Command {
         #[arg(long, value_name = "HASH", requires = "from")]
         sha256: Option<String>,
     },
-    /// Removes an installed version.
+    /// Removes an installed version; with `--all`, takes Crisol out of Windows.
     Uninstall {
         /// The tool.
-        service: String,
+        #[arg(required_unless_present = "all")]
+        service: Option<String>,
         /// The version (an exact one, or a prefix that matches exactly one).
-        #[arg(id = "requested", value_name = "VERSION")]
-        version: String,
+        #[arg(
+            id = "requested",
+            value_name = "VERSION",
+            required_unless_present = "all"
+        )]
+        version: Option<String>,
+        /// Undo everything Crisol changed in Windows: the sign-in entry, the PATH, the
+        /// certificates it made Windows trust and, with one administrator prompt, the DNS rule,
+        /// the hosts block, the Defender exclusions inside its folder and the helper. It lists
+        /// all of it first and asks. The Crisol folder is kept.
+        #[arg(long, conflicts_with_all = ["service", "requested"])]
+        all: bool,
+        /// With `--all`: delete the Crisol folder too, with the data of the databases, the
+        /// installed versions and the settings. Back them up first.
+        #[arg(long, requires = "all", conflicts_with = "service")]
+        purge: bool,
+        /// With `--all`: do not ask before doing it.
+        #[arg(long, requires = "all", conflicts_with = "service")]
+        yes: bool,
     },
     /// Lists what is installed; with `--available`, also what could be.
     List {
@@ -336,6 +354,14 @@ pub enum Plan {
     },
     /// `system`: the one-time setup that needs an administrator.
     System(SystemAction),
+    /// `uninstall --all`: here, because it changes the user's settings and asks Windows, and
+    /// stops the daemon first.
+    UninstallAll {
+        /// Delete the home too.
+        purge: bool,
+        /// Without asking.
+        yes: bool,
+    },
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
     /// `trust`: here, so that the confirmation of Windows shows in front of the user.
@@ -431,7 +457,14 @@ impl Command {
                 from: from.map(|path| absolute(Some(&path), cwd)),
                 sha256,
             },
-            Self::Uninstall { service, version } => Call::Uninstall { service, version },
+            Self::Uninstall {
+                service: Some(service),
+                version: Some(version),
+                all: false,
+                ..
+            } => Call::Uninstall { service, version },
+            // `clap` lets nothing else through but `--all`.
+            Self::Uninstall { purge, yes, .. } => return Plan::UninstallAll { purge, yes },
             Self::List { available } => Call::List { available },
             Self::Use {
                 tool,

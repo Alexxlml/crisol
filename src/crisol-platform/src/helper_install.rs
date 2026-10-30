@@ -10,8 +10,9 @@
 //!    later nobody has to run it to know which program it is ([`crisol_core::setup`]);
 //! 3. makes the NRPT rule for the suffix, so that it takes one prompt, not two.
 //!
-//! Removal is the same in reverse (the NRPT rule if it is Crisol's, the block of `hosts`, then the
-//! folder) and only runs from the installed copy.
+//! Removal is the same in reverse (the NRPT rule if it is Crisol's, the block of `hosts`, the
+//! Defender exclusions inside the Crisol home (ADR-0022), then the folder) and only runs from
+//! the installed copy.
 //!
 //! The pieces that do the work take their places as parameters ([`install_into`],
 //! [`remove_system_changes`], [`remove_installation`]) so that tests run them on temporary
@@ -36,12 +37,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use crisol_core::dns::{disable, enable, DnsError, NrptPolicy, DEFAULT_DNS_ADDR};
-use crisol_core::hosts::HostsManager;
+use crisol_core::dns::{
+    disable, enable, status as nrpt_status, DnsError, NrptPolicy, NrptStatus, DEFAULT_DNS_ADDR,
+};
+use crisol_core::exclusions::{remove_inside, ExclusionsOutcome};
+use crisol_core::hosts::{HostsFile, HostsManager, BEGIN};
 use crisol_core::paths::PrivateDirs;
 use crisol_core::programs::{require_trusted_program, ProgramError};
 use crisol_core::setup::{
-    Manifest, SetupFailure, SetupOp, SetupReport, SystemSetup, MANIFEST_FILE,
+    Leftovers, Manifest, SetupDone, SetupFailure, SetupOp, SetupReport, SystemSetup, MANIFEST_FILE,
 };
 use std::os::windows::process::CommandExt;
 
@@ -50,7 +54,7 @@ use crate::nrpt::run_elevated;
 use crate::system_paths::{
     helper_exe_in, program_files_directory, system_directory, HELPER_FOLDER,
 };
-use crate::{flush_dns, FileHosts, PowerShellNrpt, WindowsPrivateDirs};
+use crate::{flush_dns, DefenderExclusions, FileHosts, PowerShellNrpt, WindowsPrivateDirs};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -203,8 +207,17 @@ pub fn install_self(suffix: &str) -> Result<SetupReport, SetupFailure> {
     Ok(report)
 }
 
-/// What `crisol-elevate uninstall-self <suffix>` does: only from the installed copy.
-pub fn uninstall_self(suffix: &str) -> Result<SetupReport, SetupFailure> {
+/// What was done with the Defender exclusions, as the ending of the elevated step.
+fn exclusions_ending(outcome: &ExclusionsOutcome) -> SetupDone {
+    match outcome {
+        ExclusionsOutcome::NoneFound => SetupDone::Done,
+        ExclusionsOutcome::Removed(_) => SetupDone::ExclusionsRemoved,
+        ExclusionsOutcome::Unavailable(_) => SetupDone::ExclusionsUnavailable,
+    }
+}
+
+/// What `crisol-elevate uninstall-self <suffix> <home>` does: only from the installed copy.
+pub fn uninstall_self(suffix: &str, home: &Path) -> Result<SetupReport, SetupFailure> {
     let program_files = program_files_directory().map_err(|_| SetupFailure::Failed)?;
     let running = std::env::current_exe().map_err(|_| SetupFailure::Failed)?;
     if !same_file(&running, &helper_exe_in(&program_files)) {
@@ -215,6 +228,8 @@ pub fn uninstall_self(suffix: &str) -> Result<SetupReport, SetupFailure> {
     );
     let (mut report, failures) = remove_system_changes(&PowerShellNrpt, &hosts, suffix);
     let _ = flush_dns();
+    // Tried even when the rule or the block failed: it does not depend on them.
+    report.done = exclusions_ending(&remove_inside(&DefenderExclusions, home));
     if !failures.is_empty() {
         // The rule or the block could not be taken out: keep the helper, which is what would
         // be needed to try again.
@@ -341,24 +356,42 @@ impl SystemSetup for WindowsSetup {
                 "Installed the privileged helper in Program Files".to_owned(),
                 format!("Made the DNS rule for .{suffix}"),
             ],
+            done: SetupDone::Done,
         })
     }
 
-    fn uninstall(&self, suffix: &str) -> io::Result<SetupReport> {
+    fn uninstall(&self, suffix: &str, home: &Path) -> io::Result<SetupReport> {
         let location = HelperLocation::installed()?;
-        match location.run_setup(&SetupOp::UninstallSelf {
+        let code = location.run_setup(&SetupOp::UninstallSelf {
             suffix: suffix.to_owned(),
-        })? {
-            0 => Ok(SetupReport {
-                steps: vec![
-                    format!(
-                        "Removed the DNS rule for .{suffix} and Crisol's block of the hosts file"
-                    ),
-                    "Removed the privileged helper".to_owned(),
-                ],
-            }),
-            code => Err(failure(code)),
-        }
+            home: home.to_path_buf(),
+        })?;
+        let done = SetupDone::from_code(code).ok_or_else(|| failure(code))?;
+        Ok(SetupReport {
+            steps: vec![
+                format!("Removed the DNS rule for .{suffix} and Crisol's block of the hosts file"),
+                done.exclusions_sentence(home),
+                "Removed the privileged helper".to_owned(),
+            ],
+            done,
+        })
+    }
+
+    fn installed(&self) -> io::Result<bool> {
+        Ok(HelperLocation::installed()?.path().is_file())
+    }
+
+    fn leftovers(&self, suffix: &str) -> io::Result<Leftovers> {
+        let nrpt_rule = matches!(
+            nrpt_status(&PowerShellNrpt, suffix).map_err(|e| io::Error::other(e.to_string()))?,
+            NrptStatus::Ours(_)
+        );
+        let hosts = FileHosts::system()?;
+        let has_block = hosts.read()?.lines().any(|line| line.trim() == BEGIN);
+        Ok(Leftovers {
+            nrpt_rule,
+            hosts_block: has_block.then(|| hosts.path().to_path_buf()),
+        })
     }
 }
 

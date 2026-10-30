@@ -275,3 +275,68 @@ pub fn progress(event: &Event, last_percent: &mut Option<u64>) -> Option<String>
 
 #[cfg(test)]
 mod tests;
+
+/// The list `uninstall --all` shows before it asks. Ends with a newline.
+#[must_use]
+pub fn teardown_plan(plan: &crisol_core::teardown::Plan) -> String {
+    let mut out = String::new();
+    if plan.is_empty() {
+        out.push_str("Nothing of Crisol is left to undo in Windows.\n");
+    } else {
+        out.push_str("Crisol will undo, in this order:\n");
+        for (n, step) in plan.steps.iter().enumerate() {
+            let _ = writeln!(out, "  {}. {}", n + 1, step.describe());
+        }
+    }
+    if let Some(notice) = &plan.purge {
+        if notice.foreign.is_empty() {
+            let _ = writeln!(
+                out,
+                "\n--purge deletes {} and everything in it, which cannot be recovered:",
+                notice.home.display()
+            );
+            if !notice.databases.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "  - the data of the databases: {}",
+                    notice.databases.join(", ")
+                );
+            }
+            if !notice.projects.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "  - what is in its www folder, projects included: {}",
+                    notice.projects.join(", ")
+                );
+            }
+            out.push_str(
+                "  - the installed versions, the settings, the passwords of the services and the certificates\n",
+            );
+            out.push_str("Sites linked or parked from folders outside it are not touched.\n");
+        }
+    }
+    let sections = [
+        ("\nTo do by hand:", &plan.by_hand),
+        ("\nCould not be looked at:", &plan.problems),
+        ("\nKept:", &plan.kept),
+    ];
+    for (title, lines) in sections {
+        if !lines.is_empty() {
+            let _ = writeln!(out, "{title}");
+            for line in lines {
+                let _ = writeln!(out, "  - {line}");
+            }
+        }
+    }
+    out
+}
+
+/// What `uninstall --all` did, one line per step. Ends with a newline.
+#[must_use]
+pub fn teardown_outcomes(outcomes: &[crisol_core::teardown::Outcome]) -> String {
+    let mut out = String::new();
+    for outcome in outcomes {
+        let _ = writeln!(out, "[{}] {}", outcome.kind.word(), outcome.message);
+    }
+    out
+}

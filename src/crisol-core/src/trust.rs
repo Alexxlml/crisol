@@ -41,6 +41,17 @@ pub enum AddOutcome {
     Declined,
 }
 
+/// What happened when a certificate was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    /// It is no longer in the store.
+    Removed,
+    /// It was not there; nothing changed.
+    Absent,
+    /// The user answered no to the operating system's confirmation. Nothing changed.
+    Declined,
+}
+
 /// A store of certificates the system trusts as roots.
 pub trait TrustStore: Send + Sync {
     /// Whether this exact certificate (DER) is in the store.
@@ -50,8 +61,9 @@ pub trait TrustStore: Send + Sync {
     /// confirm; a refusal is [`AddOutcome::Declined`], not an error.
     fn add(&self, cert_der: &[u8]) -> io::Result<AddOutcome>;
 
-    /// Removes this exact certificate. Returns whether it was there.
-    fn remove(&self, cert_der: &[u8]) -> io::Result<bool>;
+    /// Removes this exact certificate. The operating system may ask the user to confirm; a
+    /// refusal is [`RemoveOutcome::Declined`], not an error.
+    fn remove(&self, cert_der: &[u8]) -> io::Result<RemoveOutcome>;
 
     /// Every certificate in the store (DER). Read only.
     fn certificates(&self) -> io::Result<Vec<Vec<u8>>>;
@@ -120,6 +132,8 @@ pub fn prepare_trust(
 pub struct Untrusted {
     /// The CAs taken out of the store, by name.
     pub removed: Vec<String>,
+    /// The CAs the user would not let go of, by name.
+    pub declined: Vec<String>,
     /// The name of the CA in `certs/`, if there is one.
     pub current: Option<String>,
     /// Older Crisol CAs still in the store after this.
@@ -143,21 +157,23 @@ pub fn untrust_local(
         Err(error) => return Err(error.into()),
     };
     let current_der = current.as_ref().map(LocalCa::cert_der);
-    let mut removed = Vec::new();
+    let (mut removed, mut declined) = (Vec::new(), Vec::new());
+    let mut note = |name: String, outcome| match outcome {
+        RemoveOutcome::Removed => removed.push(name),
+        RemoveOutcome::Declined => declined.push(name),
+        RemoveOutcome::Absent => {}
+    };
     if stale {
         for old in crisol_cas_except(store, current_der)? {
-            if store.remove(&old.der)? {
-                removed.push(old.common_name);
-            }
+            note(old.common_name, store.remove(&old.der)?);
         }
     } else if let Some(ca) = &current {
-        if untrust_ca(store, ca)? {
-            removed.push(ca.info().common_name.clone());
-        }
+        note(ca.info().common_name.clone(), untrust_ca(store, ca)?);
     }
     let stale_left = crisol_cas_except(store, current_der)?.len();
     Ok(Untrusted {
         removed,
+        declined,
         current: current.map(|ca| ca.info().common_name.clone()),
         stale_left,
     })
@@ -176,8 +192,8 @@ pub fn trust_ca(
     Ok(store.add(ca.cert_der())?)
 }
 
-/// Stops trusting the CA. Returns whether it was trusted.
-pub fn untrust_ca(store: &dyn TrustStore, ca: &LocalCa) -> io::Result<bool> {
+/// Stops trusting the CA.
+pub fn untrust_ca(store: &dyn TrustStore, ca: &LocalCa) -> io::Result<RemoveOutcome> {
     store.remove(ca.cert_der())
 }
 
@@ -229,16 +245,21 @@ fn crisol_cas_except(store: &dyn TrustStore, current: Option<&[u8]>) -> io::Resu
     Ok(found)
 }
 
-/// Removes the older Crisol CAs ([`stale_cas`]) from the store and returns them.
+/// Removes the older Crisol CAs ([`stale_cas`]) from the store and returns the ones that went.
 pub fn remove_stale(store: &dyn TrustStore, current: &LocalCa) -> io::Result<Vec<TrustedCa>> {
     let stale = stale_cas(store, current)?;
     let mut removed = Vec::new();
     for ca in stale {
-        if store.remove(&ca.der)? {
+        if store.remove(&ca.der)? == RemoveOutcome::Removed {
             removed.push(ca);
         }
     }
     Ok(removed)
+}
+
+/// Every Crisol CA in the store, the current one included: what `uninstall --all` takes out.
+pub fn crisol_cas(store: &dyn TrustStore) -> io::Result<Vec<TrustedCa>> {
+    crisol_cas_except(store, None)
 }
 
 /// The common name if `der` is one of our CAs.

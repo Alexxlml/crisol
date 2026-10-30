@@ -38,7 +38,7 @@ use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
 use crisol_core::trust::fake::FakeTrustStore;
-use crisol_core::trust::{AddOutcome, TrustStore};
+use crisol_core::trust::{AddOutcome, RemoveOutcome, TrustStore};
 use crisol_core::userpath::fake::FakeUserPath;
 use crisol_core::userpath::{PathValue, UserPath};
 use crisol_core::web::AlwaysEffective;
@@ -110,8 +110,12 @@ impl SystemSetup for SharedSetup {
         self.0.install(suffix)
     }
 
-    fn uninstall(&self, suffix: &str) -> std::io::Result<SetupReport> {
-        self.0.uninstall(suffix)
+    fn uninstall(&self, suffix: &str, home: &std::path::Path) -> std::io::Result<SetupReport> {
+        self.0.uninstall(suffix, home)
+    }
+
+    fn installed(&self) -> std::io::Result<bool> {
+        self.0.installed()
     }
 }
 
@@ -151,7 +155,7 @@ impl TrustStore for SharedTrust {
         self.0.add(cert_der)
     }
 
-    fn remove(&self, cert_der: &[u8]) -> std::io::Result<bool> {
+    fn remove(&self, cert_der: &[u8]) -> std::io::Result<RemoveOutcome> {
         self.0.remove(cert_der)
     }
 
@@ -193,6 +197,8 @@ struct Env {
     /// The terminals `crisol shell` asked to start.
     terminals: Arc<Mutex<Vec<crisol_core::shell::ShellLaunch>>>,
     setup: Arc<FakeSetup>,
+    /// What `confirm` answers, and the questions it was asked.
+    confirm: Arc<Mutex<(bool, Vec<String>)>>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -254,6 +260,7 @@ impl Env {
             parent_program: None,
             terminals: Arc::default(),
             setup: Arc::new(FakeSetup::new()),
+            confirm: Arc::default(),
             driver_stop,
             driver,
         }
@@ -317,6 +324,14 @@ impl Env {
                 Box::new(move |launch| {
                     terminals.lock().unwrap().push(launch.clone());
                     Ok(5)
+                })
+            },
+            confirm: {
+                let confirm = Arc::clone(&self.confirm);
+                Box::new(move |question| {
+                    let mut state = confirm.lock().unwrap();
+                    state.1.push(question.to_owned());
+                    state.0
                 })
             },
             dirs: self.dirs.clone(),
@@ -1180,7 +1195,13 @@ fn system_install_and_uninstall_ask_the_setup_once_each_with_the_sites_suffix() 
         removed.contains("removed the helper and the rule for .test"),
         "{removed}"
     );
-    assert_eq!(env.setup.calls(), ["install test", "uninstall test"]);
+    assert_eq!(
+        env.setup.calls(),
+        [
+            "install test".to_owned(),
+            format!("uninstall test {}", env.paths.home().display())
+        ]
+    );
     let json = env.ok(&["--json", "system", "install"]);
     let value: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
     assert_eq!(
@@ -1340,4 +1361,128 @@ fn trust_answers_in_json_and_refuses_an_open_home() {
     let (code, _, err) = env.run(&["trust"]);
     assert_ne!(code, 0);
     assert!(err.contains("other accounts"), "{err}");
+}
+
+#[test]
+fn uninstall_all_lists_everything_asks_and_takes_crisol_out_of_windows() {
+    let env = Env::new(&[("nginx", "1.28.3")]);
+    env.ok(&["install", "nginx"]);
+    env.ok(&["start"]);
+    env.ok(&["autostart", "on"]);
+    env.ok(&["path", "add"]);
+    env.ok(&["trust"]);
+
+    // Answering anything but yes changes nothing.
+    let (code, out, _) = env.run(&["uninstall", "--all"]);
+    assert_eq!(code, 1, "{out}");
+    for line in [
+        "Crisol will undo, in this order:",
+        "1. Stop the daemon",
+        "sign in",
+        "out of your user PATH",
+        "Crisol Local CA",
+        "the Defender exclusions inside",
+        "--purge` deletes it",
+        "Nothing was changed",
+    ] {
+        assert!(out.contains(line), "{line}: {out}");
+    }
+    {
+        let asked = &env.confirm.lock().unwrap().1;
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].contains("Type yes"), "{asked:?}");
+        assert!(!asked[0].contains("backed up"), "{asked:?}");
+    }
+    assert!(env.daemon_running());
+    assert!(env.autostart.current().unwrap().is_some());
+
+    env.confirm.lock().unwrap().0 = true;
+    let (code, out, err) = env.run(&["uninstall", "--all"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("[done] Stopped the daemon"), "{out}");
+    assert!(out.contains("[done] Windows no longer trusts"), "{out}");
+    assert!(out.contains("Crisol is out of Windows."), "{out}");
+    assert!(!env.daemon_running());
+    assert_eq!(env.autostart.current().unwrap(), None);
+    assert_eq!(env.trust.certificates().unwrap(), Vec::<Vec<u8>>::new());
+    assert!(!env.ok(&["path"]).contains("is in your user PATH"));
+    assert_eq!(
+        env.setup.calls(),
+        [format!("uninstall test {}", env.paths.home().display())]
+    );
+    assert!(env.paths.home().is_dir(), "kept without --purge");
+}
+
+#[test]
+fn uninstall_all_with_purge_asks_about_backups_and_deletes_the_home() {
+    let mut env = Env::new(&[]);
+    env.setup = Arc::new(FakeSetup::not_installed());
+    fs::create_dir_all(env.paths.data_dir().join("mysql").join("8.4")).unwrap();
+    fs::create_dir_all(env.paths.www_dir().join("shop")).unwrap();
+    env.confirm.lock().unwrap().0 = true;
+
+    let (code, out, err) = env.run(&["uninstall", "--all", "--purge"]);
+    assert_eq!(code, 0, "{out}{err}");
+    for line in [
+        "--purge deletes",
+        "the data of the databases: mysql",
+        "projects included: shop",
+        "To do by hand:",
+        "Remove-MpPreference -ExclusionPath",
+        "[done] Deleted",
+    ] {
+        assert!(out.contains(line), "{line}: {out}");
+    }
+    assert!(env.confirm.lock().unwrap().1[0].contains("backed up"));
+    assert!(!env.paths.home().exists());
+}
+
+#[test]
+fn uninstall_all_goes_on_after_a_no_and_says_what_is_left() {
+    let mut env = Env::new(&[]);
+    env.setup = Arc::new(FakeSetup::declining());
+    env.ok(&["trust"]);
+    env.trust.decline_removals();
+
+    let (code, out, _) = env.run(&["uninstall", "--all", "--purge", "--yes"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        env.confirm.lock().unwrap().1.is_empty(),
+        "--yes asks nothing"
+    );
+    assert!(out.contains("[declined] Windows was told no"), "{out}");
+    assert!(
+        out.contains("[declined] The administrator prompt was declined"),
+        "{out}"
+    );
+    assert!(out.contains("[skipped]"), "{out}");
+    assert!(out.contains("run `crisol uninstall --all` again"), "{out}");
+    assert!(env.paths.ca_cert().is_file(), "nothing deleted");
+}
+
+#[test]
+fn uninstall_all_in_json_only_lists_unless_told_yes() {
+    let env = Env::new(&[]);
+    env.ok(&["autostart", "on"]);
+    let listed = env.ok(&["--json", "uninstall", "--all"]);
+    let value: serde_json::Value = serde_json::from_str(listed.trim()).unwrap();
+    assert_eq!(value["steps"][0]["step"], "autostart");
+    assert!(value.get("results").is_none(), "{value}");
+    assert!(env.autostart.current().unwrap().is_some());
+    assert_eq!(env.confirm.lock().unwrap().1, Vec::<String>::new());
+
+    let done = env.ok(&["--json", "uninstall", "--all", "--yes"]);
+    let value: serde_json::Value = serde_json::from_str(done.trim()).unwrap();
+    assert_eq!(value["results"][0]["result"], "done", "{value}");
+    assert_eq!(env.autostart.current().unwrap(), None);
+
+    for wrong in [
+        vec!["uninstall", "--purge"],
+        vec!["uninstall", "--all", "php"],
+        vec!["uninstall", "php"],
+        vec!["uninstall", "php", "8.4", "--yes"],
+    ] {
+        let (code, _, err) = env.run(&wrong);
+        assert_eq!(code, 2, "{wrong:?}: {err}");
+    }
 }

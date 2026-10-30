@@ -57,7 +57,7 @@ pub fn remove_script(namespace: &str) -> String {
     )
 }
 
-fn powershell(script: &str) -> io::Result<String> {
+pub(crate) fn powershell(script: &str) -> io::Result<String> {
     // The absolute path of the system's PowerShell: a bare name is looked for in other places.
     let output = Command::new(powershell_exe_in(&system_directory()?))
         .args([

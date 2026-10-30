@@ -24,6 +24,7 @@ use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
 use crisol_core::shell::{self, ShellLaunch, Terminal};
 use crisol_core::shimsetup::{self, Shell, ShimsError};
+use crisol_core::teardown;
 use crisol_core::trust::{
     prepare_trust, trust_ca, untrust_local, AddOutcome, TrustError, TrustStore,
 };
@@ -50,6 +51,9 @@ pub type RunTerminal = Box<dyn Fn(&ShellLaunch) -> std::io::Result<i32>>;
 
 /// Reads a variable of the environment of the process.
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
+
+/// Asks the user a question that is answered by typing `yes`; says whether they did.
+pub type Confirm = Box<dyn Fn(&str) -> bool>;
 
 /// A way to make calls: the daemon, or this process.
 pub trait Link {
@@ -131,6 +135,8 @@ pub struct Context {
     pub find_terminal: FindTerminal,
     /// Starts a terminal in this window, waits and gives its exit code.
     pub run_terminal: RunTerminal,
+    /// Asks before something that cannot be undone (`uninstall --all`).
+    pub confirm: Confirm,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
@@ -194,6 +200,7 @@ impl Session<'_> {
             Plan::Follow { service, lines } => self.follow(&service, lines),
             Plan::Autostart(action) => self.autostart(action),
             Plan::System(action) => self.system(action),
+            Plan::UninstallAll { purge, yes } => self.uninstall_all(purge, yes),
             Plan::Trust => self.trust(),
             Plan::Untrust { stale } => self.untrust(stale),
             Plan::Shims(action) => self.shims(action),
@@ -637,6 +644,9 @@ impl Session<'_> {
         };
         let tld = crisol_core::setup::suffix_of(paths);
         let mut lines = vec![match (report.removed.is_empty(), stale, &report.current) {
+            _ if report.removed.is_empty() && !report.declined.is_empty() => {
+                "Nothing was changed".to_owned()
+            }
             (true, true, _) => "No older Crisol CA is trusted; nothing was changed".to_owned(),
             (true, false, None) => format!(
                 "There is no local CA in {}; nothing was changed",
@@ -651,6 +661,12 @@ impl Session<'_> {
                 report.removed.join(", ")
             ),
         }];
+        if !report.declined.is_empty() {
+            lines.push(format!(
+                "Windows was told no for {}; it is still trusted",
+                report.declined.join(", ")
+            ));
+        }
         if !stale && report.stale_left > 0 {
             lines.push(format!(
                 "{} older Crisol CA(s) are still trusted; `crisol untrust --stale` takes them out",
@@ -659,11 +675,16 @@ impl Session<'_> {
         }
         let json = serde_json::json!({
             "removed": report.removed,
+            "declined": report.declined,
             "current": report.current,
             "stale_left": report.stale_left,
         });
         self.say(&lines.join("\n"), &json);
-        EXIT_OK
+        if report.declined.is_empty() {
+            EXIT_OK
+        } else {
+            EXIT_FAILED
+        }
     }
 
     fn system(&mut self, action: SystemAction) -> u8 {
@@ -671,7 +692,7 @@ impl Session<'_> {
         let suffix = &crisol_core::setup::suffix_of(&self.context.paths);
         let outcome = match action {
             SystemAction::Install => setup.install(suffix),
-            SystemAction::Uninstall => setup.uninstall(suffix),
+            SystemAction::Uninstall => setup.uninstall(suffix, self.context.paths.home()),
         };
         match outcome {
             Ok(report) => {
@@ -702,6 +723,116 @@ impl Session<'_> {
                 self.fail(&RpcError::new(code, error.to_string()))
             }
         }
+    }
+
+    fn uninstall_all(&mut self, purge: bool, yes: bool) -> u8 {
+        let context = self.context;
+        let daemon_running = (context.connect)().is_ok();
+        let store = (context.trust_store)();
+        let system = teardown::System {
+            paths: &context.paths,
+            autostart: context.autostart.as_ref(),
+            user_path: context.user_path.as_ref(),
+            trust: match &store {
+                Ok(store) => Ok(store.as_ref()),
+                Err(error) => Err(error.to_string()),
+            },
+            setup: context.setup.as_ref(),
+            daemon_running,
+        };
+        let plan = teardown::plan(&system, purge);
+        let notice = plan.purge.as_ref().map(|n| {
+            serde_json::json!({
+                "home": n.home.display().to_string(),
+                "databases": n.databases,
+                "projects": n.projects,
+                "foreign": n.foreign.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            })
+        });
+        let mut json = serde_json::json!({
+            "steps": plan.steps.iter().map(|s| serde_json::json!({
+                "step": s.id(), "description": s.describe(),
+            })).collect::<Vec<_>>(),
+            "by_hand": plan.by_hand,
+            "problems": plan.problems,
+            "kept": plan.kept,
+            "purge": notice,
+        });
+        if !self.json {
+            let _ = write!(self.out, "{}", render::teardown_plan(&plan));
+            let _ = self.out.flush();
+        }
+        if plan.is_empty() {
+            if self.json {
+                let _ = writeln!(self.out, "{json}");
+            }
+            return if plan.problems.is_empty() {
+                EXIT_OK
+            } else {
+                EXIT_FAILED
+            };
+        }
+        if !yes {
+            if self.json {
+                // Without `--yes` the JSON is only the list: nothing can be asked.
+                let _ = writeln!(self.out, "{json}");
+                return EXIT_OK;
+            }
+            let deletes = plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, teardown::Step::Purge { .. }));
+            let question = if deletes {
+                "\nHave you backed up your projects and the databases you need? The folder above is deleted and cannot be recovered.\nType yes to go on:"
+            } else {
+                "\nType yes to go on:"
+            };
+            if !(context.confirm)(question) {
+                let _ = writeln!(self.out, "Nothing was changed");
+                return EXIT_FAILED;
+            }
+        }
+        let outcomes = teardown::run(&system, &plan, &mut || self.stop_daemon());
+        json["results"] = outcomes
+            .iter()
+            .map(|o| serde_json::json!({"step": o.step, "result": o.kind.word(), "message": o.message}))
+            .collect();
+        let done = teardown::all_done(&outcomes);
+        if self.json {
+            let _ = writeln!(self.out, "{json}");
+        } else {
+            let _ = write!(self.out, "\n{}", render::teardown_outcomes(&outcomes));
+            let _ = writeln!(
+                self.out,
+                "{}",
+                if done {
+                    "Crisol is out of Windows."
+                } else {
+                    "Some of it is still in place; solve what is said above and run `crisol uninstall --all` again to finish."
+                }
+            );
+        }
+        if done && plan.problems.is_empty() {
+            EXIT_OK
+        } else {
+            EXIT_FAILED
+        }
+    }
+
+    /// Asks the daemon to stop and waits until its pipe is gone, so its files are free.
+    fn stop_daemon(&mut self) -> Result<(), String> {
+        let mut link = self.link(&Call::Shutdown).map_err(|e| e.message)?;
+        link.call(&Call::Shutdown, &mut |_| {})
+            .map_err(|e| client_error(e).message)?;
+        drop(link);
+        let end = Instant::now() + self.context.daemon_wait;
+        while (self.context.connect)().is_ok() {
+            if Instant::now() >= end {
+                return Err("the daemon said it would stop, but it is still running".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
     }
 
     fn autostart(&mut self, action: AutostartAction) -> u8 {

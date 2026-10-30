@@ -62,6 +62,7 @@ Tres cosas no son obvias:
   - `Remove-MpPreference -ExclusionPath '<home>\data'`.
 - **Crisol no lo ejecuta ni lo pide por el ayudante elevado.** Así no hay nada de Crisol que revertir en F11.2. Si más adelante se quiere que Crisol añada la exclusión, será una operación nueva del ayudante con su ADR, marcada «requiere admin», y F11.2 tendrá que revertirla.
 - **Confirmado por el propietario:** Crisol no decide, pero le dice al usuario exactamente qué necesita. Los usuarios cautelosos lo agradecen.
+- **Corregido por la ADR-0022 (2026-10-29):** Crisol sigue sin crear exclusiones, pero `uninstall --all` (y `system uninstall`) quita, con el UAC del ayudante, las que encuentre dentro de su home, aunque las haya puesto el usuario. Sí hay algo que revertir en F11.2.
 - **Para la GUI (pendiente, no se hace ahora):** el `fix` puede volverse un botón, siempre con estas condiciones:
   - el botón **muestra** el comando exacto antes de ejecutarlo;
   - lo ejecuta en un PowerShell elevado, así que el UAC es el consentimiento;

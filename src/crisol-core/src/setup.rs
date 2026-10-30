@@ -15,10 +15,12 @@
 
 use std::fmt::Write as _;
 use std::io;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::dns::{rule_for, DnsError, DEFAULT_DNS_ADDR};
+use crate::exclusions::{decode_home, encode_home};
 
 /// The file name of the manifest, next to the helper.
 pub const MANIFEST_FILE: &str = "crisol-elevate.manifest";
@@ -150,11 +152,14 @@ pub enum SetupOp {
         /// The suffix, without dots.
         suffix: String,
     },
-    /// `uninstall-self <suffix>`: take the NRPT rule and the block of `hosts` out, then the
-    /// folder. Only accepted from the installed copy.
+    /// `uninstall-self <suffix> <home>`: take the NRPT rule, the block of `hosts` and the
+    /// antivirus exclusions inside the home out, then the folder. Only accepted from the
+    /// installed copy. The home travels as [`encode_home`] writes it (ADR-0022).
     UninstallSelf {
         /// The suffix, without dots.
         suffix: String,
+        /// The Crisol home.
+        home: PathBuf,
     },
 }
 
@@ -163,18 +168,25 @@ impl SetupOp {
     /// operation at all (so the caller tries the everyday ones).
     pub fn parse<S: AsRef<str>>(args: &[S]) -> Option<Result<Self, DnsError>> {
         let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
-        let (make, suffix): (fn(String) -> Self, &str) = match args.as_slice() {
-            ["install-self", suffix] => (|suffix| Self::InstallSelf { suffix }, suffix),
-            ["uninstall-self", suffix] => (|suffix| Self::UninstallSelf { suffix }, suffix),
-            ["install-self" | "uninstall-self", ..] => {
-                return Some(Err(DnsError::InvalidArguments(args.join(" "))))
-            }
+        let invalid = || DnsError::InvalidArguments(args.join(" "));
+        let (suffix, home) = match args.as_slice() {
+            ["install-self", suffix] => (*suffix, None),
+            ["uninstall-self", suffix, home] => match decode_home(home) {
+                Ok(home) => (*suffix, Some(home)),
+                Err(_) => return Some(Err(invalid())),
+            },
+            ["install-self" | "uninstall-self", ..] => return Some(Err(invalid())),
             _ => return None,
         };
         // The rule it would make is the validation: a special-use suffix, a loopback server.
         Some(
-            rule_for(suffix, std::net::IpAddr::V4(DEFAULT_DNS_ADDR))
-                .map(|rule| make(rule.namespace.trim_start_matches('.').to_owned())),
+            rule_for(suffix, std::net::IpAddr::V4(DEFAULT_DNS_ADDR)).map(|rule| {
+                let suffix = rule.namespace.trim_start_matches('.').to_owned();
+                match home {
+                    None => Self::InstallSelf { suffix },
+                    Some(home) => Self::UninstallSelf { suffix, home },
+                }
+            }),
         )
     }
 
@@ -183,7 +195,11 @@ impl SetupOp {
     pub fn to_args(&self) -> Vec<String> {
         match self {
             Self::InstallSelf { suffix } => vec!["install-self".to_owned(), suffix.clone()],
-            Self::UninstallSelf { suffix } => vec!["uninstall-self".to_owned(), suffix.clone()],
+            Self::UninstallSelf { suffix, home } => vec![
+                "uninstall-self".to_owned(),
+                suffix.clone(),
+                encode_home(home),
+            ],
         }
     }
 }
@@ -264,11 +280,80 @@ impl SetupFailure {
     }
 }
 
+/// How a setup operation that worked ended, beyond "done": what the elevated side found of the
+/// antivirus exclusions, which only it can see (ADR-0022). Told by the exit code, like the
+/// failures, since the helper writes nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SetupDone {
+    /// Done; no exclusion inside the home (or none was looked for).
+    #[default]
+    Done,
+    /// Done, and the exclusions inside the home were removed.
+    ExclusionsRemoved,
+    /// Done, but the antivirus did not answer, so its exclusions were not looked at.
+    ExclusionsUnavailable,
+}
+
+impl SetupDone {
+    /// The exit code of the elevated process.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Done => 0,
+            Self::ExclusionsRemoved => 20,
+            Self::ExclusionsUnavailable => 21,
+        }
+    }
+
+    /// The ending an exit code means, if it means one that worked.
+    #[must_use]
+    pub fn from_code(code: u32) -> Option<Self> {
+        [
+            Self::Done,
+            Self::ExclusionsRemoved,
+            Self::ExclusionsUnavailable,
+        ]
+        .into_iter()
+        .find(|d| u32::from(d.code()) == code)
+    }
+
+    /// The sentence about the exclusions inside `home`, after a removal.
+    #[must_use]
+    pub fn exclusions_sentence(self, home: &Path) -> String {
+        match self {
+            Self::Done => format!(
+                "There were no Defender exclusions inside {}",
+                home.display()
+            ),
+            Self::ExclusionsRemoved => {
+                format!("Removed the Defender exclusions inside {}", home.display())
+            }
+            Self::ExclusionsUnavailable => format!(
+                "Defender did not answer, so its exclusions were not looked at; if you excluded a folder inside {}, `{}` (as an administrator) takes it out",
+                home.display(),
+                remove_exclusion_command(home)
+            ),
+        }
+    }
+}
+
+/// The command that takes out the exclusion `doctor` suggests (the `data` folder of the home),
+/// for a user who has to do it by hand.
+#[must_use]
+pub fn remove_exclusion_command(home: &Path) -> String {
+    format!(
+        "Remove-MpPreference -ExclusionPath '{}'",
+        home.join("data").display().to_string().replace('\'', "''")
+    )
+}
+
 /// What a setup operation did, in sentences.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SetupReport {
     /// One line per thing done.
     pub steps: Vec<String>,
+    /// How it ended.
+    pub done: SetupDone,
 }
 
 /// The suffix of the local sites in this home (`test`): what `crisol.toml` says, or the default
@@ -284,14 +369,35 @@ pub fn suffix_of(paths: &crate::paths::CrisolPaths) -> String {
 pub trait SystemSetup: Send + Sync {
     /// Installs the helper and makes the NRPT rule for `suffix`.
     fn install(&self, suffix: &str) -> io::Result<SetupReport>;
-    /// Removes the NRPT rule, the block of `hosts` and the helper.
-    fn uninstall(&self, suffix: &str) -> io::Result<SetupReport>;
+    /// Removes the NRPT rule, the block of `hosts`, the antivirus exclusions inside `home` and
+    /// the helper. A declined prompt is an error of kind `PermissionDenied`.
+    fn uninstall(&self, suffix: &str, home: &Path) -> io::Result<SetupReport>;
+    /// Whether the helper is installed (whether it can still be used or not).
+    fn installed(&self) -> io::Result<bool>;
+    /// What of the helper's changes is in the system, as far as can be seen without an
+    /// administrator. Only asked when there is no helper to take them out.
+    fn leftovers(&self, _suffix: &str) -> io::Result<Leftovers> {
+        Ok(Leftovers::default())
+    }
+}
+
+/// The changes of the helper still in the system (ADR-0022): without the helper, the user has
+/// to take them out by hand.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Leftovers {
+    /// Crisol's NRPT rule for the suffix is there.
+    pub nrpt_rule: bool,
+    /// The hosts file with Crisol's block in it, if it has one.
+    pub hosts_block: Option<PathBuf>,
 }
 
 /// Setup that records what it was asked and does nothing, for tests.
 #[derive(Debug, Default)]
 pub struct FakeSetup {
     calls: std::sync::Mutex<Vec<String>>,
+    absent: bool,
+    decline: bool,
+    leftovers: Leftovers,
 }
 
 impl FakeSetup {
@@ -299,6 +405,34 @@ impl FakeSetup {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A setup whose helper is not installed.
+    #[must_use]
+    pub fn not_installed() -> Self {
+        Self {
+            absent: true,
+            ..Self::default()
+        }
+    }
+
+    /// A setup with no helper, whose changes are still in the system.
+    #[must_use]
+    pub fn not_installed_with(leftovers: Leftovers) -> Self {
+        Self {
+            absent: true,
+            leftovers,
+            ..Self::default()
+        }
+    }
+
+    /// A setup whose elevation prompt is declined.
+    #[must_use]
+    pub fn declining() -> Self {
+        Self {
+            decline: true,
+            ..Self::default()
+        }
     }
 
     /// What was asked, in order (`install test`, `uninstall test`).
@@ -319,17 +453,33 @@ impl SystemSetup for FakeSetup {
             .push(format!("install {suffix}"));
         Ok(SetupReport {
             steps: vec![format!("installed the helper and the rule for .{suffix}")],
+            done: SetupDone::Done,
         })
     }
 
-    fn uninstall(&self, suffix: &str) -> io::Result<SetupReport> {
+    fn uninstall(&self, suffix: &str, home: &Path) -> io::Result<SetupReport> {
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("uninstall {suffix}"));
+            .push(format!("uninstall {suffix} {}", home.display()));
+        if self.decline {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the elevation prompt was declined",
+            ));
+        }
         Ok(SetupReport {
             steps: vec![format!("removed the helper and the rule for .{suffix}")],
+            done: SetupDone::Done,
         })
+    }
+
+    fn installed(&self) -> io::Result<bool> {
+        Ok(!self.absent)
+    }
+
+    fn leftovers(&self, _suffix: &str) -> io::Result<Leftovers> {
+        Ok(self.leftovers.clone())
     }
 }
 

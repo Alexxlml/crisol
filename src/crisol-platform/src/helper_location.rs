@@ -332,6 +332,7 @@ mod tests {
         let error = location
             .run_setup(&SetupOp::UninstallSelf {
                 suffix: "test".to_owned(),
+                home: PathBuf::from("C:/Crisol"),
             })
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");

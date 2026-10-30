@@ -1,0 +1,29 @@
+<!--
+  Windows Sandbox for the acceptance test of `crisol uninstall --all` (F11.2, ADR-0022).
+  The host folders are absolute paths of this computer: change them if the repository or the
+  output folder live elsewhere. Build the release programs first (cargo build, release profile,
+  in src), and create the output folder. Everything inside the sandbox is thrown away when its window is closed;
+  only `C:\sandbox\out` reaches the host.
+-->
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Documents\CodingMX\Proyectos\Crisol\src\scripts\sandbox</HostFolder>
+      <SandboxFolder>C:\sandbox\scripts</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Documents\CodingMX\Proyectos\Crisol\src\target\release</HostFolder>
+      <SandboxFolder>C:\sandbox\bin</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\scratch\sandbox-out</HostFolder>
+      <SandboxFolder>C:\sandbox\out</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sandbox\scripts\preparar.ps1</Command>
+  </LogonCommand>
+</Configuration>

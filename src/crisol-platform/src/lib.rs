@@ -7,6 +7,8 @@ mod console;
 #[cfg(windows)]
 mod db_admin;
 #[cfg(windows)]
+mod defender;
+#[cfg(windows)]
 mod diagnose;
 #[cfg(windows)]
 mod file_owner;
@@ -47,6 +49,8 @@ pub use autostart::RegistryAutostart;
 pub use console::survive_ctrl_c;
 #[cfg(windows)]
 pub use db_admin::WindowsDbAdmin;
+#[cfg(windows)]
+pub use defender::DefenderExclusions;
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]

@@ -3,8 +3,9 @@
 //! [`WindowsTrustStore::current_user_root`] is the **current user's** `Root` store
 //! (`Certificates - Current User > Trusted Root Certification Authorities`). It needs no
 //! administrator, and the machine's store is never touched. Windows asks the user to confirm
-//! when a certificate is added to it (a dialog, and so an interactive session); answering no is
-//! reported as [`AddOutcome::Declined`].
+//! when a certificate is added to it and when one is removed (a dialog, and so an interactive
+//! session); answering no is reported as [`AddOutcome::Declined`] or
+//! [`RemoveOutcome::Declined`].
 //!
 //! The same code runs over a store that lives only in memory
 //! ([`WindowsTrustStore::private_memory`]), which is what the tests use: they never add to or
@@ -14,7 +15,7 @@
 use std::fmt::Write as _;
 use std::io;
 
-use crisol_core::trust::{AddOutcome, TrustStore};
+use crisol_core::trust::{AddOutcome, RemoveOutcome, TrustStore};
 use windows::Win32::Security::Cryptography::{
     CertAddEncodedCertificateToStore, CertCloseStore, CertCreateCertificateContext,
     CertDeleteCertificateFromStore, CertEnumCertificatesInStore, CertFindCertificateInStore,
@@ -147,14 +148,17 @@ impl TrustStore for WindowsTrustStore {
         }
     }
 
-    fn remove(&self, cert_der: &[u8]) -> io::Result<bool> {
+    fn remove(&self, cert_der: &[u8]) -> io::Result<RemoveOutcome> {
         let found = self.find(cert_der)?;
         if found.is_null() {
-            return Ok(false);
+            return Ok(RemoveOutcome::Absent);
         }
         // SAFETY: `found` is a context of the store; deleting it also frees it.
-        unsafe { CertDeleteCertificateFromStore(found) }.map_err(io::Error::from)?;
-        Ok(true)
+        match unsafe { CertDeleteCertificateFromStore(found) } {
+            Ok(()) => Ok(RemoveOutcome::Removed),
+            Err(e) if (e.code().0 & 0xFFFF) == ERROR_CANCELLED => Ok(RemoveOutcome::Declined),
+            Err(e) => Err(io::Error::from(e)),
+        }
     }
 
     fn thumbprint(&self, cert_der: &[u8]) -> Option<String> {
@@ -274,9 +278,13 @@ mod tests {
             AddOutcome::AlreadyThere
         );
 
-        assert!(untrust_ca(&store, &ca).unwrap());
+        assert_eq!(untrust_ca(&store, &ca).unwrap(), RemoveOutcome::Removed);
         assert!(!store.contains(ca.cert_der()).unwrap());
-        assert!(!untrust_ca(&store, &ca).unwrap(), "already gone");
+        assert_eq!(
+            untrust_ca(&store, &ca).unwrap(),
+            RemoveOutcome::Absent,
+            "already gone"
+        );
         assert_eq!(store.certificates().unwrap(), Vec::<Vec<u8>>::new());
     }
 
@@ -300,7 +308,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.certificates().unwrap().len(), 2);
-        assert!(untrust_ca(&store, &first).unwrap());
+        assert_eq!(untrust_ca(&store, &first).unwrap(), RemoveOutcome::Removed);
         assert_eq!(store.certificates().unwrap(), [second.cert_der().to_vec()]);
     }
 

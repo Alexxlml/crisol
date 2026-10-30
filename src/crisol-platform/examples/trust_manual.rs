@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use crisol_core::ca::{ensure_ca, load_ca};
 use crisol_core::paths::CrisolPaths;
-use crisol_core::trust::{remove_stale, status, trust_ca, untrust_ca, AddOutcome};
+use crisol_core::trust::{remove_stale, status, trust_ca, untrust_ca, AddOutcome, RemoveOutcome};
 use crisol_platform::{WindowsPrivateDirs, WindowsTrustStore};
 
 fn main() {
@@ -96,10 +96,10 @@ fn run() -> Result<(), String> {
             let removed = untrust_ca(&store, &ca).map_err(|e| e.to_string())?;
             println!(
                 "{}",
-                if removed {
-                    "Removed."
-                } else {
-                    "It was not trusted."
+                match removed {
+                    RemoveOutcome::Removed => "Removed.",
+                    RemoveOutcome::Absent => "It was not trusted.",
+                    RemoveOutcome::Declined => "Windows was told no; it is still trusted.",
                 }
             );
         }
