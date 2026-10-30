@@ -1,0 +1,28 @@
+Crisol - suite de desarrollo web local (PHP + Node)
+
+Este ZIP trae los cuatro programas de Crisol:
+
+  crisol.exe          la linea de comandos
+  crisold.exe         el daemon
+  crisol-shim.exe     el lanzador de php, node, npm y composer
+  crisol-elevate.exe  el ayudante de los pasos que piden administrador
+
+Instalacion recomendada (sin administrador):
+
+  winget install Alexxlml.Crisol
+  crisol setup
+
+Uso sin winget (avanzado): descomprime este ZIP dentro de tu perfil de usuario,
+por ejemplo en %LOCALAPPDATA%\Crisol\bin, y usa la ruta completa de crisol.exe o
+agrega esa carpeta al PATH. Crisol se niega a registrar o elevar programas que
+esten en una carpeta donde otra cuenta pueda escribir.
+
+Antes de actualizar: crisol shutdown. Antes de desinstalar: crisol uninstall --all.
+
+Estas versiones no estan firmadas con Authenticode: Windows puede mostrar
+SmartScreen o "editor desconocido". Comprueba el ZIP contra SHA256SUMS y su firma
+SHA256SUMS.minisig (minisign) antes de usarlo.
+
+Licencia: MIT o Apache-2.0, a tu eleccion (LICENSE-MIT, LICENSE-APACHE).
+Avisos de terceros: THIRD-PARTY-NOTICES.md.
+Proyecto: https://github.com/Alexxlml/crisol

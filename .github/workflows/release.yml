@@ -1,0 +1,86 @@
+# Release flow (ADR-0024, task P.2): a `v*` tag runs the checks, builds, packages, signs
+# SHA256SUMS with minisign and leaves a DRAFT release for the owner to review and publish.
+#
+# Secrets and variables the owner creates (Settings > Secrets and variables > Actions):
+#   secret   MINISIGN_SECRET_KEY    full contents of the minisign secret key file
+#   secret   MINISIGN_PASSWORD      its password (create it empty or leave it out if the key has none)
+#   variable MINISIGN_PUBLIC_KEY    contents of the matching .pub file (not secret)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  # minisign is downloaded with its hash pinned, not taken from whatever the runner has.
+  MINISIGN_VERSION: "0.12"
+  MINISIGN_ZIP_SHA256: "37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # creating the draft release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag must match the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' src/Cargo.toml)"
+          echo "tag=$tag workspace=$version"
+          [ -n "$version" ] && [ "$tag" = "$version" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version $version in src/Cargo.toml"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Checks (fmt, clippy, tests)
+        run: bash src/scripts/check.sh
+
+      - name: Build release programs
+        working-directory: src
+        run: cargo build --release --workspace
+
+      - name: Package
+        run: bash src/scripts/package.sh "$VERSION" dist
+
+      - name: Install minisign
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/minisign.zip" "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-win64.zip"
+          echo "$MINISIGN_ZIP_SHA256 *$RUNNER_TEMP/minisign.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/minisign.zip" -d "$RUNNER_TEMP/minisign"
+          echo "$(cygpath -w "$RUNNER_TEMP/minisign/minisign-win64/x86_64")" >> "$GITHUB_PATH"
+
+      - name: Sign SHA256SUMS
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          MINISIGN_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "::error::secret MINISIGN_SECRET_KEY is not set"; exit 1; }
+          [ -n "$MINISIGN_PUBLIC_KEY" ] || { echo "::error::variable MINISIGN_PUBLIC_KEY is not set"; exit 1; }
+          keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys"
+          trap 'rm -rf "$keys"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$keys/release.key"
+          printf '%s\n' "$MINISIGN_PUBLIC_KEY" > "$keys/release.pub"
+          bash src/scripts/sign-release.sh dist "$keys/release.key" "$keys/release.pub"
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--draft --verify-tag --title "Crisol $VERSION" --generate-notes)
+          case "$VERSION" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
+            "dist/crisol-$VERSION-windows-x64.zip" dist/SHA256SUMS dist/SHA256SUMS.minisig

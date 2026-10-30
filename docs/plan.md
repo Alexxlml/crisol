@@ -162,6 +162,7 @@ Para cada uno: entrada de catálogo, plantilla de config, inicialización del di
 Decidido en la ADR-0024: un solo canal, winget (paquete portable dentro de un ZIP), y sin firma por ahora.
 
 - **P.2** Flujo de publicación: etiqueta `v*` → `check.sh` → `cargo build --release` → ZIP, `SHA256SUMS` y firma minisign como borrador de release.
+  - *Hecho (2026-10-30):* `.github/workflows/release.yml`, `src/scripts/package.sh` y `sign-release.sh`, y `docs/publicar.md` (secretos que debe crear el propietario). El flujo no se ha ejecutado en GitHub; el empaquetado y la firma sí se probaron en local.
 - **P.3** `crisol setup` en `crisol-core` y en el CLI (plan, acuerdo y ejecución: shims y, preguntando cada uno, `trust`, `system install` y `autostart`). Programas hermanos encontrados a través de enlaces simbólicos. `uninstall --all` reconoce una instalación de winget y no borra sus programas, y `doctor` avisa de un daemon de otra versión.
   - *Aceptación:* en Windows Sandbox, instalar con winget (o `winget install --manifest`) → `setup` → usar → `uninstall --all` → `winget uninstall` deja el sistema como al inicio, como en la ADR-0022. Comprobar si la carpeta del paquete lleva la versión y qué hace winget si no puede crear el enlace.
 - **P.4** Manifiesto de winget, PR a `microsoft/winget-pkgs` y guía de instalación en `docs/`.
