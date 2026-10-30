@@ -16,7 +16,7 @@ use crisol_protocol::{ErrorCode, RpcError};
 
 use crate::config::Config;
 use crate::dbservice::{plan, Auth, DbAdmin, DbError, DbKind, DbService, NoAdmin};
-use crate::engine::home_error;
+use crate::engine::{home_error, NoSystemChecks, SystemChecks};
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::ports::PortProbe;
 use crate::process::ProcessSupervisor;
@@ -33,6 +33,8 @@ pub struct DbStack {
     ports: Arc<dyn PortProbe>,
     dirs: Arc<dyn PrivateDirs>,
     admin: Arc<dyn DbAdmin>,
+    /// What the system lacks for a program to run (the Visual C++ runtime).
+    system: Arc<dyn SystemChecks>,
     services: BTreeMap<DbKind, DbService>,
     /// Restarts waiting for the old process to be gone.
     restarting: BTreeSet<DbKind>,
@@ -78,6 +80,7 @@ impl DbStack {
             ports,
             dirs,
             admin: Arc::new(NoAdmin),
+            system: Arc::new(NoSystemChecks),
             services: BTreeMap::new(),
             restarting: BTreeSet::new(),
             notices: Vec::new(),
@@ -90,6 +93,14 @@ impl DbStack {
     #[must_use]
     pub fn with_admin(mut self, admin: Arc<dyn DbAdmin>) -> Self {
         self.admin = admin;
+        self
+    }
+
+    /// What tells whether the system has what the programs need (a database that needs the
+    /// Visual C++ runtime is refused while it is missing).
+    #[must_use]
+    pub fn with_system(mut self, system: Arc<dyn SystemChecks>) -> Self {
+        self.system = system;
         self
     }
 
@@ -170,6 +181,18 @@ impl DbStack {
             DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
             other => RpcError::new(ErrorCode::Io, other.to_string()),
         })?;
+        // Refused here with what to do, rather than failing with only an exit code.
+        if let Some((why, fix)) = self.system.missing_runtime(&plan.version.path) {
+            return Err(RpcError::new(
+                ErrorCode::NotAvailable,
+                format!(
+                    "{} {} cannot start: {why}",
+                    kind.service(),
+                    plan.version.version
+                ),
+            )
+            .with_fix(fix));
+        }
         // The passwords live in `secrets/`, a private folder (ADR-0006, ADR-0008): if other
         // accounts can write in it, none is read from it or put in it.
         if kind.auth() != Auth::None {

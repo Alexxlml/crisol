@@ -80,6 +80,14 @@ pub trait SystemChecks: Send + Sync {
     fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
         None
     }
+
+    /// Whether the programs installed in `install_dir` need something of the system that is
+    /// not there (the Visual C++ runtime on Windows): then why, and what to do. Asked before a
+    /// service is started, so that it is refused with that sentence instead of failing with
+    /// only an exit code. Read only.
+    fn missing_runtime(&self, _install_dir: &Path) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// No system checks.

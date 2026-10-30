@@ -12,6 +12,7 @@ use std::path::Path;
 use crisol_protocol::{Check, CheckStatus};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
+use crate::pe_imports::needs_vc_runtime;
 use crate::system_paths::system_directory;
 use crate::user_path::read_value;
 
@@ -82,6 +83,35 @@ fn vc_runtime_dlls_in(system: &Path) -> bool {
 
 fn vc_runtime_present() -> bool {
     vc_runtime_version().is_some() || system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir))
+}
+
+/// Whether the programs installed in `install_dir` (its `.exe` files and those of its `bin`)
+/// import the Visual C++ runtime while it is not installed: then the reason and what to do.
+/// PHP and the database servers do; Nginx, Node, Mailpit and Redis do not.
+#[must_use]
+pub fn missing_runtime(install_dir: &Path) -> Option<(String, String)> {
+    if vc_runtime_present() || !installation_needs_vc_runtime(install_dir) {
+        return None;
+    }
+    Some((
+        "it needs the Microsoft Visual C++ runtime (x64), which is not installed".to_owned(),
+        format!("install it from {VC_RUNTIME_URL}, then start it again"),
+    ))
+}
+
+/// Whether any `.exe` in `install_dir` or in its `bin` imports the Visual C++ runtime.
+fn installation_needs_vc_runtime(install_dir: &Path) -> bool {
+    [install_dir.to_path_buf(), install_dir.join("bin")]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        })
+        .any(|path| crate::pe_imports::imports(&path).is_ok_and(|dlls| needs_vc_runtime(&dlls)))
 }
 
 /// The line of `doctor` about the Visual C++ runtime: PHP and the database servers do not
@@ -208,5 +238,38 @@ mod tests {
             "{hint}"
         );
         assert!(hint.contains("Remove-MpPreference"), "{hint}");
+    }
+
+    #[test]
+    fn an_installation_needs_the_runtime_only_if_one_of_its_programs_imports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!installation_needs_vc_runtime(tmp.path()), "empty");
+        // Crisol's own programs link the runtime statically: they do not need it.
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), bin.join("server.exe")).unwrap();
+        std::fs::write(tmp.path().join("broken.exe"), "MZ").unwrap();
+        assert!(!installation_needs_vc_runtime(tmp.path()));
+        // The real ones, where this computer has them (the owner's): PHP and MySQL import it,
+        // Nginx does not.
+        let real = std::path::Path::new(r"C:\Crisol\bin");
+        for (tool, needs) in [
+            ("php", true),
+            ("mysql", true),
+            ("postgresql", true),
+            ("nginx", false),
+        ] {
+            let Ok(versions) = std::fs::read_dir(real.join(tool)) else {
+                continue;
+            };
+            for version in versions.flatten() {
+                assert_eq!(
+                    installation_needs_vc_runtime(&version.path()),
+                    needs,
+                    "{}",
+                    version.path().display()
+                );
+            }
+        }
     }
 }

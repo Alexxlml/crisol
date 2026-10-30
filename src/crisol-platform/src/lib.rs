@@ -27,6 +27,8 @@ mod nrpt;
 #[cfg(windows)]
 mod parent_process;
 #[cfg(windows)]
+mod pe_imports;
+#[cfg(windows)]
 mod port_probe;
 #[cfg(windows)]
 mod private_dir;

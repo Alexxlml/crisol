@@ -109,6 +109,10 @@ impl SystemChecks for WindowsSystemChecks {
     fn slow_start_hint(&self, paths: &CrisolPaths) -> Option<String> {
         Some(crate::diagnose::slow_start_hint(&paths.data_dir()))
     }
+
+    fn missing_runtime(&self, install_dir: &std::path::Path) -> Option<(String, String)> {
+        crate::diagnose::missing_runtime(install_dir)
+    }
 }
 
 fn path_check(paths: &CrisolPaths) -> Check {

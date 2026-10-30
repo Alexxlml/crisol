@@ -101,7 +101,8 @@ impl Daemon {
             engine.deps().probe.clone(),
             engine.deps().dirs.clone(),
         )
-        .with_admin(engine.deps().db_admin.clone());
+        .with_admin(engine.deps().db_admin.clone())
+        .with_system(engine.deps().system.clone());
         Self {
             engine,
             stack: None,
@@ -555,6 +556,17 @@ impl Daemon {
             return Ok(done("The web stack is already running", false));
         }
         let (stack, config, plan) = self.build()?;
+        // A PHP that cannot run here is refused with what to do (the Visual C++ runtime),
+        // before anything starts.
+        for (version, installed) in plan.php_versions() {
+            if let Some((why, fix)) = self.engine.deps().system.missing_runtime(&installed.path) {
+                return Err(RpcError::new(
+                    ErrorCode::NotAvailable,
+                    format!("PHP {version} cannot start: {why}"),
+                )
+                .with_fix(fix));
+            }
+        }
         self.built_with = Some(Built::of(&config));
         let mut stack = stack;
         let applied = match stack.apply(&plan, now) {

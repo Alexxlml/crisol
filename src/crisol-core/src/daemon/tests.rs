@@ -1251,3 +1251,51 @@ fn a_first_start_that_makes_the_data_is_not_measured() {
     }
     assert!(line(&doctor(&mut rig, now), "database startup").is_none());
 }
+
+/// A system without the Visual C++ runtime, where PHP and MySQL need it and Nginx does not.
+struct NoVcRuntime;
+
+impl SystemChecks for NoVcRuntime {
+    fn checks(&self, _paths: &CrisolPaths) -> Vec<Check> {
+        Vec::new()
+    }
+
+    fn missing_runtime(&self, install_dir: &std::path::Path) -> Option<(String, String)> {
+        let tool = install_dir.parent()?.file_name()?.to_string_lossy();
+        (tool == "php" || tool == "mysql")
+            .then(|| ("it needs the runtime".to_owned(), "install it".to_owned()))
+    }
+}
+
+#[test]
+fn php_and_a_database_that_need_a_missing_runtime_are_refused_with_what_to_do() {
+    let mut rig = Rig::with_system(Arc::new(NoVcRuntime));
+    rig.with_php();
+    let error = rig.call(&Call::Start { service: None }, 0).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotAvailable);
+    assert!(
+        error
+            .message
+            .contains("PHP 8.4.26 cannot start: it needs the runtime"),
+        "{error:?}"
+    );
+    assert_eq!(error.fix.as_deref(), Some("install it"));
+    assert_eq!(rig.supervisor.spawned().len(), 0, "nothing was launched");
+
+    rig.with_mysql();
+    let error = rig
+        .call(
+            &Call::Start {
+                service: Some("mysql".to_owned()),
+            },
+            0,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotAvailable);
+    assert!(
+        error.message.starts_with("mysql 8.4.11 cannot start"),
+        "{error:?}"
+    );
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("stopped"));
+    assert_eq!(rig.supervisor.spawned().len(), 0);
+}
