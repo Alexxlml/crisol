@@ -7,6 +7,12 @@ Este es el contrato entre el daemon (`crisold`) y cualquier cliente: el CLI hoy,
 - **JSON-RPC 2.0**, un objeto JSON por línea, terminado en `\n`, sin saltos de línea dentro. Una línea de más de **1 MiB** (`MAX_LINE`) cierra la conexión.
 - **Una tubería con nombre por home y por usuario:** `\\.\pipe\crisol-<8 hex>-<8 hex>`. El primer grupo son los primeros 4 bytes del SHA-256 del SID del usuario en mayúsculas; el segundo, los del SHA-256 de la ruta de la home en minúsculas, con `\` como separador y sin `\` final (`crisol_core::ipc::pipe_name`).
 - **Solo para el usuario:** la tubería tiene una DACL protegida que da acceso al usuario que corre el daemon y a `SYSTEM` (`D:P(A;;GA;;;<SID>)(A;;GA;;;SY)`), rechaza clientes remotos y se crea con `first_pipe_instance`.
+- **Lo que debe hacer el cliente** antes de enviar nada. El nombre de la tubería sale de datos que no son secretos, así que, si el daemon no está corriendo, otra cuenta del equipo puede crear antes una tubería con ese nombre. Un cliente que no lo comprueba le enviaría a esa cuenta lo que pida (las contraseñas de `credentials`, por ejemplo) y creería sus respuestas. Por eso:
+  1. abre la tubería con `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, para que el servidor no pueda actuar en su nombre;
+  2. obtiene el proceso del servidor con `GetNamedPipeServerProcessId`, lo abre con `PROCESS_QUERY_LIMITED_INFORMATION` y lee el SID del usuario de su token;
+  3. si no es el SID del propio cliente, cierra la conexión sin escribir nada.
+
+  `crisol_platform::connect_to_daemon` lo hace así; cualquier otro cliente, en Rust o no, debe hacer lo mismo.
 - **Rutas como texto**, absolutas, con la forma de Windows.
 - Cada conexión atiende **una petición a la vez**: lee una, la responde y lee la siguiente. Un cliente que necesite hacer algo mientras espera una operación larga abre otra conexión.
 
