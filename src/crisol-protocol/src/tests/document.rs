@@ -257,3 +257,30 @@ fn the_protocol_document_names_every_method_reply_event_and_error() {
     assert!(DOC.contains(&format!("`PROTOCOL_VERSION = {PROTOCOL_VERSION}`")));
     assert!(DOC.contains(&format!("**{} MiB**", MAX_LINE >> 20)));
 }
+
+/// Review of phase 12, finding 5: the examples are messages this crate reads, so a renamed
+/// field or type does not leave a wrong example behind.
+#[test]
+fn every_example_of_the_protocol_document_is_a_message_that_reads() {
+    let examples: Vec<&str> = DOC
+        .lines()
+        .filter(|line| line.starts_with("{\"jsonrpc\""))
+        .collect();
+    assert!(examples.len() >= 4, "{examples:?}");
+    for line in examples {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        if value.get("id").is_some() && value.get("method").is_some() {
+            let request: Request = from_line(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(serde_json::to_value(&request).unwrap(), value, "{line}");
+            continue;
+        }
+        match from_line::<Message>(line).unwrap_or_else(|e| panic!("{line}: {e}")) {
+            Message::Notification(note) => {
+                assert_eq!(serde_json::to_value(&note).unwrap(), value, "{line}");
+            }
+            Message::Response(response) => {
+                assert_eq!(serde_json::to_value(&response).unwrap(), value, "{line}");
+            }
+        }
+    }
+}
