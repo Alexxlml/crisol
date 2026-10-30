@@ -33,6 +33,15 @@ Este es el contrato entre el daemon (`crisold`) y cualquier cliente: el CLI hoy,
 
 Para distinguirlas al leer: una notificación tiene `method` y `params`; una respuesta, `id` y `result` o `error`.
 
+## Un cliente mínimo
+
+`crisol-platform/examples/watch.rs` es un cliente completo en unas 150 líneas: se suscribe y muestra el estado de los servicios mientras cambia (`cargo run -p crisol-platform --example watch`). Sigue el orden que debería seguir cualquier carcasa:
+
+1. `hello`, para saber que el daemon habla esta versión;
+2. `subscribe` **antes** de pedir el estado, para que ningún cambio caiga entre los dos;
+3. `status`, cuya respuesta sustituye lo que dijeran los eventos llegados antes de ella;
+4. desde ahí, cada evento actualiza la vista, hasta `shutting_down` o el cierre de la conexión.
+
 ## Versiones y compatibilidad
 
 - **`PROTOCOL_VERSION = 3`.** El primer mensaje de una conexión debería ser `hello` con esa versión. El daemon responde `unsupported_protocol` (código 1) a otra versión. No exige `hello`, pero un cliente que no lo envía no sabe si habla con un daemon compatible.

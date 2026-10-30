@@ -311,6 +311,7 @@ dependencies = [
  "crisol-core",
  "crisol-protocol",
  "rcgen",
+ "serde_json",
  "tempfile",
  "windows",
 ]

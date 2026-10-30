@@ -155,6 +155,7 @@ Para cada uno: entrada de catálogo, plantilla de config, inicialización del di
 
 - **F12.1** Documentar el protocolo en `docs/protocolo.md` (cada método, parámetros, errores, eventos) generado o verificado desde `crisol-protocol`.
 - **F12.2** Cliente de ejemplo mínimo que se suscribe a eventos y muestra el estado en consola: es la prueba de que cualquier carcasa (Slint, Tauri, web) puede montarse encima.
+  - *Hecho (2026-10-30):* `crisol-platform/examples/watch.rs` (`cargo run -p crisol-platform --example watch`). Usa solo `crisol-protocol` y la conexión por tubería; sus pruebas corren con `cargo test --workspace`.
 
 ## Empaquetado (cuando haya versiones publicadas)
 
