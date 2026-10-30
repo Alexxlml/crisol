@@ -24,7 +24,7 @@ mod reply;
 pub use call::{Call, Tool};
 pub use client::{read_bounded_line, Client, ClientError};
 pub use error::{ErrorCode, RpcError};
-pub use event::Event;
+pub use event::{Event, Numbered};
 pub use reply::{
     AdvisoryInfo, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, HelloInfo, InstalledInfo,
     LogChunk, RemovedInfo, Reply, ServiceInfo, SiteInfo, StatusInfo, UsedInfo, VersionInfo,
@@ -127,18 +127,24 @@ pub struct Notification {
     pub jsonrpc: String,
     /// Always `"event"`.
     pub method: String,
-    /// What happened.
-    pub params: Event,
+    /// What happened, with its number.
+    pub params: Numbered,
 }
 
 impl Notification {
-    /// A notification carrying `event`.
+    /// A notification carrying `event`, with no number (the progress of a call).
     #[must_use]
     pub fn new(event: Event) -> Self {
+        Self::numbered(Numbered { event, seq: None })
+    }
+
+    /// A notification carrying an event of the daemon's stream, with its number.
+    #[must_use]
+    pub fn numbered(params: Numbered) -> Self {
         Self {
             jsonrpc: JSONRPC.to_owned(),
             method: "event".to_owned(),
-            params: event,
+            params,
         }
     }
 }

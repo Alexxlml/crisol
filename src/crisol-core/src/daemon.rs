@@ -361,6 +361,8 @@ impl Daemon {
         Ok(Reply::Status(StatusInfo {
             services,
             warnings: Vec::new(),
+            // The events are numbered by whoever sends them (`crisold`), which adds it.
+            seq: None,
         }))
     }
 

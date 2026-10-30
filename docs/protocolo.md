@@ -34,7 +34,7 @@ Este es el contrato entre el daemon (`crisold`) y cualquier cliente: el CLI hoy,
 **Notificación** (daemon → cliente), sin `id`:
 
 ```json
-{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"nginx","state":"running"}}
+{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"nginx","state":"running","seq":12}}
 ```
 
 Para distinguirlas al leer: una notificación tiene `method` y `params`; una respuesta, `id` y `result` o `error`.
@@ -45,8 +45,8 @@ Para distinguirlas al leer: una notificación tiene `method` y `params`; una res
 
 1. `hello`, para saber que el daemon habla esta versión;
 2. `subscribe` **antes** de pedir el estado, para que ningún cambio caiga entre los dos;
-3. `status`, cuya respuesta sustituye lo que dijeran los eventos llegados antes de ella;
-4. desde ahí, cada evento actualiza la vista, hasta `shutting_down` o el cierre de la conexión.
+3. `status`, cuya respuesta sustituye la vista. La respuesta y los eventos llegan por caminos distintos, así que un evento más nuevo que la foto puede llegar antes que ella: los que llegan durante la llamada se guardan, y después de la foto se aplican solo los de `seq` mayor que el `seq` de la respuesta (ver «Eventos»);
+4. desde ahí, cada evento actualiza la vista, hasta `shutting_down` o el cierre de la conexión. Uno con `seq` menor o igual al de la foto ya está en ella. Si falta un número, se perdieron eventos y hay que volver al paso 3.
 
 ## Versiones y compatibilidad
 
@@ -224,6 +224,7 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 
 - `services`: lista, en orden estable, de `{name, state, detail?}`. `state` es `stopped`, `starting`, `running`, `stopping` o `failed`; `detail` dice por qué falló.
 - `warnings`: textos.
+- `seq?`: el número del último evento que la foto ya refleja (ver «Eventos»). Lo pone el daemon también en la respuesta final de `start` y `restart`; falta cuando contesta el CLI sin daemon.
 
 ### `done`
 
@@ -272,7 +273,14 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 
 ## Eventos
 
-`params` de una notificación es un objeto con `type`:
+`params` de una notificación es un objeto con `type`, los campos de ese tipo y `seq?`.
+
+**`seq`, el número del evento.** El daemon numera sus eventos desde 1, de uno en uno, en el orden en que los envía a todos los suscriptores. La respuesta `status` lleva el `seq` del último evento enviado antes de hacer la foto, y la foto ya refleja ese evento y los anteriores. Con eso, un cliente sabe:
+
+- **qué eventos ya están en la foto:** los de `seq` menor o igual al de la respuesta. La respuesta y los eventos llegan a la conexión por caminos distintos, así que un evento más nuevo que la foto puede llegar antes que ella, y uno más viejo, después;
+- **que perdió eventos:** a un cliente que no lee a tiempo el daemon le descarta eventos y no le cierra la conexión, así que un salto en la numeración significa que debe pedir `status` otra vez.
+
+El progreso de una operación que solo va a quien la pidió (`progress` durante `install`) no lleva `seq` y no cuenta para la numeración. Un daemon anterior a este campo no lo envía: entonces la respuesta `status` sustituye lo que dijeran los eventos llegados antes de ella, sin más garantías.
 
 ### `service_state`
 

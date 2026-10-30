@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crisol_protocol::{
-    from_line, to_line, Call, DoneInfo, ErrorCode, Event, Notification, Reply, Request, Response,
-    RpcError, JSONRPC, MAX_LINE,
+    from_line, to_line, Call, DoneInfo, ErrorCode, Event, Notification, Numbered, Reply, Request,
+    Response, RpcError, JSONRPC, MAX_LINE,
 };
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
@@ -32,6 +32,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch, Notify};
 use tracing::{debug, warn};
 
 use crate::actor::{Input, Msg};
+use crate::bus::Bus;
 
 /// Lines waiting to be written to one client.
 pub const OUT_CAPACITY: usize = 1024;
@@ -48,7 +49,7 @@ pub struct Shared {
     /// To the actor.
     pub actor: std::sync::mpsc::Sender<Input>,
     /// Every event, for the connections that subscribed.
-    pub events: broadcast::Sender<Event>,
+    pub events: Bus,
     /// Becomes `true` when the daemon is leaving.
     pub closing: watch::Receiver<bool>,
 }
@@ -215,7 +216,7 @@ async fn ask(shared: &Shared, call: Call, out: &Out) -> Result<Reply, RpcError> 
 }
 
 fn forward_events(
-    mut events: broadcast::Receiver<Event>,
+    mut events: broadcast::Receiver<Numbered>,
     out: Out,
     mut closing: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -223,7 +224,7 @@ fn forward_events(
         loop {
             tokio::select! {
                 received = events.recv() => match received {
-                    Ok(event) => out.notify(&Notification::new(event)),
+                    Ok(event) => out.notify(&Notification::numbered(event)),
                     // A subscriber that is too slow loses events, not its connection.
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -231,7 +232,7 @@ fn forward_events(
                 _ = closing.wait_for(|leaving| *leaving) => {
                     // The daemon is leaving: pass on what was said before it did.
                     while let Ok(event) = events.try_recv() {
-                        out.notify(&Notification::new(event));
+                        out.notify(&Notification::numbered(event));
                     }
                     break;
                 }

@@ -7,7 +7,9 @@
 use std::io::{self, BufRead, Write};
 
 use crate::MAX_LINE;
-use crate::{from_line, to_line, Call, Event, LineError, Message, Reply, Request, RpcError};
+use crate::{
+    from_line, to_line, Call, Event, LineError, Message, Numbered, Reply, Request, RpcError,
+};
 
 /// Why a call did not give a reply.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +63,16 @@ impl<R: BufRead, W: Write> Client<R, W> {
         call: &Call,
         on_event: &mut dyn FnMut(Event),
     ) -> Result<Reply, ClientError> {
+        self.call_with_numbered(call, &mut |numbered| on_event(numbered.event))
+    }
+
+    /// Like [`call_with_events`](Self::call_with_events), with the number of each event: what
+    /// a subscriber needs to tell which ones a `status` answer already includes.
+    pub fn call_with_numbered(
+        &mut self,
+        call: &Call,
+        on_event: &mut dyn FnMut(Numbered),
+    ) -> Result<Reply, ClientError> {
         let id = self.next_id;
         self.next_id += 1;
         let line = to_line(&Request::new(id, call.clone()))
@@ -90,6 +102,11 @@ impl<R: BufRead, W: Write> Client<R, W> {
     /// Waits for the next event (after `subscribe`). `None` when the daemon closes the
     /// connection.
     pub fn next_event(&mut self) -> Result<Option<Event>, ClientError> {
+        Ok(self.next_numbered()?.map(|numbered| numbered.event))
+    }
+
+    /// Like [`next_event`](Self::next_event), with the event's number.
+    pub fn next_numbered(&mut self) -> Result<Option<Numbered>, ClientError> {
         loop {
             match self.read_message() {
                 Ok(Message::Notification(note)) => return Ok(Some(note.params)),

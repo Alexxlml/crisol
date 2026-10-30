@@ -19,8 +19,10 @@ use std::time::{Duration, Instant};
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::Engine;
 use crisol_protocol::{Call, DoneInfo, ErrorCode, Event, Reply, RpcError};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::oneshot;
 use tracing::{info, warn};
+
+use crate::bus::Bus;
 
 /// How often the services are advanced when nobody is asking for anything.
 const TICK: Duration = Duration::from_millis(150);
@@ -102,7 +104,7 @@ pub fn run(
     mut daemon: Daemon,
     messages: &Receiver<Input>,
     inbox: Sender<Input>,
-    events: &broadcast::Sender<Event>,
+    events: &Bus,
     timing: Timing,
 ) {
     let jobs = spawn_worker(daemon.engine().clone(), events.clone(), inbox);
@@ -145,12 +147,12 @@ pub fn run(
         }
         for event in daemon.tick(Instant::now()) {
             log_event(&event);
-            let _ = events.send(event);
+            events.send(event);
         }
         for note in daemon.take_notes() {
             info!("{note}");
         }
-        release(&mut daemon, &mut waiters, timing.settle);
+        release(&mut daemon, &mut waiters, timing.settle, events);
         if !daemon.shutdown_requested() {
             continue;
         }
@@ -185,19 +187,15 @@ pub fn run(
 
 /// The last event: every service is down (or was killed) and the daemon is about to leave, so
 /// a subscriber that stops reading here has missed nothing.
-fn say_goodbye(events: &broadcast::Sender<Event>) {
+fn say_goodbye(events: &Bus) {
     log_event(&Event::ShuttingDown);
-    let _ = events.send(Event::ShuttingDown);
+    events.send(Event::ShuttingDown);
 }
 
 /// The worker thread: runs the long operations one after another and sends each result to the
 /// actor. It ends when the actor drops its end. `None` if the thread could not be made; every
 /// long operation is then refused.
-fn spawn_worker(
-    engine: Engine,
-    events: broadcast::Sender<Event>,
-    inbox: Sender<Input>,
-) -> Option<Sender<Job>> {
+fn spawn_worker(engine: Engine, events: Bus, inbox: Sender<Input>) -> Option<Sender<Job>> {
     let (jobs, queue) = mpsc::channel::<Job>();
     std::thread::Builder::new()
         .name("crisold-worker".to_owned())
@@ -212,7 +210,7 @@ fn spawn_worker(
                 let mut emit = |event: Event| {
                     // A client that does not read loses progress, not the daemon its memory.
                     let _ = mine.try_send(event.clone());
-                    let _ = events.send(event);
+                    events.send(event);
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| engine.handle(&call, &mut emit)))
                     .ok()
@@ -240,7 +238,7 @@ fn spawn_worker(
 /// What `answer` works on.
 struct Ctx<'a> {
     daemon: &'a mut Daemon,
-    events: &'a broadcast::Sender<Event>,
+    events: &'a Bus,
     waiters: &'a mut Vec<Waiter>,
     jobs: Option<&'a Sender<Job>>,
     busy: &'a mut Vec<String>,
@@ -275,7 +273,7 @@ impl Ctx<'_> {
             log_event(&event);
             // A client that does not read loses progress, not the daemon its memory.
             let _ = mine.try_send(event.clone());
-            let _ = self.events.send(event);
+            self.events.send(event);
         };
         let outcome = self.daemon.handle(&call, Instant::now(), &mut emit);
         let waits = matches!(
@@ -290,7 +288,9 @@ impl Ctx<'_> {
                 deadline: Instant::now() + self.timing.settle,
             }),
             Ok(first) => {
-                let _ = reply.send(finish(self.daemon, &call, first));
+                let seq = self.events.last();
+                let outcome = finish(self.daemon, &call, first);
+                let _ = reply.send(numbered(outcome, seq));
             }
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -339,7 +339,7 @@ fn refuse(reply: oneshot::Sender<Result<Reply, RpcError>>) {
 }
 
 /// Answers the waiters whose wait is over.
-fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration) {
+fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration, events: &Bus) {
     if waiters.is_empty() {
         return;
     }
@@ -348,8 +348,9 @@ fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration) {
     let mut still = Vec::new();
     for waiter in waiters.drain(..) {
         if settled {
+            let seq = events.last();
             let outcome = finish(daemon, &waiter.call, waiter.first);
-            let _ = waiter.reply.send(outcome);
+            let _ = waiter.reply.send(numbered(outcome, seq));
         } else if now >= waiter.deadline {
             let _ = waiter.reply.send(Err(RpcError::new(
                 ErrorCode::Conflict,
@@ -364,6 +365,20 @@ fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration) {
         }
     }
     *waiters = still;
+}
+
+/// A `status` picture says which events it already includes: those numbered up to `seq`, the
+/// last one sent before the picture was taken (see [`Bus`]). Taking the number first errs on
+/// the safe side: an event of the worker sent in between is applied again by the client, and
+/// none is skipped.
+fn numbered(outcome: Result<Reply, RpcError>, seq: u64) -> Result<Reply, RpcError> {
+    outcome.map(|reply| match reply {
+        Reply::Status(mut info) => {
+            info.seq = Some(seq);
+            Reply::Status(info)
+        }
+        other => other,
+    })
 }
 
 /// The final answer of a call that waited: the services as they ended up, or why they did not

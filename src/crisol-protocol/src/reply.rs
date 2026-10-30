@@ -89,6 +89,11 @@ pub struct StatusInfo {
     pub services: Vec<ServiceInfo>,
     /// Things to tell the user.
     pub warnings: Vec<String>,
+    /// The number of the last event sent before this picture was taken: it already includes
+    /// that one and every earlier one. Absent when nothing numbers the events (the CLI
+    /// answering by itself, with no daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// "Done", with a sentence and anything worth adding.

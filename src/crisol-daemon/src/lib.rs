@@ -13,10 +13,12 @@
 //! synchronous code, and the actor is an ordinary thread.
 
 mod actor;
+mod bus;
 mod connection;
 mod logging;
 mod server;
 
 pub use actor::Timing;
+pub use bus::Bus;
 pub use connection::{serve as serve_connection, Shared};
 pub use server::{run, DnsOptions, Options};

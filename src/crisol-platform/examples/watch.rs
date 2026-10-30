@@ -17,8 +17,11 @@
 //!
 //! 1. `hello`, to know the daemon speaks this protocol;
 //! 2. `subscribe` **before** asking for the state, so that no change falls between the two;
-//! 3. `status`, whose answer replaces whatever the events said before it;
-//! 4. from then on, every event updates the board.
+//! 3. `status`, whose answer replaces the board; the answer and the events reach the client by
+//!    different paths, so an event numbered after the answer's `seq` may arrive before it, and
+//!    is applied on top;
+//! 4. from then on, every event updates the board. One numbered up to that `seq` is already in
+//!    it; a skipped number means events were lost, and the state is asked for again.
 
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
@@ -67,15 +70,7 @@ fn watch<R: BufRead, W: Write>(
     client.call(&Call::Subscribe).map_err(|e| e.to_string())?;
 
     let mut board = Board::default();
-    let status = client
-        .call_with_events(&Call::Status { service: None }, &mut |event| {
-            board.apply(&event);
-        })
-        .map_err(|e| e.to_string())?;
-    let Reply::Status(status) = status else {
-        return Err(format!("`status` answered {status:?}"));
-    };
-    board.replace(status);
+    let mut last = refresh(client, &mut board)?;
 
     let print = |out: &mut dyn Write, line: &str| -> Result<(), String> {
         writeln!(out, "{line}")
@@ -87,9 +82,32 @@ fn watch<R: BufRead, W: Write>(
         print(out, &line)?;
     }
     loop {
-        let Some(event) = client.next_event().map_err(|e| e.to_string())? else {
+        let Some(numbered) = client.next_numbered().map_err(|e| e.to_string())? else {
             return print(out, "the daemon closed the connection");
         };
+        // Only the daemon's stream is numbered; the progress of a call is not.
+        if let (Some(seq), Some(previous)) = (numbered.seq, last) {
+            if seq <= previous {
+                // Already in the last picture.
+                continue;
+            }
+            if seq > previous + 1 {
+                let missing = seq - previous - 1;
+                print(
+                    out,
+                    &format!("{missing} events were lost; asking for the state again"),
+                )?;
+                last = refresh(client, &mut board)?;
+                for line in board.table() {
+                    print(out, &line)?;
+                }
+                if last.is_some_and(|picture| seq <= picture) {
+                    continue;
+                }
+            }
+            last = Some(seq);
+        }
+        let event = numbered.event;
         print(out, &board.apply(&event))?;
         match event {
             Event::ServiceState { .. } => print(out, &format!("  now: {}", board.summary()))?,
@@ -97,6 +115,35 @@ fn watch<R: BufRead, W: Write>(
             _ => {}
         }
     }
+}
+
+/// Asks for `status` and puts it on the board, with the events that arrived meanwhile and are
+/// newer than it on top. Returns the number of the last event the board includes, if the
+/// daemon numbers them.
+fn refresh<R: BufRead, W: Write>(
+    client: &mut Client<R, W>,
+    board: &mut Board,
+) -> Result<Option<u64>, String> {
+    let mut early = Vec::new();
+    let status = client
+        .call_with_numbered(&Call::Status { service: None }, &mut |numbered| {
+            early.push(numbered);
+        })
+        .map_err(|e| e.to_string())?;
+    let Reply::Status(status) = status else {
+        return Err(format!("`status` answered {status:?}"));
+    };
+    let mut last = status.seq;
+    board.replace(status);
+    for numbered in early {
+        if let (Some(seq), Some(picture)) = (numbered.seq, last) {
+            if seq > picture {
+                board.apply(&numbered.event);
+                last = Some(seq);
+            }
+        }
+    }
+    Ok(last)
 }
 
 /// What the client knows about the services: the last `status`, updated by the events.
@@ -226,6 +273,7 @@ mod tests {
                 service("php-8.4.26", "stopped"),
             ],
             warnings: vec![],
+            seq: None,
         });
         assert_eq!(board.apply(&state("nginx", "running")), "nginx: running");
         let failed = Event::ServiceState {
@@ -255,6 +303,7 @@ mod tests {
         board.replace(StatusInfo {
             services: vec![service("nginx", "running")],
             warnings: vec!["no PHP installed".to_owned()],
+            seq: None,
         });
         assert_eq!(
             board.table(),
@@ -353,5 +402,44 @@ mod tests {
         assert!(String::from_utf8(out)
             .unwrap()
             .ends_with("no services\nthe daemon closed the connection\n"));
+    }
+
+    /// Review of phase 12, finding 1: the answer to `status` and the events travel by
+    /// different paths. An event newer than the picture that arrives before it is kept; one the
+    /// picture already includes is not applied again; a skipped number asks for the state again.
+    #[test]
+    fn the_numbers_put_the_events_and_the_status_in_order() {
+        let daemon = [
+            r#"{"jsonrpc":"2.0","id":1,"result":{"type":"hello","daemon":"0.1.0","protocol":3,"home":"C:\\Crisol"}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"type":"done","message":"subscribed","changed":true,"warnings":[]}}"#,
+            // Older than the picture, and newer than it: only the second one counts.
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"nginx","state":"stopped","seq":4}}"#,
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"nginx","state":"running","seq":6}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"type":"status","services":[{"name":"nginx","state":"starting"}],"warnings":[],"seq":5}}"#,
+            // Already applied: skipped without a word.
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"nginx","state":"running","seq":6}}"#,
+            // 7 and 8 were lost: the state is asked for again.
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"service_state","service":"php-8.4.26","state":"running","seq":9}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"result":{"type":"status","services":[{"name":"nginx","state":"stopping"},{"name":"php-8.4.26","state":"running"}],"warnings":[],"seq":9}}"#,
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"shutting_down","seq":10}}"#,
+        ]
+        .map(|line| format!("{line}\n"))
+        .concat();
+        let mut client = Client::new(Cursor::new(daemon.into_bytes()), Vec::new());
+        let mut out = Vec::new();
+
+        watch(&mut client, &mut out).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "crisold 0.1.0 at C:\\Crisol\n\
+             \x20 nginx  running\n\
+             2 events were lost; asking for the state again\n\
+             \x20 nginx       stopping\n\
+             \x20 php-8.4.26  running\n\
+             the daemon is going away\n"
+        );
+        let sent = String::from_utf8(client.writer().clone()).unwrap();
+        assert_eq!(sent.matches("\"method\":\"status\"").count(), 2);
     }
 }

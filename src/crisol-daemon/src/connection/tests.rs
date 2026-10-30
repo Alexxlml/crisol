@@ -14,7 +14,7 @@ use super::*;
 struct World {
     client: tokio::io::DuplexStream,
     serving: tokio::task::JoinHandle<()>,
-    events: broadcast::Sender<Event>,
+    events: Bus,
     closing: watch::Sender<bool>,
 }
 
@@ -32,7 +32,7 @@ fn world(buffer: usize) -> World {
             }
         }
     });
-    let (events, _) = broadcast::channel(256);
+    let events = Bus::new(256);
     let (closing_tx, closing) = watch::channel(false);
     let shared = Shared {
         actor,
@@ -97,7 +97,7 @@ async fn a_subscriber_that_cannot_keep_up_loses_events_and_keeps_its_connection(
     // Many more events than the queue holds, while nobody reads.
     let flood = OUT_CAPACITY * 5;
     for _ in 0..flood {
-        let _ = events.send(Event::Reloaded);
+        events.send(Event::Reloaded);
         tokio::task::yield_now().await;
     }
     // Still there: a request is answered, behind however many events were kept.
@@ -155,7 +155,7 @@ async fn leaving_delivers_the_answer_and_the_last_event_before_the_connection_en
     assert!(line.contains("\"id\":2"), "the answer to shutdown: {line}");
 
     // The last thing the daemon says, and then it leaves.
-    let _ = events.send(Event::ShuttingDown);
+    events.send(Event::ShuttingDown);
     let _ = closing.send(true);
     let mut rest = String::new();
     tokio::time::timeout(Duration::from_secs(10), async {

@@ -34,6 +34,7 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
             },
         ],
         warnings: vec![],
+        seq: None,
     }));
     assert_eq!(
         text,
@@ -42,6 +43,7 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
     let empty = reply(&Reply::Status(StatusInfo {
         services: vec![],
         warnings: vec![],
+        seq: None,
     }));
     assert!(empty.contains("crisol install nginx"), "{empty}");
 }

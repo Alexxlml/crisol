@@ -225,10 +225,16 @@ fn subscribers_hear_what_happens_and_others_do_not() {
     let mut listener = daemon.connect();
     listener.call(&Call::Subscribe).unwrap();
     let mut other = daemon.connect();
-    // A change of sites with nothing running reloads nothing; shutting down is an event.
+    // The picture says which events it includes (review of phase 12, finding 1): none yet.
+    let Reply::Status(status) = other.call(&Call::Status { service: None }).unwrap() else {
+        panic!("`status` answers a status");
+    };
+    assert_eq!(status.seq, Some(0));
+    // A change of sites with nothing running reloads nothing; shutting down is an event, the
+    // first of the stream.
     other.call(&Call::Shutdown).unwrap();
-    let event = listener.next_event().unwrap();
-    assert_eq!(event, Some(Event::ShuttingDown));
+    let event = listener.next_numbered().unwrap().unwrap();
+    assert_eq!((event.event, event.seq), (Event::ShuttingDown, Some(1)));
     daemon.thread.take().unwrap().join().unwrap().unwrap();
 }
 

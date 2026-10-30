@@ -106,6 +106,7 @@ fn every_reply() -> Vec<Reply> {
         Reply::Status(StatusInfo {
             services: vec![],
             warnings: vec![],
+            seq: None,
         }),
         Reply::Done(DoneInfo {
             message: text(),

@@ -288,9 +288,47 @@ fn replies_ignore_fields_they_do_not_know_so_the_daemon_can_add_some() {
                 state: "running".to_owned(),
                 detail: None
             }],
-            warnings: vec![]
+            warnings: vec![],
+            seq: None,
         })
     );
+}
+
+/// Review of phase 12, finding 1: the number travels inside `params`, next to the fields of the
+/// event, and both sides of the change still understand each other.
+#[test]
+fn an_event_and_a_status_carry_their_number_and_older_messages_still_read() {
+    let note = Notification::numbered(Numbered {
+        event: Event::Reloaded,
+        seq: Some(41),
+    });
+    assert_eq!(
+        to_line(&note).unwrap(),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"reloaded\",\"seq\":41}}\n"
+    );
+    assert_eq!(round_trip(&note), note);
+
+    let older: Notification =
+        serde_json::from_str(r#"{"jsonrpc":"2.0","method":"event","params":{"type":"reloaded"}}"#)
+            .unwrap();
+    assert_eq!(older.params.seq, None);
+    let older: Reply =
+        serde_json::from_str(r#"{"type":"status","services":[],"warnings":[]}"#).unwrap();
+    assert!(matches!(older, Reply::Status(StatusInfo { seq: None, .. })));
+
+    let status = Reply::Status(StatusInfo {
+        services: vec![],
+        warnings: vec![],
+        seq: Some(41),
+    });
+    assert_eq!(
+        serde_json::to_string(&status).unwrap(),
+        r#"{"type":"status","services":[],"warnings":[],"seq":41}"#
+    );
+    // A progress of a call has no number, and says nothing about one.
+    assert!(!to_line(&Notification::new(Event::Reloaded))
+        .unwrap()
+        .contains("seq"));
 }
 
 #[test]
@@ -329,10 +367,10 @@ fn events_are_notifications_with_no_id_and_every_kind_round_trips() {
             "{line}"
         );
         assert!(!line.contains("\"id\""), "{line}");
-        assert_eq!(round_trip(&note).params, event);
+        assert_eq!(round_trip(&note).params.event, event);
         // On a connection a reader does not know in advance which of the two it will get.
         match from_line::<Message>(&line).unwrap() {
-            Message::Notification(n) => assert_eq!(n.params, event),
+            Message::Notification(n) => assert_eq!(n.params.event, event),
             Message::Response(r) => panic!("{r:?}"),
         }
     }

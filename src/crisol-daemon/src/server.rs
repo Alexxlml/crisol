@@ -13,10 +13,11 @@ use crisol_core::paths::CrisolPaths;
 use crisol_platform::PipeSecurity;
 use crisol_protocol::Call;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-use tokio::sync::{broadcast, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tracing::{error, info, warn};
 
 use crate::actor::{self, Input, Msg, Timing};
+use crate::bus::Bus;
 use crate::connection::{serve, Shared};
 use crate::logging;
 
@@ -70,7 +71,7 @@ fn serve_until_shutdown(options: Options, dispatch: &tracing::Dispatch) -> io::R
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let (events, _) = broadcast::channel(256);
+    let events = Bus::new(256);
     let (to_actor, from_connections) = mpsc::channel::<Input>();
     let worker_inbox = to_actor.clone();
     let (done_tx, mut done_rx) = oneshot::channel::<()>();
