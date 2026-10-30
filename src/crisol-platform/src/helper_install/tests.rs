@@ -286,3 +286,22 @@ fn the_launcher_shows_no_prompt_for_a_program_others_can_replace() {
         "one line, the fix apart: {error}"
     );
 }
+
+#[test]
+fn waiting_for_the_helper_folder_ends_when_it_goes_or_when_time_is_up() {
+    let tmp = TempDir::new().unwrap();
+    let folder = tmp.path().join("Crisol");
+    fs::create_dir(&folder).unwrap();
+    assert!(!wait_until_gone(&folder, Duration::from_millis(300)));
+    let removing = folder.clone();
+    let remover = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        fs::remove_dir(&removing).unwrap();
+    });
+    assert!(wait_until_gone(&folder, Duration::from_secs(10)));
+    remover.join().unwrap();
+    assert!(wait_until_gone(
+        &tmp.path().join("never there"),
+        Duration::ZERO
+    ));
+}

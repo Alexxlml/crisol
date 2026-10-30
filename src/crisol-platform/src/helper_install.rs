@@ -36,6 +36,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crisol_core::dns::{
     disable, enable, status as nrpt_status, DnsError, NrptPolicy, NrptStatus, DEFAULT_DNS_ADDR,
@@ -249,6 +250,18 @@ pub fn uninstall_self(suffix: &str, home: &Path) -> Result<SetupReport, SetupFai
     Ok(report)
 }
 
+/// Waits until `path` does not exist, for at most `limit`. Says whether it went.
+fn wait_until_gone(path: &Path, limit: Duration) -> bool {
+    let end = Instant::now() + limit;
+    while path.exists() {
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    true
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     a.to_string_lossy()
         .eq_ignore_ascii_case(&b.to_string_lossy())
@@ -367,11 +380,25 @@ impl SystemSetup for WindowsSetup {
             home: home.to_path_buf(),
         })?;
         let done = SetupDone::from_code(code).ok_or_else(|| failure(code))?;
+        // The helper cannot delete the program it is running: its folder goes a moment after it
+        // ends (`schedule_removal`). Wait for that, so that what is said is what is there, and
+        // a removal run again right away does not find the helper (seen in Windows Sandbox).
+        let folder = location.path().parent().map(Path::to_path_buf);
+        let gone = folder
+            .as_deref()
+            .is_none_or(|f| wait_until_gone(f, Duration::from_secs(15)));
+        let helper = match (gone, &folder) {
+            (false, Some(folder)) => format!(
+                "Removed the privileged helper, but {} is still there; delete it as an administrator if it does not go away by itself",
+                folder.display()
+            ),
+            _ => "Removed the privileged helper".to_owned(),
+        };
         Ok(SetupReport {
             steps: vec![
                 format!("Removed the DNS rule for .{suffix} and Crisol's block of the hosts file"),
                 done.exclusions_sentence(home),
-                "Removed the privileged helper".to_owned(),
+                helper,
             ],
             done,
         })
