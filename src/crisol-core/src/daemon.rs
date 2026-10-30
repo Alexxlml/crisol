@@ -898,12 +898,10 @@ impl Daemon {
             // restart.
             stack.set_php_config(config.php.clone());
             match stack.apply(&plan, now) {
-                Ok(applied) => {
-                    self.notes.extend(applied.notes);
-                    if applied.reload_requested {
-                        events(Event::ReloadStarted);
-                    }
-                }
+                // `reload_started` comes from the stack when `nginx -t` begins, so that each one
+                // is followed by `reloaded` or `reload_failed`: a request may be merged into a
+                // round under way, or find the files already as wanted and test nothing.
+                Ok(applied) => self.notes.extend(applied.notes),
                 Err(WebError::Home(error)) => events(Event::Blocked {
                     reason: format!("{} ({})", home_error(&error).message, home_fix(&error)),
                 }),

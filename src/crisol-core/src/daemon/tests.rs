@@ -382,11 +382,19 @@ fn a_new_site_is_served_without_anybody_asking() {
         .tick(3500)
         .iter()
         .all(|e| !matches!(e, Event::ReloadStarted)));
-    // ...and then, the configuration is tested for the new site.
+    // ...and then the change is seen; the test (announced as it begins) starts on the next
+    // tick, then the reload.
     let events = rig.tick(5500);
-    assert!(events.contains(&Event::ReloadStarted), "{events:?}");
-    // The test starts on the next tick, then the reload.
-    rig.tick(5600);
+    assert!(!events.contains(&Event::ReloadStarted), "{events:?}");
+    let events = rig.tick(5600);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::ReloadStarted))
+            .count(),
+        1,
+        "{events:?}"
+    );
     let (test, args) = rig.controls().pop().unwrap();
     assert_eq!(args, ["-t"]);
     rig.supervisor.exit(test, 0).unwrap();
@@ -420,10 +428,59 @@ fn a_command_that_changes_the_sites_reloads_a_running_stack_at_once() {
         1000,
     );
     assert!(done(reply.unwrap()).changed);
-    assert!(events.contains(&Event::ReloadStarted), "{events:?}");
-    rig.tick(1100);
-    let (_, args) = rig.controls().pop().unwrap();
+    let mut events = events;
+    events.extend(rig.tick(1100));
+    let (test, args) = rig.controls().pop().unwrap();
     assert_eq!(args, ["-t"]);
+    rig.supervisor.exit(test, 0).unwrap();
+    events.extend(rig.tick(1200));
+    let (reload, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(reload, 0).unwrap();
+    events.extend(rig.tick(1300));
+    // One round, announced once and closed once: a client can show "reloading" in between.
+    let reloads: Vec<&Event> = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::ReloadStarted | Event::Reloaded | Event::ReloadFailed { .. }
+            )
+        })
+        .collect();
+    assert_eq!(reloads, [&Event::ReloadStarted, &Event::Reloaded]);
+}
+
+#[test]
+fn a_change_that_leaves_the_files_as_they_are_announces_no_reload() {
+    let mut rig = Rig::new();
+    rig.start_running();
+    let project = rig.paths.home().join("elsewhere");
+    fs::create_dir_all(&project).unwrap();
+    let link = Call::Link {
+        name: "extra".to_owned(),
+        path: project.display().to_string(),
+        docroot: None,
+    };
+    let unlink = Call::Unlink {
+        name: "extra".to_owned(),
+    };
+    // Linked and unlinked before the round tests anything: the files on disk are still the
+    // ones Nginx has, so there is nothing to test and nothing to announce.
+    let (_, mut events) = rig.call_events(&link, 1000);
+    let (_, more) = rig.call_events(&unlink, 1000);
+    events.extend(more);
+    let controls = rig.controls().len();
+    for at in [1100, 1200, 1300] {
+        events.extend(rig.tick(at));
+    }
+    assert_eq!(rig.controls().len(), controls, "no `nginx -t`");
+    assert!(
+        events.iter().all(|e| !matches!(
+            e,
+            Event::ReloadStarted | Event::Reloaded | Event::ReloadFailed { .. }
+        )),
+        "{events:?}"
+    );
 }
 
 #[test]
