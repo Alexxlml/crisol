@@ -105,7 +105,7 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 
 **La prueba:**
 
-1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, una ventana de PowerShell copia Crisol y saca la foto `1-antes`; espera a que diga «The 'before' picture is in…».
+1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, `preparar.ps1` corre **sin ventana**: copia Crisol y saca la foto `1-antes`. Sabrás que terminó cuando exista `C:\sandbox\out-antes\meta.txt`.
 2. Dentro del Sandbox abre **dos** terminales: una **normal** (para Crisol, que nunca debe correr elevado) y una **como administrador** (clic derecho en Inicio → Terminal (administrador), solo para las fotos y Defender, que esconde sus exclusiones a quien no lo es).
    - En la de **administrador**:
      ```powershell
@@ -137,4 +137,6 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 4. Opcional, en otro Sandbox nuevo: repite hasta `uninstall --all` y di **no** en el diálogo de la CA o en el UAC. Debe decir `[declined]`, salir con código 1 y, con `--purge`, `[skipped]` sin borrar `C:\Crisol`. Volver a ejecutarlo y aceptar debe terminar.
 5. Cierra la ventana del Sandbox: todo lo de dentro desaparece.
 
-**Lo que no se sabe todavía:** si dentro del Sandbox el UAC aparece (su usuario es administrador) y si Defender acepta exclusiones ahí. Si `defender.txt` dice `unavailable`, esa parte se verifica aparte en tu equipo con una home de prueba.
+**Defender no funciona en el Sandbox** (comprobado el 2026-10-29): `Get-MpPreference` falla con `0x800106ba` (el servicio de Defender no corre), así que `defender.txt` dice `unavailable` en todas las fotos, `Add-MpPreference` falla y el ayudante termina con el código 21 («Defender did not answer»). Eso prueba el camino «no disponible». El de quitar exclusiones de verdad se prueba aparte en el equipo del propietario, con una home de prueba.
+
+**Lo que no se sabe todavía:** si dentro del Sandbox aparece el UAC (su usuario es administrador).
