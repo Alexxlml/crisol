@@ -105,7 +105,7 @@ Nada de esto toca tu equipo: todo pasa dentro del Sandbox, que se borra al cerra
 
 **La prueba:**
 
-1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, `preparar.ps1` corre **sin ventana**: copia Crisol y saca la foto `1-antes`. Sabrás que terminó cuando exista `C:\sandbox\out-antes\meta.txt`.
+1. Doble clic en `src\scripts\sandbox\crisol.wsb`. Se abre una ventana con un Windows limpio. Al entrar, `preparar.ps1` corre **sin ventana**: copia Crisol y saca la foto `1-antes`. Sabrás que terminó cuando exista `C:\sandbox\out\1-antes\meta.txt`.
 2. Dentro del Sandbox abre **dos** terminales: una **normal** (para Crisol, que nunca debe correr elevado) y una **como administrador** (clic derecho en Inicio → Terminal (administrador), solo para las fotos y Defender, que esconde sus exclusiones a quien no lo es).
    - En la de **administrador**:
      ```powershell
