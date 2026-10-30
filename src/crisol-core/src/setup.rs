@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::dns::{rule_for, DnsError, DEFAULT_DNS_ADDR};
 use crate::exclusions::{decode_home, encode_home};
+use crate::shell::powershell_quote;
 
 /// The file name of the manifest, next to the helper.
 pub const MANIFEST_FILE: &str = "crisol-elevate.manifest";
@@ -342,8 +343,8 @@ impl SetupDone {
 #[must_use]
 pub fn remove_exclusion_command(home: &Path) -> String {
     format!(
-        "Remove-MpPreference -ExclusionPath '{}'",
-        home.join("data").display().to_string().replace('\'', "''")
+        "Remove-MpPreference -ExclusionPath {}",
+        powershell_quote(&home.join("data").display().to_string())
     )
 }
 

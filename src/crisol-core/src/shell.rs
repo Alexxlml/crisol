@@ -112,6 +112,26 @@ pub enum ShellError {
     Io(#[from] io::Error),
 }
 
+/// What PowerShell reads as a single quote: `'` and the typographic ones (U+2018 to U+201B).
+const POWERSHELL_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// `text` as one PowerShell string in single quotes. Every quote PowerShell accepts is doubled,
+/// so nothing in it ends the string: `O’Brien` (with the apostrophe of autocorrect) would,
+/// with only `'` doubled (review of phase 11, finding 3).
+#[must_use]
+pub fn powershell_quote(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for c in text.chars() {
+        if POWERSHELL_QUOTES.contains(&c) {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
 /// Whether the variable `name` is taken out of a `crisol shell`.
 #[must_use]
 pub fn is_removed(name: &str) -> bool {
@@ -398,7 +418,7 @@ pub fn profile_text(terminal: Terminal, front: &[PathBuf]) -> String {
         Terminal::Pwsh | Terminal::WindowsPowerShell => {
             let list = front
                 .iter()
-                .map(|f| format!("'{}'", f.to_string_lossy().replace('\'', "''")))
+                .map(|f| powershell_quote(&f.to_string_lossy()))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(

@@ -16,6 +16,16 @@ fn home() -> (TempDir, CrisolPaths) {
     (tmp, paths)
 }
 
+#[test]
+fn every_quote_powershell_reads_is_doubled() {
+    assert_eq!(powershell_quote(r"C:\Crisol"), r"'C:\Crisol'");
+    assert_eq!(powershell_quote("O'Brien"), "'O''Brien'");
+    assert_eq!(powershell_quote("O’Brien"), "'O’’Brien'");
+    assert_eq!(powershell_quote("a‘b‚c‛d"), "'a‘‘b‚‚c‛‛d'");
+    assert_eq!(powershell_quote("\"x\" `y` $z"), "'\"x\" `y` $z'");
+    assert_eq!(powershell_quote(""), "''");
+}
+
 fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
     pairs
         .iter()

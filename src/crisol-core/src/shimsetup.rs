@@ -13,6 +13,7 @@ use std::path::Path;
 use crate::globals::{shimmed_globals, sync_global_shims, GlobalSync};
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
+use crate::shell::powershell_quote;
 use crate::shims::{install_shim_files, remove_shim_files, shim_file_name, SHIM_COMMANDS};
 use crate::userpath::{
     add_shims, remove_shims, shadowing, shims_in_path, PathChange, Shadow, UserPath,
@@ -268,9 +269,10 @@ pub fn env_script(shims: &Path, shell: Shell) -> String {
     let dir = shims.to_string_lossy();
     match shell {
         Shell::PowerShell => {
-            let quoted = dir.replace('\'', "''");
+            let quoted = powershell_quote(&dir);
+            let in_front = powershell_quote(&format!("{dir};"));
             format!(
-                "if (($env:Path -split ';')[0] -ne '{quoted}') {{ $env:Path = '{quoted};' + $env:Path }}\n"
+                "if (($env:Path -split ';')[0] -ne {quoted}) {{ $env:Path = {in_front} + $env:Path }}\n"
             )
         }
         Shell::Cmd => format!("set \"PATH={dir};%PATH%\"\n"),

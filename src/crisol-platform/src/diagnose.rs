@@ -181,11 +181,11 @@ pub fn ipv6_check() -> Check {
 /// open. An administrator can exclude only the data folder; Crisol does not do it (ADR-0021).
 #[must_use]
 pub fn slow_start_hint(data: &Path) -> String {
-    let quoted = data.display().to_string().replace('\'', "''");
+    let quoted = crisol_core::shell::powershell_quote(&data.display().to_string());
     format!(
         "if Microsoft Defender is on, an administrator can exclude only the data folder, in \
-         PowerShell as administrator: Add-MpPreference -ExclusionPath '{quoted}' \
-         (Remove-MpPreference -ExclusionPath '{quoted}' undoes it)"
+         PowerShell as administrator: Add-MpPreference -ExclusionPath {quoted} \
+         (Remove-MpPreference -ExclusionPath {quoted} undoes it)"
     )
 }
 

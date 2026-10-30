@@ -11,6 +11,7 @@
 use std::io;
 
 use crisol_core::exclusions::{parse_list_json, Exclusion, ExclusionKind, ScanExclusions};
+use crisol_core::shell::powershell_quote;
 
 use crate::nrpt::powershell;
 
@@ -34,8 +35,8 @@ pub fn remove_script(exclusion: &Exclusion) -> Option<String> {
         ExclusionKind::Process => "ExclusionProcess",
     };
     Some(format!(
-        "Remove-MpPreference -{parameter} '{}' -ErrorAction Stop",
-        exclusion.value.replace('\'', "''")
+        "Remove-MpPreference -{parameter} {} -ErrorAction Stop",
+        powershell_quote(&exclusion.value)
     ))
 }
 
@@ -86,6 +87,23 @@ mod tests {
         })
         .is_none());
         assert!(list_script().contains("Get-MpPreference -ErrorAction Stop"));
+    }
+
+    #[test]
+    fn a_quoted_value_reaches_powershell_whole_whatever_quotes_it_has() {
+        // Review of phase 11, finding 3: the real PowerShell gets each text back unchanged,
+        // so no quote in it ended the string and nothing after it ran as a command.
+        for text in [
+            r"C:\Users\O’Brien\Crisol\data",
+            "a'b‘c’d‚e‛f",
+            "x’; Write-Output pwned; ’",
+            r"C:\Users\José\Crisol",
+        ] {
+            let printed =
+                crate::nrpt::powershell(&format!("Write-Output {}", powershell_quote(text)))
+                    .unwrap();
+            assert_eq!(printed.trim_end(), text);
+        }
     }
 
     #[test]
