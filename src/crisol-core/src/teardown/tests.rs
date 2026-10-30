@@ -168,6 +168,8 @@ fn a_safe_uninstall_keeps_the_databases_their_passwords_the_settings_and_the_pro
         paths.state_dir().join("x"),
         paths.etc_dir().join("mysql").join("8.4").join("my.ini"),
         paths.etc_dir().join("nginx").join("nginx.conf"),
+        // Node's global programs: npm installs them again (owner, review of phase 11).
+        paths.node_global("24.11.0").unwrap().join("tsc.cmd"),
     ];
     for file in kept.iter().chain(&gone) {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -199,6 +201,7 @@ fn a_safe_uninstall_keeps_the_databases_their_passwords_the_settings_and_the_pro
         assert!(!file.exists(), "gone: {}", file.display());
     }
     assert!(!paths.bin_dir().exists() && !paths.certs_dir().exists());
+    assert!(!paths.node_data().exists(), "data/node goes whole");
     assert!(
         !paths.etc_dir().join("nginx").exists(),
         "an empty folder goes"
@@ -269,6 +272,7 @@ fn a_no_is_an_answer_the_rest_goes_on_and_the_home_is_not_deleted() {
 fn purge_deletes_what_crisol_keeps_in_the_home_and_says_what_is_lost() {
     let world = World::new();
     fs::create_dir_all(world.paths.data_dir().join("mysql").join("8.4")).unwrap();
+    fs::create_dir_all(world.paths.node_global("24.11.0").unwrap()).unwrap();
     fs::create_dir_all(world.paths.www_dir().join("shop")).unwrap();
     fs::write(world.paths.config_file(), "").unwrap();
     let setup = FakeSetup::not_installed();

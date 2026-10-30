@@ -398,12 +398,22 @@ impl CrisolPaths {
             .join(validate_component(major)?))
     }
 
+    /// What Node keeps in `data/`: `data/node/`, the global programs of every version.
+    #[must_use]
+    pub fn node_data(&self) -> PathBuf {
+        self.data_dir().join("node")
+    }
+
     /// Where `npm install --global` puts programs for one Node version:
     /// `data/node/<version>/global/`. A prefix per version keeps what is installed for Node 22
-    /// away from Node 24, and keeps it out of the `npm` folder of `%APPDATA%`. It is data (the
-    /// user installed it), so uninstalling a Node version leaves it.
+    /// away from Node 24, and keeps it out of the `npm` folder of `%APPDATA%`. Uninstalling a
+    /// Node version leaves it (the user installed it); `uninstall --all` takes it, since npm
+    /// can install it again (ADR-0022).
     pub fn node_global(&self, version: &str) -> Result<PathBuf, PathsError> {
-        Ok(self.data_for("node", version)?.join("global"))
+        Ok(self
+            .node_data()
+            .join(validate_component(version)?)
+            .join("global"))
     }
 
     /// Logs root: `logs/`.

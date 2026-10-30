@@ -147,14 +147,15 @@ Lo que encontraron las vueltas anteriores, ya corregido:
 Al responder la revisión, el propietario cambió lo que hace `uninstall --all` **sin** `--purge`. Ahora es una **desinstalación segura**: deja solo lo que es del usuario y borra lo demás de Crisol.
 
 - **Se queda** (`teardown::kept_entries`):
-  - `data/` y `secrets/`: las bases y sus contraseñas, que van juntas, porque sin las contraseñas los datos quedan inaccesibles;
+  - `data/` (menos `data/node/`) y `secrets/`: las bases y sus contraseñas, que van juntas, porque sin las contraseñas los datos quedan inaccesibles;
   - `crisol.toml`, `sites.toml` y los `overrides` de `etc/<servicio>/`: la configuración del usuario;
   - `www/`: los proyectos.
 - **Se borra** (paso `clean`):
   - `bin/`, `logs/`, `certs/`, `cache/`, `shims/` y `state/`;
-  - lo que Crisol generó en `etc/`.
+  - lo que Crisol generó en `etc/`;
+  - `data/node/`: los programas globales de npm de cada versión de Node, que npm puede volver a instalar y no son datos del usuario (propietario, revisión de la Fase 11, hallazgo 4). `crisol uninstall node <versión>` los sigue dejando.
 
-  La lista de lo que queda lo dice: «your databases (mysql…) and their passwords, your settings and your projects».
+  La lista de lo que queda lo dice: «your databases (mysql…) and their passwords, your settings and your projects». Solo nombra servicios con datos propios (`DbKind`), no `node`.
 - **Se borran los programas** (paso `programs`): `crisol.exe`, `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe`, los que haya junto a `crisol.exe`.
   - Un programa no puede borrarse mientras corre, así que un `cmd` separado los borra unos segundos después de que termina el comando (`crisol_platform::schedule_delete`).
   - Una ruta con `%`, `!`, `^` o comillas se rechaza: `cmd` la leería como otra cosa. En ese caso, el usuario los borra a mano.

@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::autostart::Autostart;
+use crate::dbservice::DbKind;
 use crate::dns::RULE_COMMENT;
 use crate::hosts::{BEGIN, END};
 use crate::paths::CrisolPaths;
@@ -148,7 +149,7 @@ impl Step {
                 home.display()
             ),
             Self::Clean { home } => format!(
-                "Delete what Crisol keeps in {}: the installed versions, the logs, the certificates, the cache, the shims and the configuration it generated. Your databases, their passwords, your settings and your projects stay",
+                "Delete what Crisol keeps in {}: the installed versions, the global npm packages, the logs, the certificates, the cache, the shims and the configuration it generated. Your databases, their passwords, your settings and your projects stay",
                 home.display()
             ),
             Self::Purge { home } => format!("Delete {} and everything in it", home.display()),
@@ -265,14 +266,17 @@ pub fn kept_entries(paths: &CrisolPaths) -> Vec<PathBuf> {
 /// The name of the user's own configuration inside `etc/<service>/`, kept too.
 const OVERRIDES: &str = "overrides";
 
-/// What a safe uninstall deletes: every entry of the home that Crisol makes and is not kept.
-/// `etc/` is listed but only partly deleted (its `overrides` stay).
+/// What a safe uninstall deletes: every entry of the home that Crisol makes and is not kept,
+/// and the global programs of Node inside `data/`, which npm can install again (owner,
+/// review of phase 11). `etc/` is listed but only partly deleted (its `overrides` stay).
 fn cleanable_entries(paths: &CrisolPaths) -> Vec<PathBuf> {
     let kept = kept_entries(paths);
-    own_entries(paths)
+    let mut entries: Vec<PathBuf> = own_entries(paths)
         .into_iter()
         .filter(|e| !kept.contains(e))
-        .collect()
+        .collect();
+    entries.push(paths.node_data());
+    entries
 }
 
 /// The entries Crisol makes in its home: what `--purge` deletes.
@@ -343,9 +347,14 @@ fn purge_notice(paths: &CrisolPaths) -> io::Result<PurgeNotice> {
         })
         .collect();
     foreign.sort();
+    // Only the services: `data/node` holds Node's global programs, not a database.
+    let databases = names_in(&paths.data_dir())
+        .into_iter()
+        .filter(|name| DbKind::from_service(name).is_some())
+        .collect();
     Ok(PurgeNotice {
         home: paths.home().to_path_buf(),
-        databases: names_in(&paths.data_dir()),
+        databases,
         projects: names_in(&paths.www_dir()),
         foreign,
     })
