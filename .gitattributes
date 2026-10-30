@@ -1,4 +1,6 @@
-* text=auto
+# LF in the working copy whatever core.autocrlf says (Git for Windows sets it to true): some
+# tests read the docs byte for byte, docs/protocolo.md among them.
+* text=auto eol=lf
 *.sh text eol=lf
 *.rs text eol=lf
 
