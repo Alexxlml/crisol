@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod document;
+
 fn round_trip<T>(value: &T) -> T
 where
     T: Serialize + for<'de> Deserialize<'de>,
@@ -41,9 +43,9 @@ fn a_request_is_json_rpc_with_method_and_params() {
     assert_eq!(round_trip(&shutdown), shutdown);
 }
 
-#[test]
-fn every_call_survives_a_round_trip_and_names_itself() {
-    let calls = [
+/// One call of each kind (and a few with their optional parameters).
+fn every_call() -> Vec<Call> {
+    vec![
         Call::Hello {
             client: "test".to_owned(),
             protocol: PROTOCOL_VERSION,
@@ -125,7 +127,12 @@ fn every_call_survives_a_round_trip_and_names_itself() {
             service: "mysql".to_owned(),
         },
         Call::Subscribe,
-    ];
+    ]
+}
+
+#[test]
+fn every_call_survives_a_round_trip_and_names_itself() {
+    let calls = every_call();
     let mut names = std::collections::BTreeSet::new();
     for (i, call) in calls.into_iter().enumerate() {
         let request = Request::new(i as u64, call.clone());
