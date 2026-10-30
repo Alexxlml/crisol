@@ -10,13 +10,13 @@ Suite de desarrollo web local para PHP y Node, escrita en Rust.
 
 Crisol instala y administra las herramientas de un entorno de desarrollo local —PHP, Nginx, Node, bases de datos y servicios de apoyo— para que **todo funcione completo, sin funciones de pago y sin ensuciar el sistema**.
 
-> **Estado: en desarrollo, backend casi terminado.** Las fases 0 a 11 del backend están completas y revisadas (1139 pruebas automáticas), y el protocolo para la interfaz gráfica ya está documentado. Falta la última tarea del backend (F12.2) y después empieza la interfaz gráfica. Todavía no hay versiones publicadas: hoy se usa desde la línea de comandos y solo en Windows.
+> **Estado: en desarrollo, backend terminado.** Todas las tareas del backend están hechas (1148 pruebas automáticas): las fases 0 a 11 están revisadas, y la Fase 12 (el contrato para la interfaz gráfica: el protocolo documentado y un cliente de ejemplo) espera su revisión. Después empieza la interfaz gráfica. Todavía no hay versiones publicadas: hoy se usa desde la línea de comandos y solo en Windows.
 
 ## Progreso
 
 | | Avance | Detalle |
 |---|---|---|
-| **Backend** | ██████████████████▉ **98 %** | 48 de 49 tareas del [plan](docs/plan.md). Falta F12.2: un cliente de ejemplo que se suscribe a los eventos del daemon. |
+| **Backend** | ███████████████████ **100 %** | Las 49 tareas del [plan](docs/plan.md). La Fase 12 espera su revisión. |
 | **Primera versión con interfaz gráfica** | ███████████▉░░░░░░░ **≈ 55–65 %** | Estimación: la interfaz gráfica aún no está planeada por tareas. Falta elegir el framework (Slint o Tauri 2), construir las pantallas sobre el protocolo, el instalador y la firma de los ejecutables. |
 
 *Actualizado el 2026-10-30.*
