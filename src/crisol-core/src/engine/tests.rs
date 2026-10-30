@@ -1,4 +1,3 @@
-use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 
 use sha2::{Digest, Sha256};
@@ -1312,4 +1311,149 @@ fn a_file_that_does_not_match_the_given_hash_says_so_in_its_own_words() {
         error.message
     );
     assert!(!error.message.contains("catalog"), "{}", error.message);
+}
+
+// ---- doctor (F11.1) -------------------------------------------------------------------------
+
+#[test]
+fn doctor_lists_unsupported_versions_and_one_from_a_file_of_an_unsupported_line() {
+    // The `end_of_life` line falls into the last package of the catalog: 7.4.33.
+    let rig = Rig::build(
+        &[("php", "8.4.26"), ("php", "7.4.33")],
+        Arc::new(NoSystemChecks),
+        "end_of_life = true\n",
+    );
+    rig.install("php", "8.4.26");
+    let clean = checks(rig.call(&Call::Doctor).unwrap());
+    assert!(!clean.iter().any(|c| c.name == "unsupported versions"));
+
+    rig.install("php", "7.4.33");
+    let (archive, hash) = archive_in(&rig);
+    let info = installed_info(
+        rig.call(&install_call("7.4.34", Some(&archive), Some(&hash)))
+            .unwrap(),
+    );
+    assert!(
+        info.end_of_life,
+        "a 7.4.x from a file is as unsupported as 7.4.33"
+    );
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    let line = found
+        .iter()
+        .find(|c| c.name == "unsupported versions")
+        .unwrap();
+    assert_eq!(line.status, CheckStatus::Warning);
+    assert!(
+        line.detail.contains("php 7.4.33") && line.detail.contains("php 7.4.34"),
+        "{}",
+        line.detail
+    );
+    assert!(!line.detail.contains("8.4.26"), "{}", line.detail);
+    assert_eq!(line.fix.as_deref(), Some("crisol install php"));
+}
+
+#[test]
+fn doctor_offers_no_install_when_the_service_has_no_supported_version() {
+    let rig = Rig::build(
+        &[("redis", "5.0.14")],
+        Arc::new(NoSystemChecks),
+        "end_of_life = true\n",
+    );
+    rig.install("redis", "5.0.14");
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    let line = found
+        .iter()
+        .find(|c| c.name == "unsupported versions")
+        .unwrap();
+    assert_eq!(line.fix, None);
+}
+
+#[test]
+fn doctor_points_at_pieces_of_logs_left_by_a_cut_rotation() {
+    let rig = Rig::new(&[]);
+    assert!(!checks(rig.call(&Call::Doctor).unwrap())
+        .iter()
+        .any(|c| c.name == "log leftovers"));
+    write_log(&rig, "nginx", "fine\n");
+    let leftover = rig
+        .paths()
+        .logs_dir()
+        .join("nginx")
+        .join("runtime.log.rotating");
+    fs::write(&leftover, "old lines\n").unwrap();
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    let line = found.iter().find(|c| c.name == "log leftovers").unwrap();
+    assert_eq!(line.status, CheckStatus::Warning);
+    assert!(
+        line.detail.contains("runtime.log.rotating"),
+        "{}",
+        line.detail
+    );
+    assert!(!line.detail.contains("runtime.log,"), "{}", line.detail);
+}
+
+#[test]
+fn doctor_names_every_open_folder_and_gives_the_command_of_the_first() {
+    let rig = Rig::new(&[]);
+    rig.dirs.expose(&rig.paths().bin_dir());
+    rig.dirs.expose(&rig.paths().etc_dir());
+    let all = checks(rig.call(&Call::Doctor).unwrap());
+    let home = all.iter().find(|c| c.name == "home permissions").unwrap();
+    assert_eq!(home.status, CheckStatus::Problem);
+    let bin = rig.paths().bin_dir().display().to_string();
+    let etc = rig.paths().etc_dir().display().to_string();
+    assert!(home.detail.contains(&bin), "{}", home.detail);
+    assert!(
+        home.detail.contains(&format!("the same goes for `{etc}`")),
+        "{}",
+        home.detail
+    );
+    assert!(home.fix.as_deref().is_some_and(|f| f.contains(&bin)));
+}
+
+struct Hosts(&'static str);
+
+impl SystemChecks for Hosts {
+    fn checks(&self, _paths: &CrisolPaths) -> Vec<Check> {
+        Vec::new()
+    }
+
+    fn hosts_content(&self) -> Option<std::io::Result<String>> {
+        Some(Ok(self.0.to_owned()))
+    }
+}
+
+#[test]
+fn doctor_says_which_sites_the_hosts_file_sends_elsewhere() {
+    let rig = Rig::with_system(
+        &[],
+        Arc::new(Hosts(
+            "10.1.2.3 shop.test\r\n127.0.0.1 other.test api.shop.test\r\n\
+             192.168.0.9 noshop.test\r\n10.9.9.9 api.shop.test\r\n\
+             # BEGIN CRISOL\r\n10.0.0.1 shop.test\r\n# END CRISOL\r\n",
+        )),
+    );
+    let none = checks(rig.call(&Call::Doctor).unwrap());
+    assert!(!none.iter().any(|c| c.name == "site names"), "no sites yet");
+
+    let folder = rig.folder("shop");
+    rig.call(&Call::Link {
+        name: "shop".to_owned(),
+        path: folder.display().to_string(),
+        docroot: None,
+    })
+    .unwrap();
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    let line = found.iter().find(|c| c.name == "site names").unwrap();
+    assert_eq!(line.status, CheckStatus::Problem);
+    assert!(line.detail.contains("shop.test (line 1"), "{}", line.detail);
+    assert!(
+        line.detail.contains("api.shop.test (line 4"),
+        "{}",
+        line.detail
+    );
+    // Pointing here, someone else's name, and Crisol's own block are no collision.
+    assert!(!line.detail.contains("line 2"), "{}", line.detail);
+    assert!(!line.detail.contains("noshop"), "{}", line.detail);
+    assert!(!line.detail.contains("10.0.0.1"), "{}", line.detail);
 }

@@ -157,6 +157,17 @@ pub enum HomeError {
 ///
 /// Read-only operations (`list_installed`, `list_available`, `status`) do not call this.
 pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(), HomeError> {
+    match home_problems(paths, dirs).into_iter().next() {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+/// Every folder [`require_private_home`] would refuse, in the same order, and not only the
+/// first: `doctor` lists them all (F11.1).
+#[must_use]
+pub fn home_problems(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Vec<HomeError> {
+    let mut problems = Vec::new();
     for path in [
         paths.home().to_path_buf(),
         paths.bin_dir(),
@@ -171,26 +182,32 @@ pub fn require_private_home(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Resu
         if !path.exists() {
             continue;
         }
-        if foreign_owner(dirs, &path)? {
-            return Err(HomeError::OtherAccount { path });
+        match foreign_owner(dirs, &path) {
+            Ok(false) => {}
+            Ok(true) => {
+                problems.push(HomeError::OtherAccount { path });
+                continue;
+            }
+            Err(problem) => {
+                problems.push(problem);
+                continue;
+            }
         }
-        let open = dirs
-            .is_writable_by_others(&path)
-            .map_err(|source| HomeError::Check {
-                path: path.clone(),
-                source,
-            })?;
-        if open {
-            let fix = dirs.fix_command(&path).unwrap_or_else(|| {
-                format!(
-                    "remove the write access of other accounts on `{}`",
-                    path.display()
-                )
-            });
-            return Err(HomeError::Exposed { path, fix });
+        match dirs.is_writable_by_others(&path) {
+            Ok(false) => {}
+            Ok(true) => {
+                let fix = dirs.fix_command(&path).unwrap_or_else(|| {
+                    format!(
+                        "remove the write access of other accounts on `{}`",
+                        path.display()
+                    )
+                });
+                problems.push(HomeError::Exposed { path, fix });
+            }
+            Err(source) => problems.push(HomeError::Check { path, source }),
         }
     }
-    Ok(())
+    problems
 }
 
 /// Whether the home that already exists is another account's (reading its owner may itself be

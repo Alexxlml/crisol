@@ -9,7 +9,7 @@ use super::*;
 use crate::cacert::NoRoots;
 use crate::catalog::{Arch, Catalog, Os, Target};
 use crate::dbservice::NoAdmin;
-use crate::engine::{Deps, NoSystemChecks};
+use crate::engine::{Deps, NoSystemChecks, SystemChecks};
 use crate::fetch::fake::FakeFetcher;
 use crate::paths::fake::FakePrivateDirs;
 use crate::paths::CrisolPaths;
@@ -45,6 +45,10 @@ impl ConfigProbe for Flag {
 impl Rig {
     /// A home with nginx installed, one site, and ports that are not the real ones.
     fn new() -> Self {
+        Self::with_system(Arc::new(NoSystemChecks))
+    }
+
+    fn with_system(system: Arc<dyn SystemChecks>) -> Self {
         let tmp = TempDir::new().unwrap();
         let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
         paths.ensure_layout().unwrap();
@@ -55,10 +59,14 @@ impl Rig {
         )
         .unwrap();
         fs::create_dir_all(paths.www_dir().join("blog")).unwrap();
-        Self::over(tmp, paths)
+        Self::over_with(tmp, paths, system)
     }
 
     fn over(tmp: TempDir, paths: CrisolPaths) -> Self {
+        Self::over_with(tmp, paths, Arc::new(NoSystemChecks))
+    }
+
+    fn over_with(tmp: TempDir, paths: CrisolPaths, system: Arc<dyn SystemChecks>) -> Self {
         let supervisor = Arc::new(FakeSupervisor::new());
         let probe = Arc::new(FakePortProbe::new());
         let dirs = Arc::new(FakePrivateDirs::new());
@@ -70,7 +78,7 @@ impl Rig {
             fetcher: Arc::new(FakeFetcher::new()),
             owners: Arc::new(TrustAllOwners),
             env: Arc::new(|_| None),
-            system: Arc::new(NoSystemChecks),
+            system,
             roots: Arc::new(NoRoots),
             config_probe: Arc::new(Flag(effective.clone())),
             db_admin: Arc::new(NoAdmin),
@@ -1043,4 +1051,203 @@ fn reset_password_says_what_it_cannot_do_and_changes_a_stopped_one_that_reads_it
     let kept = fs::read_to_string(&file).unwrap();
     assert_ne!(kept.trim(), "OldPassword1");
     assert_eq!(kept.trim().len(), crate::secrets::PASSWORD_LENGTH);
+}
+
+// ---- doctor (F11.1) -------------------------------------------------------------------------
+
+/// A system that explains one exit code and knows what slows databases down.
+struct Explains;
+
+impl SystemChecks for Explains {
+    fn checks(&self, _paths: &CrisolPaths) -> Vec<Check> {
+        Vec::new()
+    }
+
+    fn explain_exit(&self, code: i32) -> Option<String> {
+        (code == -1_073_741_515).then(|| "a DLL is missing".to_owned())
+    }
+
+    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
+        Some("exclude data/".to_owned())
+    }
+}
+
+fn doctor(rig: &mut Rig, ms: u64) -> Vec<Check> {
+    match rig.call(&Call::Doctor, ms).unwrap() {
+        Reply::Doctor { checks } => checks,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn line<'a>(checks: &'a [Check], name: &str) -> Option<&'a Check> {
+    checks.iter().find(|c| c.name == name)
+}
+
+#[test]
+fn doctor_tells_who_holds_the_port_of_a_service_that_is_not_running_and_not_of_one_that_is() {
+    let mut rig = Rig::new();
+    let quiet = doctor(&mut rig, 0);
+    let names: Vec<&str> = quiet.iter().map(|c| c.name.as_str()).collect();
+    let sites = names.iter().position(|n| *n == "sites").unwrap();
+    assert_eq!(
+        names[sites + 1],
+        "services",
+        "the daemon's lines follow `sites`"
+    );
+    let services = line(&quiet, "services").unwrap();
+    assert_eq!(services.status, CheckStatus::Ok);
+    assert!(
+        services.detail.contains("nothing is running"),
+        "{}",
+        services.detail
+    );
+    assert!(line(&quiet, "ports").is_none());
+
+    rig.probe.occupy(
+        HTTP,
+        PortOwner {
+            pid: 4,
+            name: Some("herd.exe".to_owned()),
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, HTTP)),
+        },
+    );
+    let taken = doctor(&mut rig, 0);
+    let ports = line(&taken, "ports").unwrap();
+    assert_eq!(ports.status, CheckStatus::Problem);
+    assert!(
+        ports
+            .detail
+            .contains("nginx: port 19080 is already in use by herd.exe (pid 4"),
+        "{}",
+        ports.detail
+    );
+    assert_eq!(
+        ports.fix.as_deref(),
+        Some(
+            "in crisol.toml, set `http_port = 19081` under `[services.nginx]` (that port is free)"
+        )
+    );
+
+    rig.probe.release(HTTP);
+    rig.start_running();
+    let running = doctor(&mut rig, 700);
+    assert!(line(&running, "ports").is_none(), "Nginx's port is its own");
+    assert_eq!(line(&running, "services").unwrap().detail, "running: nginx");
+}
+
+#[test]
+fn doctor_says_which_service_failed_and_what_its_exit_code_means() {
+    let mut rig = Rig::with_system(Arc::new(Explains));
+    rig.with_mysql();
+    rig.call(
+        &Call::Start {
+            service: Some("mysql".to_owned()),
+        },
+        0,
+    )
+    .unwrap();
+    let mysqld = rig
+        .supervisor
+        .spawned()
+        .into_iter()
+        .find(|r| r.spec.program.ends_with("mysqld.exe"))
+        .unwrap();
+    rig.supervisor.exit(mysqld.process, -1_073_741_515).unwrap();
+    rig.tick(300);
+    assert_eq!(rig.service_state("mysql").as_deref(), Some("failed"));
+    let found = doctor(&mut rig, 400);
+    let services = line(&found, "services").unwrap();
+    assert_eq!(services.status, CheckStatus::Problem);
+    assert!(
+        services
+            .detail
+            .contains("mysql exited during startup with code -1073741515 (a DLL is missing)"),
+        "{}",
+        services.detail
+    );
+    assert_eq!(services.fix.as_deref(), Some("crisol logs mysql"));
+    assert!(line(&found, "ports").is_none(), "MySQL's port is free");
+}
+
+#[test]
+fn doctor_measures_how_long_a_database_took_to_be_ready_and_says_when_it_was_slow() {
+    for (ready_at, slow) in [(700, false), (12_500, true)] {
+        let mut rig = Rig::with_system(Arc::new(Explains));
+        rig.with_mysql();
+        assert!(line(&doctor(&mut rig, 0), "database startup").is_none());
+        rig.call(
+            &Call::Start {
+                service: Some("mysql".to_owned()),
+            },
+            0,
+        )
+        .unwrap();
+        rig.tick(ready_at - 100);
+        rig.listen_mysql();
+        // The health check runs every so often: the start ends at the first one after this.
+        let mut now = ready_at;
+        while rig.service_state("mysql").as_deref() != Some("running") {
+            assert!(now < ready_at + 2000, "{:?}", rig.service_state("mysql"));
+            rig.tick(now);
+            now += 100;
+        }
+        let found = doctor(&mut rig, now);
+        let startup = line(&found, "database startup").unwrap();
+        if slow {
+            assert_eq!(startup.status, CheckStatus::Warning);
+            assert!(startup.detail.contains("mysql 1"), "{}", startup.detail);
+            assert!(startup.detail.contains("antivirus"), "{}", startup.detail);
+            assert_eq!(startup.fix.as_deref(), Some("exclude data/"));
+        } else {
+            assert_eq!(startup.status, CheckStatus::Ok);
+            assert!(
+                startup.detail.starts_with("ready in mysql "),
+                "{}",
+                startup.detail
+            );
+            assert_eq!(startup.fix, None);
+        }
+    }
+}
+
+#[test]
+fn doctor_adds_nothing_while_there_is_no_home() {
+    let tmp = TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let mut rig = Rig::over(tmp, paths);
+    let found = doctor(&mut rig, 0);
+    let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["home"]);
+}
+
+#[test]
+fn a_first_start_that_makes_the_data_is_not_measured() {
+    let mut rig = Rig::new();
+    rig.with_mysql();
+    fs::remove_dir_all(rig.paths.data_for("mysql", "8.4").unwrap()).unwrap();
+    rig.call(
+        &Call::Start {
+            service: Some("mysql".to_owned()),
+        },
+        0,
+    )
+    .unwrap();
+    let init = rig.supervisor.spawned().last().unwrap().clone();
+    fs::create_dir_all(
+        rig.paths
+            .data_for("mysql", "8.4.init")
+            .unwrap()
+            .join("mysql"),
+    )
+    .unwrap();
+    rig.supervisor.exit(init.process, 0).unwrap();
+    rig.tick(1000);
+    rig.listen_mysql();
+    let mut now = 1100;
+    while rig.service_state("mysql").as_deref() != Some("running") {
+        assert!(now < 4000, "{:?}", rig.service_state("mysql"));
+        rig.tick(now);
+        now += 100;
+    }
+    assert!(line(&doctor(&mut rig, now), "database startup").is_none());
 }

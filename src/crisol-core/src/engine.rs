@@ -11,6 +11,7 @@
 //! become [`RpcError`]s with a code a client can act on, a sentence that can be shown as it is,
 //! and, when there is one, the exact command that fixes the problem.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ use crate::manage::{
     install_version, install_version_from, is_unverified_install, list_available, list_installed,
     uninstall, Environment, LocalArchive, ManageError,
 };
-use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
+use crate::paths::{home_problems, CrisolPaths, HomeError, PrivateDirs};
 use crate::phpsetup::{installed_php_versions, refresh_php};
 use crate::pin::{use_global, use_local, UseError, Used};
 use crate::ports::PortProbe;
@@ -59,6 +60,25 @@ pub trait SystemChecks: Send + Sync {
     /// system was set up to ask it (ADR-0014). Read only.
     fn shutdown_warnings(&self, _paths: &CrisolPaths) -> Vec<String> {
         Vec::new()
+    }
+
+    /// The text of the system's `hosts` file, when there is one, so the engine can see which
+    /// names of the sites other tools define (F11.1). `None`: no such file on this system.
+    fn hosts_content(&self) -> Option<std::io::Result<String>> {
+        None
+    }
+
+    /// What the exit code of a program that failed means, when the system gives it a meaning
+    /// worth telling (a library that is missing, a runtime that is not installed). `None` for
+    /// an ordinary one.
+    fn explain_exit(&self, _code: i32) -> Option<String> {
+        None
+    }
+
+    /// What usually makes a database slow to start on this system and how to avoid it, for
+    /// `doctor` (F11.1). Read only: it says what to do, it does nothing.
+    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
+        None
     }
 }
 
@@ -728,11 +748,14 @@ impl Engine {
             self.check_shims(),
             self.check_sites(),
         ];
+        checks.extend(self.check_hosts_collisions());
         checks.extend(self.check_advisories());
+        checks.extend(self.check_end_of_life());
         checks.extend(self.check_unverified());
         checks.extend(self.check_ca_bundle());
         checks.extend(self.check_memcached());
         checks.extend(self.check_data_series());
+        checks.extend(self.check_log_leftovers());
         checks.extend(self.deps.system.checks(&self.paths));
         Reply::Doctor { checks }
     }
@@ -770,6 +793,66 @@ impl Engine {
                         .to_owned(),
                 )
             }),
+        })
+    }
+
+    /// Installed versions that no longer receive security fixes (ADR-0012), including one
+    /// installed with `--from` whose line the catalog marks so (a 7.4.x it does not list).
+    fn check_end_of_life(&self) -> Option<Check> {
+        let installed = list_installed(&self.paths).ok()?;
+        let old: Vec<&crate::manage::InstalledVersion> = installed
+            .iter()
+            .filter(|i| self.deps.catalog.is_end_of_life(&i.service, &i.version))
+            .collect();
+        let first = old.first()?;
+        // Redis 5 and Memcached have no supported build for Windows: nothing to move to.
+        let supported = self
+            .deps
+            .catalog
+            .available(&first.service, self.deps.target)
+            .into_iter()
+            .any(|p| !p.end_of_life && !p.version.is_prerelease());
+        Some(Check {
+            name: "unsupported versions".to_owned(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{} no longer receive{} security fixes",
+                old.iter()
+                    .map(|i| format!("{} {}", i.service, i.version))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if old.len() == 1 { "s" } else { "" }
+            ),
+            fix: supported.then(|| format!("crisol install {}", first.service)),
+        })
+    }
+
+    /// Pieces of logs left by a rotation that was cut short (`runtime.log.rotating`): old lines
+    /// that nothing reads or removes.
+    fn check_log_leftovers(&self) -> Option<Check> {
+        let mut found: Vec<PathBuf> = fs::read_dir(self.paths.logs_dir())
+            .ok()?
+            .flatten()
+            .filter_map(|service| fs::read_dir(service.path()).ok())
+            .flat_map(|files| files.flatten().map(|f| f.path()))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains(".rotating"))
+            })
+            .collect();
+        found.sort();
+        (!found.is_empty()).then(|| Check {
+            name: "log leftovers".to_owned(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "a rotation of the logs was cut short and left old lines that nothing removes: {}",
+                found
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            fix: Some("read them if you need them, then delete them".to_owned()),
         })
     }
 
@@ -892,8 +975,9 @@ impl Engine {
 
     fn check_home(&self) -> Check {
         let name = "home permissions".to_owned();
-        match require_private_home(&self.paths, self.deps.dirs.as_ref()) {
-            Ok(()) => Check {
+        let problems = home_problems(&self.paths, self.deps.dirs.as_ref());
+        let Some(first) = problems.first() else {
+            return Check {
                 name,
                 status: CheckStatus::Ok,
                 detail: format!(
@@ -901,16 +985,20 @@ impl Engine {
                     self.paths.home().display()
                 ),
                 fix: None,
-            },
-            Err(error) => {
-                let rpc = home_error(&error);
-                Check {
-                    name,
-                    status: CheckStatus::Problem,
-                    detail: rpc.message,
-                    fix: rpc.fix,
-                }
-            }
+            };
+        };
+        let rpc = home_error(first);
+        // Every folder is named; the command is for the first, and `doctor` names the next.
+        let mut detail = rpc.message;
+        let others: Vec<String> = problems[1..].iter().map(problem_path).collect();
+        if !others.is_empty() {
+            let _ = write!(detail, "; the same goes for {}", others.join(", "));
+        }
+        Check {
+            name,
+            status: CheckStatus::Problem,
+            detail,
+            fix: rpc.fix,
         }
     }
 
@@ -1004,6 +1092,47 @@ impl Engine {
         }
     }
 
+    /// The names of the sites that a line of `hosts` outside Crisol's block sends somewhere other
+    /// than this computer: Windows reads `hosts` before any DNS server, so those sites cannot be
+    /// reached. A line that points here too (Herd's, Laragon's) gets in nobody's way.
+    fn check_hosts_collisions(&self) -> Option<Check> {
+        let text = self.deps.system.hosts_content()?.ok()?;
+        let (list, config) = self.discover().ok()?;
+        let foreign = crate::hosts::foreign_names(&text, &config.sites.tld).ok()?;
+        let is_site = |name: &str| {
+            list.sites.iter().any(|site| {
+                name == site.domain
+                    || name
+                        .strip_suffix(site.domain.as_str())
+                        .is_some_and(|rest| rest.ends_with('.'))
+            })
+        };
+        let elsewhere: Vec<String> = foreign
+            .iter()
+            .filter(|c| is_site(&c.name))
+            .filter(|c| {
+                c.text
+                    .split_whitespace()
+                    .next()
+                    .and_then(|address| address.parse::<std::net::IpAddr>().ok())
+                    .is_some_and(|address| !address.is_loopback())
+            })
+            .map(|c| format!("{} (line {}: `{}`)", c.name, c.line, c.text))
+            .collect();
+        (!elsewhere.is_empty()).then(|| Check {
+            name: "site names".to_owned(),
+            status: CheckStatus::Problem,
+            detail: format!(
+                "the hosts file sends these sites to another address, and it wins over Crisol: {}",
+                elsewhere.join("; ")
+            ),
+            fix: Some(
+                "remove or change those lines of the hosts file (it needs an administrator), or rename the sites"
+                    .to_owned(),
+            ),
+        })
+    }
+
     fn check_sites(&self) -> Check {
         let name = "sites".to_owned();
         match self.discover() {
@@ -1095,6 +1224,14 @@ pub fn home_error(error: &HomeError) -> RpcError {
         }
         HomeError::Check { .. } => RpcError::new(ErrorCode::Io, error.to_string()),
     }
+}
+
+/// The folder a [`HomeError`] is about, quoted.
+fn problem_path(error: &HomeError) -> String {
+    let (HomeError::Exposed { path, .. }
+    | HomeError::OtherAccount { path }
+    | HomeError::Check { path, .. }) = error;
+    format!("`{}`", path.display())
 }
 
 fn manage_error(error: ManageError) -> RpcError {

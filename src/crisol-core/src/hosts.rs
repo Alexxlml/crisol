@@ -185,6 +185,15 @@ fn entry(line: &str) -> Option<(String, Vec<String>)> {
 
 /// The names Crisol wants that are defined outside its block.
 fn conflicts(lines: &[&str], block: Option<(usize, usize)>, names: &[String]) -> Vec<Conflict> {
+    defined_outside(lines, block, |name| names.iter().any(|n| n == name))
+}
+
+/// The names defined outside the block that `wanted` picks, in the order of the file.
+fn defined_outside(
+    lines: &[&str],
+    block: Option<(usize, usize)>,
+    wanted: impl Fn(&str) -> bool,
+) -> Vec<Conflict> {
     let mut found = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         if block.is_some_and(|(b, e)| (b..=e).contains(&i)) {
@@ -193,15 +202,28 @@ fn conflicts(lines: &[&str], block: Option<(usize, usize)>, names: &[String]) ->
         let Some((_, defined)) = entry(line) else {
             continue;
         };
-        for name in names.iter().filter(|n| defined.contains(n)) {
+        for name in defined.into_iter().filter(|n| wanted(n)) {
             found.push(Conflict {
                 line: i + 1,
-                name: name.clone(),
+                name,
                 text: line.trim().to_owned(),
             });
         }
     }
     found
+}
+
+/// The names under `.tld` that something else defines in the file, outside Crisol's block.
+/// Windows reads `hosts` before it asks any DNS server, so each of them wins over Crisol for
+/// that name (F11.1).
+pub fn foreign_names(content: &str, tld: &str) -> Result<Vec<Conflict>, HostsError> {
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let block = find_block(&lines)?;
+    let tld = tld.to_ascii_lowercase();
+    let suffix = format!(".{tld}");
+    Ok(defined_outside(&lines, block, |name| {
+        name == tld || name.ends_with(&suffix)
+    }))
 }
 
 fn render(names: &[String], eol: &str) -> String {

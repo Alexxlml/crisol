@@ -856,6 +856,11 @@ php = \"8.4\"
     assert_eq!(catalog.recommended("php"), Some("8.4"));
     assert!(catalog.is_end_of_life("php", &Version::parse("7.4.33").unwrap()));
     assert!(!catalog.is_end_of_life("php", &Version::parse("8.4.2").unwrap()));
+    // A version the catalog does not list (from `--from`) takes what it says of its line.
+    assert!(catalog.is_end_of_life("php", &Version::parse("7.4.34").unwrap()));
+    assert!(!catalog.is_end_of_life("php", &Version::parse("8.4.99").unwrap()));
+    assert!(!catalog.is_end_of_life("php", &Version::parse("9.0.0").unwrap()));
+    assert!(!catalog.is_end_of_life("nginx", &Version::parse("7.4.34").unwrap()));
 
     let target = Target {
         os: Os::Windows,

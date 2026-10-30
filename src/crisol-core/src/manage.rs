@@ -307,10 +307,10 @@ pub fn install_version_from(
             .as_ref()
             .map(|root| root.replace(&template.version.to_string(), &parsed.to_string()));
         let package = Package {
+            end_of_life: env.catalog.is_end_of_life(service, &parsed),
             version: parsed,
             sha256: given,
             size: None,
-            end_of_life: false,
             root,
             ..template.clone()
         };

@@ -7,6 +7,8 @@ mod console;
 #[cfg(windows)]
 mod db_admin;
 #[cfg(windows)]
+mod diagnose;
+#[cfg(windows)]
 mod file_owner;
 #[cfg(windows)]
 mod helper_install;

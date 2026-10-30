@@ -132,7 +132,13 @@ pub fn run(
                     busy.remove(at);
                 }
                 info!("{}: finished", done.label);
-                let _ = done.reply.send(done.outcome);
+                // The worker sees the files; what the services are doing is the actor's to add.
+                let outcome = if done.label == "doctor" {
+                    done.outcome.map(|reply| daemon.complete_doctor(reply))
+                } else {
+                    done.outcome
+                };
+                let _ = done.reply.send(outcome);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,

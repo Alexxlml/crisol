@@ -431,12 +431,22 @@ impl Catalog {
         self.recommended.get(service).map(String::as_str)
     }
 
-    /// Whether the catalog marks this version of `service` as no longer supported.
+    /// Whether the catalog marks this version of `service` as no longer supported. A version
+    /// it does not list (one installed with `--from`, ADR-0020) takes what the catalog says of
+    /// its line (`7.4` for `7.4.34`): unsupported when every version of that line it lists is.
     #[must_use]
     pub fn is_end_of_life(&self, service: &str, version: &Version) -> bool {
-        self.packages
-            .iter()
-            .any(|p| p.end_of_life && p.service == service && &p.version == version)
+        let mut same_service = self.packages.iter().filter(|p| p.service == service);
+        if let Some(exact) = same_service.clone().find(|p| &p.version == version) {
+            return exact.end_of_life;
+        }
+        let line = |v: &Version| v.parts().iter().take(2).copied().collect::<Vec<_>>();
+        let wanted = line(version);
+        let mut of_line = same_service
+            .by_ref()
+            .filter(|p| line(&p.version) == wanted)
+            .peekable();
+        of_line.peek().is_some() && of_line.all(|p| p.end_of_life)
     }
 
     /// The advisories that affect this version of `service` (ADR-0020).

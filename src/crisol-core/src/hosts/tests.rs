@@ -220,3 +220,16 @@ fn error_messages_have_no_double_spaces() {
         assert!(!error.to_string().contains("  "), "{error}");
     }
 }
+
+#[test]
+fn the_names_of_the_suffix_outside_the_block_are_found_and_the_block_is_not() {
+    let content = format!(
+        "{HERD}10.0.0.5 API.Shop.TEST shop.example\r\n127.0.0.1 testing.com\r\n\
+         # BEGIN CRISOL\r\n127.0.0.1 mine.test\r\n# END CRISOL\r\n"
+    );
+    let found = foreign_names(&content, "test").unwrap();
+    let found: Vec<(usize, &str)> = found.iter().map(|c| (c.line, c.name.as_str())).collect();
+    assert_eq!(found, [(5, "old.test"), (7, "api.shop.test")]);
+    assert_eq!(foreign_names("127.0.0.1 localhost\n", "test").unwrap(), []);
+    assert!(foreign_names("# BEGIN CRISOL\n", "test").is_err());
+}

@@ -11,7 +11,7 @@
 //! - Each setting has a single source of truth: this file. Generated files under `etc/`
 //!   are derived from it and are never read back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -452,6 +452,25 @@ impl Config {
             .into_iter()
             .filter(|(field, _)| *field != "php.base_port")
             .map(|(_, port)| port)
+            .collect()
+    }
+
+    /// The ports of the enabled services with one or two fixed ports, as `(service, field,
+    /// port)`: `("mysql", "services.mysql.port", 3306)`. The PHP pool is not in the list: its
+    /// ports are chosen around the others.
+    #[must_use]
+    pub fn enabled_service_ports(&self) -> Vec<(&'static str, &'static str, u16)> {
+        let enabled: BTreeSet<&str> = self
+            .enabled_ports()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        self.single_ports()
+            .into_iter()
+            .filter_map(|(field, port)| {
+                let service = field.strip_prefix("services.")?.split('.').next()?;
+                enabled.contains(service).then_some((service, field, port))
+            })
             .collect()
     }
 
@@ -979,5 +998,23 @@ tld = \"{tld}\"
         let text = ConfigWarning::PublicTld("dev".to_owned()).to_string();
         assert!(!text.contains("  "), "{text}");
         assert!(text.contains("example, invalid, local, internal"), "{text}");
+    }
+
+    #[test]
+    fn the_ports_of_the_enabled_services_name_their_field() {
+        let config = load(
+            "[services.mysql]\nenabled = true\nport = 3307\n\n[services.mailpit]\nenabled = true\n",
+        )
+        .config;
+        assert_eq!(
+            config.enabled_service_ports(),
+            [
+                ("nginx", "services.nginx.http_port", 80),
+                ("nginx", "services.nginx.https_port", 443),
+                ("mysql", "services.mysql.port", 3307),
+                ("mailpit", "services.mailpit.port", 8025),
+                ("mailpit", "services.mailpit.smtp_port", 1025),
+            ]
+        );
     }
 }

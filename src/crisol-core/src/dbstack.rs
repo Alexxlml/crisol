@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crisol_protocol::{ErrorCode, RpcError};
 
@@ -38,6 +38,10 @@ pub struct DbStack {
     restarting: BTreeSet<DbKind>,
     /// Things to tell whoever asked for the start (a new series that begins empty).
     notices: Vec<String>,
+    /// When each database that already had its data was launched, until it is ready.
+    launched: BTreeMap<DbKind, Instant>,
+    /// How long the last such start took to be ready, for `doctor` (F11.1).
+    startup_times: BTreeMap<DbKind, Duration>,
 }
 
 impl std::fmt::Debug for DbStack {
@@ -77,6 +81,8 @@ impl DbStack {
             services: BTreeMap::new(),
             restarting: BTreeSet::new(),
             notices: Vec::new(),
+            launched: BTreeMap::new(),
+            startup_times: BTreeMap::new(),
         }
     }
 
@@ -185,9 +191,14 @@ impl DbStack {
         }
         self.notices
             .extend(crate::dbservice::new_series_notice(&self.paths, &plan));
+        // A first start also makes the data, which says nothing about how fast the server is.
+        let measured = plan.data.is_dir();
         let mut service = DbService::new(plan, self.supervisor.clone(), self.ports.clone());
         let events = tagged(kind.service(), service.start(now));
         self.services.insert(kind, service);
+        if measured {
+            self.launched.insert(kind, now);
+        }
         Ok(events)
     }
 
@@ -261,7 +272,24 @@ impl DbStack {
     pub fn tick(&mut self, now: Instant) -> DbEvents {
         let mut events = Vec::new();
         for (kind, service) in &mut self.services {
-            events.extend(tagged(kind.service(), service.tick(now)));
+            let ticked = service.tick(now);
+            for event in &ticked {
+                if let ServiceEvent::StateChanged { to, .. } = event {
+                    match to {
+                        ServiceState::Starting => {}
+                        ServiceState::Running => {
+                            if let Some(at) = self.launched.remove(kind) {
+                                self.startup_times
+                                    .insert(*kind, now.saturating_duration_since(at));
+                            }
+                        }
+                        _ => {
+                            self.launched.remove(kind);
+                        }
+                    }
+                }
+            }
+            events.extend(tagged(kind.service(), ticked));
         }
         let ready: Vec<DbKind> = self
             .restarting
@@ -323,6 +351,16 @@ impl DbStack {
         self.services
             .iter()
             .map(|(kind, service)| (kind.service().to_owned(), service.state().clone()))
+            .collect()
+    }
+
+    /// How long the databases took to be ready the last time they started with their data
+    /// already made (a first start, which makes it, is not measured).
+    #[must_use]
+    pub fn startup_times(&self) -> Vec<(String, Duration)> {
+        self.startup_times
+            .iter()
+            .map(|(kind, took)| (kind.service().to_owned(), *took))
             .collect()
     }
 

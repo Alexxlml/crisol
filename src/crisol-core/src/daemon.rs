@@ -15,13 +15,15 @@
 //! served and a removed one is not, without anybody asking.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crisol_protocol::{
-    Call, DoneInfo, ErrorCode, Event, HelloInfo, Reply, RpcError, ServiceInfo, StatusInfo,
-    PROTOCOL_VERSION,
+    Call, Check, CheckStatus, DoneInfo, ErrorCode, Event, HelloInfo, Reply, RpcError, ServiceInfo,
+    StatusInfo, PROTOCOL_VERSION,
 };
 
 use crate::config::Config;
@@ -29,12 +31,17 @@ use crate::dbservice::DbKind;
 use crate::dbstack::{DbEvents, DbStack};
 use crate::engine::{home_error, Engine};
 use crate::manage::list_installed;
-use crate::service::ServiceState;
+use crate::ports::PortStatus;
+use crate::service::{FailureReason, ServiceState};
 use crate::sites::SitesFile;
 use crate::web::{plan_web, WebError, WebEvent, WebPlan, WebStack};
 
 /// How often the user's files are looked at.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
+
+/// A database that takes longer than this to be ready, with its data already made, is slow:
+/// they start in a few seconds when nothing gets in the way.
+const SLOW_START: Duration = Duration::from_secs(10);
 
 /// The daemon's state.
 #[derive(Debug)]
@@ -217,6 +224,9 @@ impl Daemon {
             // A change to the user's files is applied to the running services at once.
             if answer.is_ok() && changes_sites(call) {
                 self.refresh(now, events);
+            }
+            if matches!(call, Call::Doctor) {
+                return answer.map(|reply| self.complete_doctor(reply));
             }
             return answer;
         }
@@ -617,6 +627,168 @@ impl Daemon {
         done("Restarting the web stack", true)
     }
 
+    // ---- doctor -------------------------------------------------------------------------
+
+    /// Adds to the answer of `doctor` what only the daemon knows (F11.1): the services that
+    /// failed and why, the ports of the enabled services it is not running that something else
+    /// holds, and how long the databases took to be ready. They go right after `sites`. Nothing
+    /// is added while there is no home.
+    #[must_use]
+    pub fn complete_doctor(&self, reply: Reply) -> Reply {
+        match reply {
+            Reply::Doctor { mut checks } if self.engine.paths().home().exists() => {
+                let at = checks
+                    .iter()
+                    .position(|c| c.name == "sites")
+                    .map_or(checks.len(), |i| i + 1);
+                let mut mine = vec![self.check_services()];
+                mine.extend(self.check_ports());
+                mine.extend(self.check_startup_times());
+                checks.splice(at..at, mine);
+                Reply::Doctor { checks }
+            }
+            other => other,
+        }
+    }
+
+    /// Every service the daemon has, web stack and databases, with its state.
+    fn all_states(&self) -> Vec<(String, ServiceState)> {
+        let mut states = self
+            .stack
+            .as_ref()
+            .map(WebStack::services)
+            .unwrap_or_default();
+        states.extend(self.dbs.states());
+        states
+    }
+
+    fn check_services(&self) -> Check {
+        let name = "services".to_owned();
+        let states = self.all_states();
+        let system = &self.engine.deps().system;
+        let mut failed = Vec::new();
+        let mut first = None;
+        for (service, state) in &states {
+            let ServiceState::Failed(reason) = state else {
+                continue;
+            };
+            let mut line = format!("{service} {reason}");
+            if let Some(why) = exit_code(reason).and_then(|code| system.explain_exit(code)) {
+                let _ = write!(line, " ({why})");
+            }
+            failed.push(line);
+            first.get_or_insert_with(|| service.clone());
+        }
+        if let Some(first) = first {
+            return Check {
+                name,
+                status: CheckStatus::Problem,
+                detail: format!("failed: {}", failed.join("; ")),
+                fix: Some(format!("crisol logs {first}")),
+            };
+        }
+        let running: Vec<&str> = states
+            .iter()
+            .filter(|(_, state)| *state == ServiceState::Running)
+            .map(|(service, _)| service.as_str())
+            .collect();
+        Check {
+            name,
+            status: CheckStatus::Ok,
+            detail: if running.is_empty() {
+                "nothing is running; `crisol start` starts the services".to_owned()
+            } else {
+                format!("running: {}", running.join(", "))
+            },
+            fix: None,
+        }
+    }
+
+    /// The ports of the enabled services that are not running and that something else holds:
+    /// they would fail at `crisol start`. The ports of the running ones are theirs.
+    fn check_ports(&self) -> Option<Check> {
+        let config = Config::load_from(self.engine.paths()).ok()?.config;
+        let active: Vec<String> = self
+            .all_states()
+            .into_iter()
+            .filter(|(_, state)| !matches!(state, ServiceState::Stopped | ServiceState::Failed(_)))
+            .map(|(service, _)| service)
+            .collect();
+        let probe = &self.engine.deps().probe;
+        let mut taken = Vec::new();
+        let mut fix = None;
+        let mut seen = BTreeSet::new();
+        for (service, field, port) in config.enabled_service_ports() {
+            if active.iter().any(|a| a == service) || !seen.insert(port) {
+                continue;
+            }
+            let reason = match probe.probe(port) {
+                Ok(PortStatus::Free) => continue,
+                Ok(PortStatus::InUse(owners)) => {
+                    FailureReason::PortBusy { port, owners }.to_string()
+                }
+                Ok(PortStatus::Reserved) => FailureReason::PortReserved(port).to_string(),
+                Err(error) => format!("port {port} could not be checked: {error}"),
+            };
+            taken.push(format!("{service}: {reason}"));
+            if fix.is_none() {
+                if let Ok(Some(free)) = probe.suggest_free(port, 100) {
+                    fix = Some(set_port_fix(field, free));
+                }
+            }
+        }
+        (!taken.is_empty()).then(|| Check {
+            name: "ports".to_owned(),
+            status: CheckStatus::Problem,
+            detail: format!(
+                "{}; Crisol never stops another program to take its port",
+                taken.join("; ")
+            ),
+            fix,
+        })
+    }
+
+    /// How long the databases took to be ready the last time they started with their data
+    /// already made. A slow one is usually an antivirus reading every file of its data.
+    fn check_startup_times(&self) -> Option<Check> {
+        let times = self.dbs.startup_times();
+        if times.is_empty() {
+            return None;
+        }
+        let list = |only_slow: bool| {
+            times
+                .iter()
+                .filter(|(_, took)| !only_slow || *took >= SLOW_START)
+                .map(|(service, took)| format!("{service} {:.1} s", took.as_secs_f32()))
+                .collect::<Vec<_>>()
+        };
+        let slow = list(true);
+        let name = "database startup".to_owned();
+        if slow.is_empty() {
+            return Some(Check {
+                name,
+                status: CheckStatus::Ok,
+                detail: format!("ready in {}", list(false).join(", ")),
+                fix: None,
+            });
+        }
+        let hint = self
+            .engine
+            .deps()
+            .system
+            .slow_start_hint(self.engine.paths());
+        Some(Check {
+            name,
+            status: CheckStatus::Warning,
+            detail: format!(
+                "slow to be ready: {} (they usually take a few seconds); an antivirus that reads every file of {} is the usual cause",
+                slow.join(", "),
+                self.engine.paths().data_dir().display()
+            ),
+            fix: hint,
+        })
+    }
+
     // ---- building and refreshing the stack ----------------------------------------------
 
     fn config(&self) -> Result<Config, RpcError> {
@@ -768,6 +940,25 @@ impl Daemon {
             }
         }
         hasher.finish()
+    }
+}
+
+/// The exit code a failure carries, if any.
+fn exit_code(reason: &FailureReason) -> Option<i32> {
+    match reason {
+        FailureReason::ExitedDuringStartup { code } | FailureReason::Crashed { code } => *code,
+        _ => None,
+    }
+}
+
+/// How to give a service another port: `services.mysql.port` is `port` under
+/// `[services.mysql]`.
+fn set_port_fix(field: &str, free: u16) -> String {
+    match field.rsplit_once('.') {
+        Some((table, key)) => {
+            format!("in crisol.toml, set `{key} = {free}` under `[{table}]` (that port is free)")
+        }
+        None => format!("in crisol.toml, set `{field} = {free}` (that port is free)"),
     }
 }
 

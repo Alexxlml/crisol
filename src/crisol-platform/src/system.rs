@@ -17,7 +17,7 @@ use crisol_core::catalog::{Catalog, Target};
 use crisol_core::dns::{status as nrpt_status, NrptStatus};
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::HttpFetcher;
-use crisol_core::hosts::{block_names, HostsFile};
+use crisol_core::hosts::{block_names, foreign_names, HostsFile};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
 use crisol_core::shimsetup::{describe_shadows, path_status};
@@ -68,15 +68,17 @@ fn check(name: &str, status: CheckStatus, detail: impl Into<String>, fix: Option
 impl SystemChecks for WindowsSystemChecks {
     fn checks(&self, paths: &CrisolPaths) -> Vec<Check> {
         let tld = suffix_of(paths);
+        let daemon_running = crate::pipe_name_for_user(paths.home())
+            .is_ok_and(|name| crate::connect_to_daemon(&name).is_ok());
         let mut checks = vec![
             path_check(paths),
             helper_check(),
-            nrpt_check(&tld),
-            hosts_check(),
+            nrpt_check(&tld, daemon_running),
+            hosts_check(&tld),
             trust_check(paths),
+            crate::diagnose::vc_runtime_check(),
+            crate::diagnose::ipv6_check(),
         ];
-        let daemon_running = crate::pipe_name_for_user(paths.home())
-            .is_ok_and(|name| crate::connect_to_daemon(&name).is_ok());
         checks.extend(crisol_core::autostart::check(
             &RegistryAutostart::new(),
             &WindowsPrivateDirs::new(),
@@ -94,6 +96,18 @@ impl SystemChecks for WindowsSystemChecks {
             )],
             _ => Vec::new(),
         }
+    }
+
+    fn hosts_content(&self) -> Option<io::Result<String>> {
+        Some(FileHosts::system().and_then(|file| file.read()))
+    }
+
+    fn explain_exit(&self, code: i32) -> Option<String> {
+        crate::diagnose::explain_exit(code)
+    }
+
+    fn slow_start_hint(&self, paths: &CrisolPaths) -> Option<String> {
+        Some(crate::diagnose::slow_start_hint(&paths.data_dir()))
     }
 }
 
@@ -172,14 +186,39 @@ fn helper_check() -> Check {
     }
 }
 
-fn nrpt_check(tld: &str) -> Check {
+fn nrpt_check(tld: &str, daemon_running: bool) -> Check {
     let name = "DNS rule";
     match nrpt_status(&PowerShellNrpt, tld) {
+        // The rule alone says nothing about whether the answers arrive: ask Windows.
+        Ok(NrptStatus::Ours(rule)) if daemon_running => match resolves_locally(tld) {
+            Ok(()) => check(
+                name,
+                CheckStatus::Ok,
+                format!(
+                    "{} goes to {}, and Windows gets this computer's address for its names",
+                    rule.namespace, rule.name_server
+                ),
+                None,
+            ),
+            Err(why) => check(
+                name,
+                CheckStatus::Problem,
+                format!(
+                    "{} goes to {}, but {why}; a VPN or a DNS client that ignores the rule is the usual cause",
+                    rule.namespace, rule.name_server
+                ),
+                Some("ipconfig /flushdns, then crisol doctor again"),
+            ),
+        },
+        // Without the daemon nobody answers: programs wait and then give up.
         Ok(NrptStatus::Ours(rule)) => check(
             name,
-            CheckStatus::Ok,
-            format!("{} goes to {}", rule.namespace, rule.name_server),
-            None,
+            CheckStatus::Warning,
+            format!(
+                "{} goes to {}, which does not answer while the daemon is stopped, so the names do not resolve",
+                rule.namespace, rule.name_server
+            ),
+            Some("crisol start"),
         ),
         Ok(NrptStatus::Absent) => check(
             name,
@@ -200,34 +239,64 @@ fn nrpt_check(tld: &str) -> Check {
     }
 }
 
-fn hosts_check() -> Check {
-    let name = "hosts block";
-    let read = FileHosts::system().and_then(|file| file.read());
-    match read.map(|text| block_names(&text)) {
-        Ok(Ok(names)) if names.is_empty() => check(
-            name,
-            CheckStatus::Ok,
-            "Crisol has no names in the hosts file",
-            None,
-        ),
-        Ok(Ok(names)) => check(
-            name,
-            CheckStatus::Ok,
-            format!(
-                "{} name(s) in Crisol's block: {}",
-                names.len(),
-                names.join(", ")
-            ),
-            None,
-        ),
-        Ok(Err(error)) => check(name, CheckStatus::Problem, error.to_string(), None),
-        Err(error) => check(
-            name,
-            CheckStatus::Warning,
-            format!("cannot read the hosts file: {error}"),
-            None,
-        ),
+/// Resolves a name under `.tld` that no site has, through the resolver every program uses, and
+/// says what went wrong if it does not come back as this computer.
+fn resolves_locally(tld: &str) -> Result<(), String> {
+    use std::net::ToSocketAddrs as _;
+    let probe = format!("crisol-doctor.{tld}");
+    let addresses: Vec<std::net::IpAddr> = (probe.as_str(), 80)
+        .to_socket_addrs()
+        .map_err(|e| format!("`{probe}` does not resolve ({e})"))?
+        .map(|a| a.ip())
+        .collect();
+    if !addresses.is_empty() && addresses.iter().all(std::net::IpAddr::is_loopback) {
+        Ok(())
+    } else {
+        let list: Vec<String> = addresses.iter().map(ToString::to_string).collect();
+        Err(format!(
+            "`{probe}` resolves to {}, not to this computer",
+            list.join(", ")
+        ))
     }
+}
+
+fn hosts_check(tld: &str) -> Check {
+    let name = "hosts block";
+    let text = match FileHosts::system().and_then(|file| file.read()) {
+        Ok(text) => text,
+        Err(error) => {
+            return check(
+                name,
+                CheckStatus::Warning,
+                format!("cannot read the hosts file: {error}"),
+                None,
+            )
+        }
+    };
+    let (names, foreign) =
+        match block_names(&text).and_then(|n| Ok((n, foreign_names(&text, tld)?))) {
+            Ok(found) => found,
+            Err(error) => return check(name, CheckStatus::Problem, error.to_string(), None),
+        };
+    let ours = if names.is_empty() {
+        "Crisol has no names in the hosts file".to_owned()
+    } else {
+        format!(
+            "{} name(s) in Crisol's block: {}",
+            names.len(),
+            names.join(", ")
+        )
+    };
+    // Whether one of them is a site of Crisol's is the engine's to say (`site names`).
+    let detail = if foreign.is_empty() {
+        ours
+    } else {
+        format!(
+            "{ours}; {} other name(s) under .{tld} are defined outside it by other tools",
+            foreign.len()
+        )
+    };
+    check(name, CheckStatus::Ok, detail, None)
 }
 
 fn trust_check(paths: &CrisolPaths) -> Check {
@@ -266,7 +335,8 @@ fn trust_check(paths: &CrisolPaths) -> Check {
             name,
             CheckStatus::Warning,
             format!(
-                "{} is not trusted by Windows: browsers warn about secured sites",
+                "{} is not trusted by Windows: browsers warn about secured sites, and PHP streams \
+                 (`file_get_contents`) refuse them although cURL in PHP accepts them",
                 ca.info().common_name
             ),
             None,
@@ -299,7 +369,9 @@ mod tests {
                 "privileged helper",
                 "DNS rule",
                 "hosts block",
-                "local CA"
+                "local CA",
+                "Visual C++ runtime",
+                "IPv6 loopback"
             ]
         );
         for check in &checks {
