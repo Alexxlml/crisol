@@ -141,3 +141,25 @@ Lo que encontraron las vueltas anteriores, ya corregido:
 - Después, `<home>\data` ya no estaba. La ajena y las 17 exclusiones previas del propietario (Herd, Laragon, Devaron…) seguían intactas.
 
 **F11.2 queda verificada por completo.**
+
+## Corrección: desinstalación segura (propietario, 2026-10-29)
+
+Al responder la revisión, el propietario cambió lo que hace `uninstall --all` **sin** `--purge`. Ahora es una **desinstalación segura**: deja solo lo que es del usuario y borra lo demás de Crisol.
+
+- **Se queda** (`teardown::kept_entries`):
+  - `data/` y `secrets/`: las bases y sus contraseñas, que van juntas, porque sin las contraseñas los datos quedan inaccesibles;
+  - `crisol.toml`, `sites.toml` y los `overrides` de `etc/<servicio>/`: la configuración del usuario;
+  - `www/`: los proyectos.
+- **Se borra** (paso `clean`):
+  - `bin/`, `logs/`, `certs/`, `cache/`, `shims/` y `state/`;
+  - lo que Crisol generó en `etc/`.
+
+  La lista de lo que queda lo dice: «your databases (mysql…) and their passwords, your settings and your projects».
+- **Se borran los programas** (paso `programs`): `crisol.exe`, `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe`, los que haya junto a `crisol.exe`.
+  - Un programa no puede borrarse mientras corre, así que un `cmd` separado los borra unos segundos después de que termina el comando (`crisol_platform::schedule_delete`).
+  - Una ruta con `%`, `!`, `^` o comillas se rechaza: `cmd` la leería como otra cosa. En ese caso, el usuario los borra a mano.
+- **`--purge`** sigue borrando la home entera, y también los programas.
+- **Las mismas protecciones de la purga:**
+  - con algo ajeno a Crisol en la home, no se borra nada de ella;
+  - si algo anterior se rechazó o falló, ni la home ni los programas se tocan («skipped»), para poder volver a ejecutarlo con los mismos programas.
+- **Una sola confirmación** también con `--purge`: el aviso ya lo dice todo (propietario).

@@ -57,8 +57,8 @@ pub use defender::DefenderExclusions;
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
 pub use helper_install::{
-    install_into, install_self, remove_installation, remove_system_changes, uninstall_self,
-    WindowsSetup,
+    install_into, install_self, remove_installation, remove_system_changes, schedule_delete,
+    uninstall_self, WindowsSetup,
 };
 #[cfg(windows)]
 pub use helper_location::{HelperLocation, HELPER_VERSION};

@@ -288,6 +288,47 @@ fn schedule_removal(folder: &Path) -> io::Result<()> {
         .map(drop)
 }
 
+/// Deletes `files` a moment after this program has ended, for `uninstall --all` (ADR-0022):
+/// `crisol.exe` cannot delete itself while it runs. A detached `cmd` waits and deletes them.
+/// A path `cmd` would read as something else (`%`, `!`, a quote) is refused, and nothing is
+/// scheduled.
+pub fn schedule_delete(files: &[PathBuf]) -> io::Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if let Some(odd) = files
+        .iter()
+        .find(|f| f.to_string_lossy().contains(['%', '!', '"', '^']))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} has a character that cannot be handed to cmd",
+                odd.display()
+            ),
+        ));
+    }
+    let system = system_directory()?;
+    let quoted: Vec<String> = files
+        .iter()
+        .map(|f| format!("\"{}\"", f.display()))
+        .collect();
+    let command = format!(
+        "\"\"{}\" -n 3 127.0.0.1 >nul & del /F /Q {}\"",
+        system.join("PING.EXE").display(),
+        quoted.join(" ")
+    );
+    Command::new(system.join("cmd.exe"))
+        .arg("/C")
+        .raw_arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+        .map(drop)
+}
+
 /// Installs and removes the helper through the UAC prompt, from the program that is next to
 /// this one.
 #[derive(Clone)]

@@ -67,6 +67,24 @@ fn main() -> ExitCode {
             std::io::stdin().read_line(&mut answer).is_ok()
                 && answer.trim().eq_ignore_ascii_case("yes")
         }),
+        // The programs that came together; `uninstall --all` deletes the ones that are there.
+        programs: std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+            .map(|dir| {
+                [
+                    "crisol.exe",
+                    "crisold.exe",
+                    "crisol-shim.exe",
+                    "crisol-elevate.exe",
+                ]
+                .iter()
+                .map(|name| dir.join(name))
+                .filter(|path| path.is_file())
+                .collect()
+            })
+            .unwrap_or_default(),
+        remove_programs: Box::new(crisol_platform::schedule_delete),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {
             Some(path) if path.is_file() => spawn_daemon(path),

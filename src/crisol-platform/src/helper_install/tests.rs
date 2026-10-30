@@ -305,3 +305,30 @@ fn waiting_for_the_helper_folder_ends_when_it_goes_or_when_time_is_up() {
         Duration::ZERO
     ));
 }
+
+#[test]
+fn programs_scheduled_for_deletion_go_a_moment_later() {
+    let tmp = TempDir::new().unwrap();
+    let files: Vec<PathBuf> = ["crisol.exe", "crisol shim.exe"]
+        .iter()
+        .map(|name| tmp.path().join(name))
+        .collect();
+    for file in &files {
+        fs::write(file, "MZ").unwrap();
+    }
+    schedule_delete(&files).unwrap();
+    assert!(
+        files[0].exists(),
+        "not at once: the program is still running"
+    );
+    for file in &files {
+        assert!(
+            wait_until_gone(file, Duration::from_secs(20)),
+            "{}",
+            file.display()
+        );
+    }
+    assert!(schedule_delete(&[]).is_ok());
+    let odd = schedule_delete(&[tmp.path().join("100%.exe")]).unwrap_err();
+    assert_eq!(odd.kind(), io::ErrorKind::InvalidInput);
+}

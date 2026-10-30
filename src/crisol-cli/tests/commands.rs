@@ -199,6 +199,8 @@ struct Env {
     setup: Arc<FakeSetup>,
     /// What `confirm` answers, and the questions it was asked.
     confirm: Arc<Mutex<(bool, Vec<String>)>>,
+    /// The programs `uninstall --all` asked to delete.
+    removed_programs: Arc<Mutex<Vec<std::path::PathBuf>>>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -261,6 +263,7 @@ impl Env {
             terminals: Arc::default(),
             setup: Arc::new(FakeSetup::new()),
             confirm: Arc::default(),
+            removed_programs: Arc::default(),
             driver_stop,
             driver,
         }
@@ -332,6 +335,14 @@ impl Env {
                     let mut state = confirm.lock().unwrap();
                     state.1.push(question.to_owned());
                     state.0
+                })
+            },
+            programs: vec![self.daemon_exe.clone(), self.shim_exe.clone()],
+            remove_programs: {
+                let removed = Arc::clone(&self.removed_programs);
+                Box::new(move |files| {
+                    removed.lock().unwrap().extend(files.iter().cloned());
+                    Ok(())
                 })
             },
             dirs: self.dirs.clone(),
@@ -1382,7 +1393,8 @@ fn uninstall_all_lists_everything_asks_and_takes_crisol_out_of_windows() {
         "out of your user PATH",
         "Crisol Local CA",
         "the Defender exclusions inside",
-        "--purge` deletes it",
+        "--purge` deletes them too",
+        "Delete Crisol's programs when this command ends",
         "Nothing was changed",
     ] {
         assert!(out.contains(line), "{line}: {out}");
@@ -1410,7 +1422,15 @@ fn uninstall_all_lists_everything_asks_and_takes_crisol_out_of_windows() {
         env.setup.calls(),
         [format!("uninstall test {}", env.paths.home().display())]
     );
+    assert!(out.contains("[done] Deleted what Crisol keeps in"), "{out}");
+    assert!(out.contains("[done] Crisol's programs go away"), "{out}");
     assert!(env.paths.home().is_dir(), "kept without --purge");
+    assert!(env.paths.config_file().is_file(), "the settings stay");
+    assert!(!env.paths.bin_dir().exists(), "the installed versions go");
+    assert_eq!(
+        *env.removed_programs.lock().unwrap(),
+        [env.daemon_exe.clone(), env.shim_exe.clone()]
+    );
 }
 
 #[test]

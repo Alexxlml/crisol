@@ -57,6 +57,8 @@ impl World {
             trust: Ok(&self.trust),
             setup,
             daemon_running,
+            programs: Vec::new(),
+            remove_programs: &|_| Ok(()),
         }
     }
 }
@@ -78,7 +80,10 @@ fn everything_crisol_changed_is_listed_and_then_undone() {
     let system = world.system(&setup, true);
 
     let plan = plan(&system, false);
-    assert_eq!(ids(&plan), ["daemon", "autostart", "path", "ca", "helper"]);
+    assert_eq!(
+        ids(&plan),
+        ["daemon", "autostart", "path", "ca", "helper", "clean"]
+    );
     assert!(plan.problems.is_empty(), "{:?}", plan.problems);
     assert!(
         plan.by_hand.is_empty(),
@@ -132,7 +137,106 @@ fn every_crisol_ca_goes_the_current_one_and_the_older_ones() {
     world.trust.add(older.cert_der()).unwrap();
     let setup = FakeSetup::not_installed();
     let plan = plan(&world.system(&setup, false), false);
-    assert_eq!(ids(&plan), ["ca", "ca"]);
+    assert_eq!(ids(&plan), ["ca", "ca", "clean"]);
+}
+
+#[test]
+fn a_safe_uninstall_keeps_the_databases_their_passwords_the_settings_and_the_projects() {
+    let world = World::new();
+    let paths = &world.paths;
+    let kept = [
+        paths.config_file(),
+        paths.sites_file(),
+        paths.data_dir().join("mysql").join("8.4").join("ibdata1"),
+        paths.secrets_dir().join("mysql.toml"),
+        paths.www_dir().join("shop").join("index.php"),
+        paths
+            .etc_dir()
+            .join("mysql")
+            .join("overrides")
+            .join("mine.ini"),
+    ];
+    let gone = [
+        paths
+            .bin_dir()
+            .join("php")
+            .join("8.4.26")
+            .join("php-cgi.exe"),
+        paths.logs_dir().join("nginx").join("runtime.log"),
+        paths.cache_dir().join("npm").join("x"),
+        paths.shims_dir().join("php.exe"),
+        paths.state_dir().join("x"),
+        paths.etc_dir().join("mysql").join("8.4").join("my.ini"),
+        paths.etc_dir().join("nginx").join("nginx.conf"),
+    ];
+    for file in kept.iter().chain(&gone) {
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, "x").unwrap();
+    }
+    let removed = std::sync::Mutex::new(Vec::new());
+    let remove = |files: &[PathBuf]| {
+        removed.lock().unwrap().extend(files.iter().cloned());
+        Ok(())
+    };
+    let setup = FakeSetup::not_installed();
+    let mut system = world.system(&setup, false);
+    system.programs = vec![PathBuf::from(r"C:\Tools\crisol.exe")];
+    system.remove_programs = &remove;
+
+    let plan = plan(&system, false);
+    assert_eq!(ids(&plan), ["ca", "clean", "programs"]);
+    assert!(
+        plan.kept[0].contains("databases (mysql)"),
+        "{:?}",
+        plan.kept
+    );
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    for file in &kept {
+        assert!(file.is_file(), "kept: {}", file.display());
+    }
+    for file in &gone {
+        assert!(!file.exists(), "gone: {}", file.display());
+    }
+    assert!(!paths.bin_dir().exists() && !paths.certs_dir().exists());
+    assert!(
+        !paths.etc_dir().join("nginx").exists(),
+        "an empty folder goes"
+    );
+    assert_eq!(
+        *removed.lock().unwrap(),
+        [PathBuf::from(r"C:\Tools\crisol.exe")]
+    );
+
+    // Again: there is nothing more to clean.
+    assert_eq!(
+        ids(&super::plan(&world.system(&setup, false), false)),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn after_a_no_nothing_is_deleted_and_the_programs_stay_to_run_it_again() {
+    let world = World::new();
+    world.trust.decline_removals();
+    fs::create_dir_all(world.paths.bin_dir().join("php")).unwrap();
+    let setup = FakeSetup::not_installed();
+    let mut system = world.system(&setup, false);
+    system.programs = vec![PathBuf::from(r"C:\Tools\crisol.exe")];
+    system.remove_programs = &|_| panic!("the programs must stay");
+
+    let plan = plan(&system, false);
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert_eq!(
+        kinds(&outcomes),
+        [
+            ("ca", OutcomeKind::Declined),
+            ("clean", OutcomeKind::Skipped),
+            ("programs", OutcomeKind::Skipped),
+        ]
+    );
+    assert!(world.paths.bin_dir().join("php").is_dir());
+    assert!(world.paths.certs_dir().join("ca.pem").is_file());
 }
 
 #[test]
@@ -197,6 +301,11 @@ fn a_home_with_anything_else_in_it_is_never_deleted() {
 
     let plan = plan(&system, true);
     assert_eq!(ids(&plan), ["ca"], "no purge step");
+    assert_eq!(
+        ids(&super::plan(&system, false)),
+        ["ca"],
+        "nor a safe clean: it deletes nothing either"
+    );
     assert_eq!(
         plan.purge.as_ref().unwrap().foreign,
         std::slice::from_ref(&theirs)

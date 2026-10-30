@@ -12,10 +12,14 @@
 //!   and nothing else.
 //! - **A "no" is an answer.** Windows asks about each CA and about the elevation; a refusal is
 //!   [`OutcomeKind::Declined`], and the rest goes on. Running it again finishes what was left.
-//! - **The home is kept** unless `--purge` is asked for. Then only the entries Crisol makes in
-//!   it are deleted ([`own_entries`]); a home with anything else in it is not touched at all,
-//!   so a `CRISOL_HOME` pointed at the wrong folder deletes nothing of the user's. Nor is it
-//!   deleted when something before it was declined or failed.
+//! - **A safe uninstall keeps what is the user's** (decision of the owner, ADR-0022): the data
+//!   of the databases and their passwords, the settings and the projects ([`kept_entries`]).
+//!   Everything else Crisol keeps in its home goes ([`Step::Clean`]), and so do `crisol.exe`
+//!   and the programs next to it ([`Step::Programs`]). `--purge` deletes the whole home instead.
+//!   Only the entries Crisol makes are ever deleted ([`own_entries`]); a home with anything
+//!   else in it is not touched at all, so a `CRISOL_HOME` pointed at the wrong folder deletes
+//!   nothing of the user's. Nothing is deleted when something before it was declined or failed:
+//!   running it again must still be possible, with the same programs.
 //! - **What needs an administrator and has no helper to do it** is told as commands for the
 //!   user ([`Plan::by_hand`]).
 
@@ -47,6 +51,10 @@ pub struct System<'a> {
     pub setup: &'a dyn SystemSetup,
     /// Whether the daemon is running now.
     pub daemon_running: bool,
+    /// Crisol's programs (`crisol.exe` and the ones next to it) that are to go.
+    pub programs: Vec<PathBuf>,
+    /// Deletes them once this program has ended (it is one of them).
+    pub remove_programs: &'a dyn Fn(&[PathBuf]) -> io::Result<()>,
 }
 
 impl std::fmt::Debug for System<'_> {
@@ -87,10 +95,20 @@ pub enum Step {
         /// The home, whose antivirus exclusions go too.
         home: PathBuf,
     },
+    /// Delete what Crisol keeps in its home except what is the user's ([`kept_entries`]).
+    Clean {
+        /// The home.
+        home: PathBuf,
+    },
     /// Delete what Crisol keeps in its home, and the home.
     Purge {
         /// The home.
         home: PathBuf,
+    },
+    /// Delete Crisol's programs, once this command has ended.
+    Programs {
+        /// The files.
+        files: Vec<PathBuf>,
     },
 }
 
@@ -104,7 +122,9 @@ impl Step {
             Self::Path { .. } => "path",
             Self::Ca { .. } => "ca",
             Self::Helper { .. } => "helper",
+            Self::Clean { .. } => "clean",
             Self::Purge { .. } => "purge",
+            Self::Programs { .. } => "programs",
         }
     }
 
@@ -126,7 +146,19 @@ impl Step {
                 "With administrator rights (one prompt): remove the DNS rule for .{suffix}, Crisol's block of the hosts file, the Defender exclusions inside {} if there are any, and the helper in Program Files",
                 home.display()
             ),
+            Self::Clean { home } => format!(
+                "Delete what Crisol keeps in {}: the installed versions, the logs, the certificates, the cache, the shims and the configuration it generated. Your databases, their passwords, your settings and your projects stay",
+                home.display()
+            ),
             Self::Purge { home } => format!("Delete {} and everything in it", home.display()),
+            Self::Programs { files } => format!(
+                "Delete Crisol's programs when this command ends: {}",
+                files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -215,6 +247,33 @@ pub fn all_done(outcomes: &[Outcome]) -> bool {
         .all(|o| matches!(o.kind, OutcomeKind::Done | OutcomeKind::Nothing))
 }
 
+/// What a safe uninstall leaves in the home: the data of the databases and their passwords,
+/// the settings (`crisol.toml`, `sites.toml`, and the user's overrides in `etc/<service>/`)
+/// and the projects in `www/`.
+#[must_use]
+pub fn kept_entries(paths: &CrisolPaths) -> Vec<PathBuf> {
+    vec![
+        paths.config_file(),
+        paths.sites_file(),
+        paths.data_dir(),
+        paths.secrets_dir(),
+        paths.www_dir(),
+    ]
+}
+
+/// The name of the user's own configuration inside `etc/<service>/`, kept too.
+const OVERRIDES: &str = "overrides";
+
+/// What a safe uninstall deletes: every entry of the home that Crisol makes and is not kept.
+/// `etc/` is listed but only partly deleted (its `overrides` stay).
+fn cleanable_entries(paths: &CrisolPaths) -> Vec<PathBuf> {
+    let kept = kept_entries(paths);
+    own_entries(paths)
+        .into_iter()
+        .filter(|e| !kept.contains(e))
+        .collect()
+}
+
 /// The entries Crisol makes in its home: what `--purge` deletes.
 #[must_use]
 pub fn own_entries(paths: &CrisolPaths) -> Vec<PathBuf> {
@@ -245,6 +304,30 @@ fn names_in(dir: &Path) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+/// Whether `dir` is an empty folder.
+fn is_empty_dir(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+/// Whether a safe uninstall would delete anything: an entry it deletes, or something in `etc/`
+/// that is not an `overrides` folder.
+fn anything_to_clean(paths: &CrisolPaths) -> bool {
+    let etc = paths.etc_dir();
+    cleanable_entries(paths).iter().any(|entry| {
+        if *entry != etc {
+            return entry.exists();
+        }
+        fs::read_dir(entry).is_ok_and(|services| {
+            services.flatten().any(|service| {
+                !service.path().is_dir()
+                    || fs::read_dir(service.path())
+                        .is_ok_and(|inner| inner.flatten().any(|e| e.file_name() != OVERRIDES))
+                    || is_empty_dir(&service.path())
+            })
+        }) || is_empty_dir(entry)
+    })
 }
 
 fn purge_notice(paths: &CrisolPaths) -> io::Result<PurgeNotice> {
@@ -318,39 +401,55 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             "cannot tell whether the helper is installed ({error}); `crisol system uninstall` removes it"
         )),
     }
-    if purge {
-        match purge_notice(paths) {
-            Ok(notice) => {
-                if notice.foreign.is_empty() {
-                    plan.steps.push(Step::Purge { home: home.clone() });
-                } else {
-                    plan.problems.push(format!(
-                        "{} holds things that are not Crisol's, so it will not be deleted: {}. Move them out and run this again, or delete the folder yourself",
-                        home.display(),
-                        notice
-                            .foreign
-                            .iter()
-                            .map(|p| p.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
+    match purge_notice(paths) {
+        Ok(notice) if !notice.foreign.is_empty() => {
+            plan.problems.push(format!(
+                "{} holds things that are not Crisol's, so nothing in it will be deleted: {}. Move them out and run this again, or delete what you want yourself",
+                home.display(),
+                notice
+                    .foreign
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            if purge {
                 plan.purge = Some(notice);
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => plan
-                .problems
-                .push(format!("cannot read {}: {error}", home.display())),
         }
-    } else {
-        plan.kept.push(format!(
-            "{}: the settings, the installed versions, the certificates and the data of the databases. `crisol uninstall --all --purge` deletes it",
-            home.display()
-        ));
+        Ok(notice) if purge => {
+            plan.steps.push(Step::Purge { home: home.clone() });
+            plan.purge = Some(notice);
+        }
+        Ok(notice) => {
+            if anything_to_clean(paths) {
+                plan.steps.push(Step::Clean { home: home.clone() });
+            }
+            let databases = if notice.databases.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", notice.databases.join(", "))
+            };
+            plan.kept.push(format!(
+                "In {}: your databases{databases} and their passwords, your settings and your projects. `crisol uninstall --all --purge` deletes them too",
+                home.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => plan
+            .problems
+            .push(format!("cannot read {}: {error}", home.display())),
     }
-    plan.kept.push(
-        "crisol.exe and the programs next to it: delete them yourself when this is done".to_owned(),
-    );
+    if system.programs.is_empty() {
+        plan.kept.push(
+            "crisol.exe and the programs next to it: delete them yourself when this is done"
+                .to_owned(),
+        );
+    } else {
+        plan.steps.push(Step::Programs {
+            files: system.programs.clone(),
+        });
+    }
     plan
 }
 
@@ -444,19 +543,31 @@ pub fn run(
                     format!("the helper could not undo its changes: {error}"),
                 ),
             },
-            Step::Purge { home } => {
-                if all_done(&outcomes) {
-                    purge(system.paths)
-                } else {
-                    (
-                        OutcomeKind::Skipped,
-                        format!(
-                            "{} was not deleted, because something above is still in place; run this again when it is solved",
-                            home.display()
-                        ),
-                    )
-                }
-            }
+            // Deleting comes last, and only when everything above is gone: a CA still trusted
+            // or a helper still installed needs the files and the programs to be taken out.
+            Step::Clean { home } | Step::Purge { home } if !all_done(&outcomes) => (
+                OutcomeKind::Skipped,
+                format!(
+                    "Nothing in {} was deleted, because something above is still in place; run this again when it is solved",
+                    home.display()
+                ),
+            ),
+            Step::Clean { .. } => clean(system.paths),
+            Step::Purge { .. } => purge(system.paths),
+            Step::Programs { .. } if !all_done(&outcomes) => (
+                OutcomeKind::Skipped,
+                "Crisol's programs were kept, so that this can be run again".to_owned(),
+            ),
+            Step::Programs { files } => match (system.remove_programs)(files) {
+                Ok(()) => (
+                    OutcomeKind::Done,
+                    "Crisol's programs go away as soon as this command ends".to_owned(),
+                ),
+                Err(error) => (
+                    OutcomeKind::Failed,
+                    format!("Crisol's programs could not be deleted ({error}); delete them yourself"),
+                ),
+            },
         };
         outcomes.push(Outcome {
             step: step.id(),
@@ -492,28 +603,95 @@ fn remove_ca(system: &System<'_>, name: &str, der: &[u8]) -> (OutcomeKind, Strin
     }
 }
 
-/// Deletes what Crisol keeps in the home, then the home if it is empty. A file still held open
-/// (a service that has just stopped) is tried again a few times.
+/// Deletes a file or a folder, trying again a few times while it is held open (a service that
+/// has just stopped).
+fn remove_entry(entry: &Path) -> io::Result<()> {
+    let mut result = Ok(());
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        result = if entry.is_dir() {
+            fs::remove_dir_all(entry)
+        } else if entry.exists() {
+            fs::remove_file(entry)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            break;
+        }
+    }
+    result
+}
+
+/// Deletes what is in `etc/` except the `overrides` of each service, and the folders left
+/// empty.
+fn clean_etc(etc: &Path) -> io::Result<()> {
+    let Ok(services) = fs::read_dir(etc) else {
+        return Ok(());
+    };
+    for service in services.flatten() {
+        let path = service.path();
+        if !path.is_dir() {
+            remove_entry(&path)?;
+            continue;
+        }
+        for inner in fs::read_dir(&path)?.flatten() {
+            if inner.file_name() != OVERRIDES {
+                remove_entry(&inner.path())?;
+            }
+        }
+        if is_empty_dir(&path) {
+            fs::remove_dir(&path)?;
+        }
+    }
+    if is_empty_dir(etc) {
+        fs::remove_dir(etc)?;
+    }
+    Ok(())
+}
+
+/// The safe uninstall of the home: deletes what Crisol keeps there except what is the user's.
+fn clean(paths: &CrisolPaths) -> (OutcomeKind, String) {
+    let etc = paths.etc_dir();
+    let left: Vec<String> = cleanable_entries(paths)
+        .iter()
+        .filter_map(|entry| {
+            let result = if *entry == etc {
+                clean_etc(entry)
+            } else {
+                remove_entry(entry)
+            };
+            result
+                .err()
+                .map(|error| format!("{} ({error})", entry.display()))
+        })
+        .collect();
+    if left.is_empty() {
+        (
+            OutcomeKind::Done,
+            format!(
+                "Deleted what Crisol keeps in {}, except your databases, their passwords, your settings and your projects",
+                paths.home().display()
+            ),
+        )
+    } else {
+        (
+            OutcomeKind::Failed,
+            format!(
+                "could not delete: {}. Close what is using them and delete them yourself",
+                left.join("; ")
+            ),
+        )
+    }
+}
+
+/// Deletes what Crisol keeps in the home, then the home if it is empty.
 fn purge(paths: &CrisolPaths) -> (OutcomeKind, String) {
     let mut left = Vec::new();
     for entry in own_entries(paths) {
-        let mut result = Ok(());
-        for attempt in 0..5 {
-            if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(400));
-            }
-            result = if entry.is_dir() {
-                fs::remove_dir_all(&entry)
-            } else if entry.exists() {
-                fs::remove_file(&entry)
-            } else {
-                Ok(())
-            };
-            if result.is_ok() {
-                break;
-            }
-        }
-        if let Err(error) = result {
+        if let Err(error) = remove_entry(&entry) {
             left.push(format!("{} ({error})", entry.display()));
         }
     }

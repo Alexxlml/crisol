@@ -55,6 +55,9 @@ pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
 /// Asks the user a question that is answered by typing `yes`; says whether they did.
 pub type Confirm = Box<dyn Fn(&str) -> bool>;
 
+/// Deletes files once this program has ended.
+pub type RemovePrograms = Box<dyn Fn(&[PathBuf]) -> std::io::Result<()>>;
+
 /// A way to make calls: the daemon, or this process.
 pub trait Link {
     /// Makes `call`. `on_event` receives the progress of long operations.
@@ -137,6 +140,10 @@ pub struct Context {
     pub run_terminal: RunTerminal,
     /// Asks before something that cannot be undone (`uninstall --all`).
     pub confirm: Confirm,
+    /// Crisol's programs (`crisol.exe` and the ones next to it), which `uninstall --all` deletes.
+    pub programs: Vec<PathBuf>,
+    /// Deletes them once this program has ended.
+    pub remove_programs: RemovePrograms,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: std::sync::Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
@@ -739,6 +746,8 @@ impl Session<'_> {
             },
             setup: context.setup.as_ref(),
             daemon_running,
+            programs: context.programs.clone(),
+            remove_programs: context.remove_programs.as_ref(),
         };
         let plan = teardown::plan(&system, purge);
         let notice = plan.purge.as_ref().map(|n| {
