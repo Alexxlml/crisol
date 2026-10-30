@@ -117,3 +117,23 @@ Con la terminal ya elevada no aparece el UAC. Los diálogos del certificado, al 
 **Defender no funciona en el Sandbox** (comprobado el 2026-10-29): `Get-MpPreference` falla con `0x800106ba` (el servicio de Defender no corre), así que `defender.txt` dice `unavailable` en todas las fotos, `Add-MpPreference` falla y el ayudante termina con el código 21 («Defender did not answer»). Eso prueba el camino «no disponible». El de quitar exclusiones de verdad se prueba aparte en el equipo del propietario, con una home de prueba.
 
 **Lo que no se sabe todavía:** si dentro del Sandbox aparece el UAC (su usuario es administrador).
+
+### Resultado (propietario, 2026-10-29)
+
+**Pasó**, en la tercera vuelta: «Nothing of Crisol differs between 1-antes and 3-despues». Las salidas están en `D:\scratch\sandbox-out`.
+
+- **Con todo instalado** (`2-instalado`), la foto registró los 6 cambios de Crisol: `C:\Crisol\shims` en el PATH, la entrada `Crisol` en `Run`, la CA en `CurrentUser\Root`, la regla `.test -> 127.77.0.53 [Crisol]` y `crisol-elevate.exe` con su manifiesto en Program Files.
+- **`uninstall --all --purge --yes`** dio `[done]` en los cinco pasos y salió con código 0. Al quitar la CA, Windows mostró su diálogo. Una segunda lista no tuvo pasos.
+- **Después** quedaron idénticos el PATH, `Run` (salvo la entrada de Edge, que es de Windows), los certificados, `hosts`, la NRPT y Program Files.
+
+Lo que encontraron las vueltas anteriores, ya corregido:
+
+1. **Sin el Visual C++ Redistributable, los programas no arrancaban** y no imprimían nada (`0xC0000135`). Ahora se compilan con el runtime de C estático (`src/.cargo/config.toml`); los `.exe` solo importan DLL del sistema.
+2. **El ayudante seguía en Program Files justo después de `uninstall`:** su carpeta se borra un momento después de que termina. `WindowsSetup::uninstall` espera hasta 15 s a que desaparezca antes de decir que lo quitó.
+3. **Ruido de Windows:** con red, Windows añadía certificados raíz y una entrada de Edge. El Sandbox va sin red, y la comparación separa lo de Crisol de lo de Windows.
+4. **El Sandbox se cerraba solo** (`0x80370106`). Sin GPU virtual y con un solo script, no volvió a pasar.
+
+**Sin verificar en el Sandbox:**
+
+- **Quitar exclusiones de Defender de verdad.** Defender nunca respondió dentro del Sandbox (`0x800106ba`); se probó el camino «no disponible» (código 21 y el comando para hacerlo a mano). Falta la prueba en el equipo del propietario.
+- **El UAC.** Las terminales eran de administrador y no hizo falta. En la primera vuelta, sin elevar, el UAC sí apareció.
