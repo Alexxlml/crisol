@@ -10,7 +10,16 @@ Local web development suite for PHP and Node, written in Rust.
 
 Crisol installs and manages the tools of a local development environment —PHP, Nginx, Node, databases and supporting services— so that **everything works out of the box, with no paid features and without cluttering your system**.
 
-> **Status: in development, backend.** Backend phases 0 to 10 are complete (more than 1,000 automated tests). Phase 11 (diagnostics and clean uninstall) is next, followed by Phase 12 (the contract for the graphical interface). There are no published releases or graphical interface yet: today it is used from the command line and only on Windows.
+> **Status: in development, backend nearly done.** Backend phases 0 to 11 are complete and reviewed (1,139 automated tests), and the protocol for the graphical interface is documented. One backend task is left (F12.2); the graphical interface comes next. There are no published releases yet: today it is used from the command line and only on Windows.
+
+## Progress
+
+| | Progress | Details |
+|---|---|---|
+| **Backend** | ██████████████████▉ **98%** | 48 of the 49 tasks in the [plan](docs/plan.md). Left: F12.2, a sample client that subscribes to the daemon's events. |
+| **First release with a graphical interface** | ███████████▉░░░░░░░ **≈ 55–65%** | An estimate: the graphical interface has not been broken into tasks yet. Still to do: choose the framework (Slint or Tauri 2), build the screens on top of the protocol, the installer and code signing. |
+
+*Updated 2026-10-30.*
 
 ## The problem
 
@@ -44,6 +53,9 @@ Local development suites for Windows solve part of the job well, but the same st
 | **Daemon** | `crisold` supervises the services (Job Objects: no orphan processes), watches the configuration and answers over a *named pipe* that only your user can open. Optional start at sign-in. |
 | **Databases and services** | MySQL, MariaDB, PostgreSQL, MongoDB, Redis/Garnet, Memcached, Meilisearch and Mailpit, with generated passwords and `crisol db credentials` for your `.env`. |
 | **Node** | Node 20, 22 and 24 with *shims* for `node`, `npm`, `npx`, `corepack`, `pnpm` and `yarn`; global packages and cache kept separate per version. |
+| **Diagnostics** | `crisol doctor` checks without changing anything: services that went down (with what their exit code means), ports taken by another program, databases slowed down by the antivirus, sites the `hosts` file sends elsewhere, unsupported versions and the Visual C++ runtime that PHP and the databases need. |
+| **Certificates** | `crisol trust` makes Windows trust the local CA and prints its thumbprint before the dialog, so you can compare them; `crisol untrust` takes it out. |
+| **Clean uninstall** | `crisol uninstall --all` first lists everything Crisol changed in Windows, then reverts it: sign-in entry, PATH, certificates, DNS rule, `hosts` block, Defender exclusions and the helper, with a single administrator prompt. It keeps your databases, their passwords, your settings and your projects; `--purge` deletes those too. Tested in Windows Sandbox: the system ends up as it was. |
 
 ## A quick look at the CLI
 
@@ -57,6 +69,8 @@ crisol use php 8.3 --local      # this project uses PHP 8.3
 crisol enable mysql && crisol start
 crisol db credentials mysql     # lines ready for your .env
 crisol doctor                   # checks the installation and tells you what to fix
+crisol trust                    # Windows trusts the local CA (no browser warnings)
+crisol uninstall --all          # takes Crisol out of Windows; your databases and projects stay
 ```
 
 To make `php`, `node` or `composer` use the *shims* in a single terminal, without changing anything on the system: `crisol env | Invoke-Expression` (PowerShell). To make it permanent: `crisol path add`.
@@ -103,7 +117,9 @@ bash scripts/check.sh   # formatting, clippy and tests
 
 The binaries end up in `src/target/release/`. By default Crisol uses `C:\Crisol` as its data folder; the `CRISOL_HOME` variable changes it (useful for testing).
 
-> Crisol is not ready for daily use yet: it has no installer or published releases, and full uninstall arrives in Phase 11.
+PHP, MySQL and PostgreSQL need the [Visual C++ runtime (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe); if it is missing or too old, `crisol start` says so before starting them. Crisol's own programs do not need it.
+
+> Crisol is not ready for daily use yet: it has no installer or published releases.
 
 ## Roadmap
 
@@ -117,9 +133,9 @@ The binaries end up in `src/target/release/`. By default Crisol uses `C:\Crisol`
 | 8 | Daemon, IPC and full CLI | ✅ |
 | 9 | Databases and extra services | ✅ |
 | 10 | Node | ✅ |
-| 11 | Full `crisol doctor` and an uninstall that reverts everything | ⏳ next |
-| 12 | Documented protocol for the graphical interface | Pending |
-| Later | Graphical interface, Linux and macOS support, signed installer | Planned |
+| 11 | Full `crisol doctor` and an uninstall that reverts everything | ✅ |
+| 12 | Documented protocol for the graphical interface (✅) and a sample client | ⏳ in progress |
+| Later | Graphical interface, signed installer, Linux and macOS support | Planned |
 
 The detailed plan, with its acceptance criteria, is in [`docs/plan.md`](docs/plan.md) (in Spanish).
 
@@ -127,7 +143,7 @@ The detailed plan, with its acceptance criteria, is in [`docs/plan.md`](docs/pla
 
 Crisol is a personal project built with AI agents under human direction:
 
-- **Design and decisions:** every architecture decision is recorded as an ADR in [`docs/decisiones/`](docs/decisiones/) (18 so far: shims instead of PATH, no telemetry, secrets outside the config, a restricted CA, among others).
+- **Design and decisions:** every architecture decision is recorded as an ADR in [`docs/decisiones/`](docs/decisiones/) (23 so far: shims instead of PATH, no telemetry, secrets outside the config, a restricted CA, an uninstall that keeps the user's data, among others).
 - **Implementation:** in phases and one task at a time, with Claude Code. Each task ends with tests, `clippy` with no warnings and a conventional commit. The rules for the agents are in [`CLAUDE.md`](CLAUDE.md).
 - **Review:** at the end of each phase, an independent code review and a manual check on Windows before moving on.
 
