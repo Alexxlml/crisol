@@ -564,7 +564,8 @@ fn shutdown_stops_what_it_started_and_is_settled_only_when_it_is_down() {
     rig.start_running();
     let (reply, events) = rig.call_events(&Call::Shutdown, 1000);
     assert!(done(reply.unwrap()).changed);
-    assert!(events.contains(&Event::ShuttingDown));
+    // The services are still stopping: `shutting_down` comes when the daemon leaves.
+    assert!(!events.contains(&Event::ShuttingDown));
     assert!(rig.daemon.shutdown_requested());
     assert!(!rig.daemon.settled());
     rig.probe.release(HTTP);

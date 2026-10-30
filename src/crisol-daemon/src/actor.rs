@@ -161,6 +161,7 @@ pub fn run(
                 if !busy.is_empty() {
                     warn!("leaving with a long operation still running");
                 }
+                say_goodbye(events);
                 break;
             }
         }
@@ -176,9 +177,17 @@ pub fn run(
                     warnings: Vec::new(),
                 })));
             }
+            say_goodbye(events);
             break;
         }
     }
+}
+
+/// The last event: every service is down (or was killed) and the daemon is about to leave, so
+/// a subscriber that stops reading here has missed nothing.
+fn say_goodbye(events: &broadcast::Sender<Event>) {
+    log_event(&Event::ShuttingDown);
+    let _ = events.send(Event::ShuttingDown);
 }
 
 /// The worker thread: runs the long operations one after another and sends each result to the

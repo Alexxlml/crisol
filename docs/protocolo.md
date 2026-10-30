@@ -308,7 +308,7 @@ Es el único evento que llega también **sin suscripción**, a la conexión que 
 
 ### `shutting_down`
 
-El daemon se va.
+El daemon se va. Llega después del `stopped` de cada servicio (o de matarlos, si no pararon a tiempo) y es el último evento: un cliente puede dejar de leer aquí sin perderse nada.
 
 ## Lo que no está en el protocolo
 

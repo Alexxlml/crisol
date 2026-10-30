@@ -51,6 +51,7 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         from_file: bool,
     },
-    /// The daemon is going away.
+    /// The daemon is going away: its services are down (or were killed) and this is the last
+    /// event a subscriber gets.
     ShuttingDown,
 }

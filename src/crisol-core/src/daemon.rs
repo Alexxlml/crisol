@@ -257,7 +257,8 @@ impl Daemon {
                 self.shutting_down = true;
                 self.wanted = false;
                 self.restart_pending = false;
-                events(Event::ShuttingDown);
+                // `shutting_down` is said by whoever runs the daemon when it really leaves,
+                // after the `stopped` of every service.
                 let mut reply = self.stop(now, events, true);
                 if let Reply::Done(info) = &mut reply {
                     info.warnings = self
