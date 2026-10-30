@@ -160,6 +160,9 @@ Al responder la revisión, el propietario cambió lo que hace `uninstall --all` 
   La lista de lo que queda lo dice: «your databases (mysql…) and their passwords, your settings and your projects». Solo nombra servicios con datos propios (`DbKind`), no `node`.
 - **Se borran los programas** (paso `programs`): `crisol.exe`, `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe`, los que haya junto a `crisol.exe`.
   - Un programa no puede borrarse mientras corre, así que un `cmd` separado los borra unos segundos después de que termina el comando (`crisol_platform::schedule_delete`).
+    - Reintenta hasta 5 veces, cada 2 segundos, mientras quede alguno (un `crisold.exe` que tarda en cerrarse), y se detiene en cuanto no queda ninguno (revisión de la Fase 11, hallazgo 7).
+    - `cmd` se lanza con `/D`, que se salta el `AutoRun` del registro. Lo mismo hace el ayudante al borrar su carpeta, donde importa más: ese `cmd` corre como administrador, y el `AutoRun` de la cuenta lo pueden escribir sus programas sin privilegios.
+    - Crisol no puede ver el resultado, porque ya terminó. El mensaje dice que se borran en unos segundos y nombra los archivos, por si alguno queda.
   - Una ruta con `%`, `!`, `^` o comillas se rechaza: `cmd` la leería como otra cosa. En ese caso, el usuario los borra a mano.
 - **`--purge`** sigue borrando la home entera, y también los programas.
 - **Las mismas protecciones de la purga:**

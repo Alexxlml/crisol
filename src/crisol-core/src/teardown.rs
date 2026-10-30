@@ -593,16 +593,7 @@ pub fn run(
                     why_kept(&outcomes)
                 ),
             ),
-            Step::Programs { files } => match (system.remove_programs)(files) {
-                Ok(()) => (
-                    OutcomeKind::Done,
-                    "Crisol's programs go away as soon as this command ends".to_owned(),
-                ),
-                Err(error) => (
-                    OutcomeKind::Failed,
-                    format!("Crisol's programs could not be deleted ({error}); delete them yourself"),
-                ),
-            },
+            Step::Programs { files } => delete_programs(system, files),
         };
         outcomes.push(Outcome {
             step: step.id(),
@@ -611,6 +602,27 @@ pub fn run(
         });
     }
     outcomes
+}
+
+fn delete_programs(system: &System<'_>, files: &[PathBuf]) -> (OutcomeKind, String) {
+    match (system.remove_programs)(files) {
+        // Scheduled, not seen: they go once this command has ended.
+        Ok(()) => (
+            OutcomeKind::Done,
+            format!(
+                "Crisol's programs are deleted a few seconds after this command ends; if any is still there, delete it yourself: {}",
+                files
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        Err(error) => (
+            OutcomeKind::Failed,
+            format!("Crisol's programs could not be deleted ({error}); delete them yourself"),
+        ),
+    }
 }
 
 fn remove_ca(system: &System<'_>, name: &str, der: &[u8]) -> (OutcomeKind, String) {

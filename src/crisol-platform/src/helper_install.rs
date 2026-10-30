@@ -30,6 +30,7 @@
 //! depend on the source any more. Signing the published binaries with Authenticode, and checking
 //! the signature of the source before the prompt, is packaging work (`docs/plan.md`).
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::net::IpAddr;
@@ -267,6 +268,21 @@ fn same_file(a: &Path, b: &Path) -> bool {
         .eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
+/// Starts a detached `cmd` that runs `command` and nothing else. `/D` skips the `AutoRun` of
+/// the registry: the user's programs can write it, and it would run here too, in the helper as
+/// an administrator (review of phase 11, finding 7).
+fn spawn_cmd(system: &Path, command: String) -> io::Result<()> {
+    Command::new(system.join("cmd.exe"))
+        .args(["/D", "/C"])
+        .raw_arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+        .map(drop)
+}
+
 /// Deletes `folder` after this program has ended: a detached `cmd` waits a moment and removes
 /// it. Every program it names is an absolute path in the system directory.
 fn schedule_removal(folder: &Path) -> io::Result<()> {
@@ -277,21 +293,17 @@ fn schedule_removal(folder: &Path) -> io::Result<()> {
         ping.display(),
         folder.display()
     );
-    Command::new(system.join("cmd.exe"))
-        .arg("/C")
-        .raw_arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .spawn()
-        .map(drop)
+    spawn_cmd(&system, command)
 }
 
+/// How many times `schedule_delete` tries, about two seconds apart.
+const DELETE_ATTEMPTS: u32 = 5;
+
 /// Deletes `files` a moment after this program has ended, for `uninstall --all` (ADR-0022):
-/// `crisol.exe` cannot delete itself while it runs. A detached `cmd` waits and deletes them.
-/// A path `cmd` would read as something else (`%`, `!`, a quote) is refused, and nothing is
-/// scheduled.
+/// `crisol.exe` cannot delete itself while it runs. A detached `cmd` waits and deletes them,
+/// and tries again every two seconds while any is left (a daemon still closing), up to
+/// [`DELETE_ATTEMPTS`] times. A path `cmd` would read as something else (`%`, `!`, a quote)
+/// is refused, and nothing is scheduled.
 pub fn schedule_delete(files: &[PathBuf]) -> io::Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -313,20 +325,17 @@ pub fn schedule_delete(files: &[PathBuf]) -> io::Result<()> {
         .iter()
         .map(|f| format!("\"{}\"", f.display()))
         .collect();
+    // `%i` is the only `%` in the line: the paths cannot carry one.
+    let all_gone = quoted.iter().fold(String::new(), |mut out, f| {
+        let _ = write!(out, "if not exist {f} ");
+        out
+    });
     let command = format!(
-        "\"\"{}\" -n 3 127.0.0.1 >nul & del /F /Q {}\"",
+        "for /L %i in (1,1,{DELETE_ATTEMPTS}) do @(\"{}\" -n 3 127.0.0.1 >nul & del /F /Q {} & {all_gone}exit)",
         system.join("PING.EXE").display(),
         quoted.join(" ")
     );
-    Command::new(system.join("cmd.exe"))
-        .arg("/C")
-        .raw_arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .spawn()
-        .map(drop)
+    spawn_cmd(&system, command)
 }
 
 /// Installs and removes the helper through the UAC prompt, from the program that is next to

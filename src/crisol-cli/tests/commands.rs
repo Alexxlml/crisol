@@ -1423,7 +1423,14 @@ fn uninstall_all_lists_everything_asks_and_takes_crisol_out_of_windows() {
         [format!("uninstall test {}", env.paths.home().display())]
     );
     assert!(out.contains("[done] Deleted what Crisol keeps in"), "{out}");
-    assert!(out.contains("[done] Crisol's programs go away"), "{out}");
+    assert!(
+        out.contains("[done] Crisol's programs are deleted a few seconds after"),
+        "{out}"
+    );
+    assert!(
+        out.contains(&env.daemon_exe.display().to_string()),
+        "the programs are named, in case any stays: {out}"
+    );
     assert!(env.paths.home().is_dir(), "kept without --purge");
     assert!(env.paths.config_file().is_file(), "the settings stay");
     assert!(!env.paths.bin_dir().exists(), "the installed versions go");

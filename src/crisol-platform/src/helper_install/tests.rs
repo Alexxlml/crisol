@@ -332,3 +332,32 @@ fn programs_scheduled_for_deletion_go_a_moment_later() {
     let odd = schedule_delete(&[tmp.path().join("100%.exe")]).unwrap_err();
     assert_eq!(odd.kind(), io::ErrorKind::InvalidInput);
 }
+
+#[test]
+fn a_program_still_open_is_deleted_when_it_closes() {
+    // Review of phase 11, finding 7: the daemon may take longer than the first wait to close.
+    // The file is held without sharing past the first attempt (about two seconds); a later one
+    // deletes it.
+    use std::os::windows::fs::OpenOptionsExt;
+    let tmp = TempDir::new().unwrap();
+    let held = tmp.path().join("crisold (closing).exe");
+    let free = tmp.path().join("crisol.exe");
+    fs::write(&held, "MZ").unwrap();
+    fs::write(&free, "MZ").unwrap();
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&held)
+        .unwrap();
+    schedule_delete(&[held.clone(), free.clone()]).unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(held.exists(), "still open: it cannot go yet");
+    drop(handle);
+    for file in [&held, &free] {
+        assert!(
+            wait_until_gone(file, Duration::from_secs(15)),
+            "{}",
+            file.display()
+        );
+    }
+}
