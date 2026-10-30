@@ -96,8 +96,16 @@ Pedidos por el propietario el 2026-10-29. `doctor` los sugiere: `crisol trust` c
 
 Con una home de prueba, nunca `C:\Crisol`. Desde `src/`:
 
-1. `set CRISOL_HOME=D:\scratch\crisol-trust`, y después `cargo run -p crisol-cli -- trust`. Comprueba que la SHA-1 impresa es la «Huella digital (sha1)» del diálogo de Windows (mismo formato: mayúsculas en grupos de 8). Acepta.
+1. `set CRISOL_HOME=D:\scratch\crisol-trust` en `cmd`, `$env:CRISOL_HOME='D:\scratch\crisol-trust'` en PowerShell o `export CRISOL_HOME=/d/scratch/crisol-trust` en Git Bash. Comprueba que la primera línea de `doctor` nombra esa carpeta. Después, `cargo run -p crisol-cli -- trust`. Comprueba que la SHA-1 impresa es la «Huella digital (sha1)» del diálogo de Windows (mismo formato: mayúsculas en grupos de 8). Acepta.
 2. `cargo run -p crisol-cli -- doctor`: la línea `local CA` debe salir `ok`.
 3. Repite `trust`: «already trusts it», sin diálogo.
 4. `cargo run -p crisol-cli -- untrust`: anota si Windows pregunta. Luego `doctor` debe dar `fix: crisol trust`.
 5. Opcional: `trust` y después decir «No» en el diálogo. Debe dar código 1 y «nothing was changed».
+
+### Resultado (propietario, 2026-10-29)
+
+Se hizo sin querer sobre la home real `C:\Crisol` y no sobre una de prueba: las instrucciones daban `set`, que no define la variable en Git Bash. `trust` creó ahí `Crisol Local CA CEC769`. Se deja en su sitio: la quitará `uninstall --all` en sus pruebas (F11.2).
+
+- `trust`: Windows mostró **un diálogo**, y el propietario lo aceptó a mano. La SHA-1 impresa (`333D7995 630D8E2E DEED0650 9F3A0E27 95216842`) **coincide** con la del diálogo, en el mismo formato.
+- `doctor`: `local CA … is trusted by Windows`.
+- `untrust`: Windows **también pide confirmación al quitar** el certificado, y muestra su información. Por eso `uninstall --all` (F11.2) puede mostrar un diálogo por cada CA que quite. Si el usuario dice que no, hoy sale como error de E/S con el texto de Windows.
