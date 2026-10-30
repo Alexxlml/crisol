@@ -1,6 +1,6 @@
 # ADR-0024 — Empaquetado: Crisol completo sin GUI, por winget
 
-- **Estado:** propuesta (2026-10-30), revisada con las respuestas del propietario del mismo día; falta su visto bueno final.
+- **Estado:** aceptada por el propietario (2026-10-30).
 - **Fecha:** 2026-10-30
 
 ## Contexto

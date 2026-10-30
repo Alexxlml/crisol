@@ -159,6 +159,13 @@ Para cada uno: entrada de catálogo, plantilla de config, inicialización del di
 
 ## Empaquetado (cuando haya versiones publicadas)
 
+Decidido en la ADR-0024: un solo canal, winget (paquete portable dentro de un ZIP), y sin firma por ahora.
+
+- **P.2** Flujo de publicación: etiqueta `v*` → `check.sh` → `cargo build --release` → ZIP, `SHA256SUMS` y firma minisign como borrador de release.
+- **P.3** `crisol setup` en `crisol-core` y en el CLI (plan, acuerdo y ejecución: shims y, preguntando cada uno, `trust`, `system install` y `autostart`). Programas hermanos encontrados a través de enlaces simbólicos. `uninstall --all` reconoce una instalación de winget y no borra sus programas, y `doctor` avisa de un daemon de otra versión.
+  - *Aceptación:* en Windows Sandbox, instalar con winget (o `winget install --manifest`) → `setup` → usar → `uninstall --all` → `winget uninstall` deja el sistema como al inicio, como en la ADR-0022. Comprobar si la carpeta del paquete lleva la versión y qué hace winget si no puede crear el enlace.
+- **P.4** Manifiesto de winget, PR a `microsoft/winget-pkgs` y guía de instalación en `docs/`.
+
 - **P.1** 🪟 Firma Authenticode de `crisol.exe`, `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe` en las versiones publicadas, y comprobación de la firma del `crisol-elevate.exe` de origen **antes** del UAC de `crisol system install` (así el aviso de Windows muestra un editor conocido y no «desconocido»). Es el complemento de la comprobación de permisos que ya existe (`crisol_core::programs::require_trusted_program`, revisión de la Fase 8, hallazgo 3) y **no se implementa todavía**: necesita un certificado de firma de código. No se fija un hash del ayudante al compilar (decisión del propietario, 2026-10-16).
 
 ---
