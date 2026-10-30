@@ -11,15 +11,17 @@
 //! remove from the real store. The real installation is tried by hand by the owner with
 //! `cargo run -p crisol-platform --example trust_manual`.
 
+use std::fmt::Write as _;
 use std::io;
 
 use crisol_core::trust::{AddOutcome, TrustStore};
 use windows::Win32::Security::Cryptography::{
     CertAddEncodedCertificateToStore, CertCloseStore, CertCreateCertificateContext,
     CertDeleteCertificateFromStore, CertEnumCertificatesInStore, CertFindCertificateInStore,
-    CertFreeCertificateContext, CertOpenStore, CERT_CONTEXT, CERT_FIND_EXISTING,
-    CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_NEW, CERT_STORE_PROV_MEMORY,
-    CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER, HCERTSTORE, X509_ASN_ENCODING,
+    CertFreeCertificateContext, CertGetCertificateContextProperty, CertOpenStore, CERT_CONTEXT,
+    CERT_FIND_EXISTING, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_SHA1_HASH_PROP_ID,
+    CERT_STORE_ADD_NEW, CERT_STORE_PROV_MEMORY, CERT_STORE_PROV_SYSTEM_W,
+    CERT_SYSTEM_STORE_CURRENT_USER, HCERTSTORE, X509_ASN_ENCODING,
 };
 
 /// `ERROR_CANCELLED`: the user answered no.
@@ -155,6 +157,10 @@ impl TrustStore for WindowsTrustStore {
         Ok(true)
     }
 
+    fn thumbprint(&self, cert_der: &[u8]) -> Option<String> {
+        sha1_thumbprint(cert_der).ok()
+    }
+
     fn certificates(&self) -> io::Result<Vec<Vec<u8>>> {
         let mut found = Vec::new();
         let mut previous = None;
@@ -177,6 +183,43 @@ impl TrustStore for WindowsTrustStore {
         }
         Ok(found)
     }
+}
+
+/// The SHA-1 hash of the certificate as Windows computes it and shows it in the dialog that
+/// asks to trust it: upper-case hex in groups of eight (`2B8F1B57 330DBBA2 …`).
+fn sha1_thumbprint(cert_der: &[u8]) -> io::Result<String> {
+    // SAFETY: `cert_der` is a valid slice; the call copies it.
+    let context = unsafe { CertCreateCertificateContext(X509_ASN_ENCODING, cert_der) };
+    if context.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a DER certificate",
+        ));
+    }
+    let mut hash = [0_u8; 20];
+    let mut size = u32::try_from(hash.len()).unwrap_or(20);
+    // SAFETY: `context` is valid; `hash` has `size` bytes and outlives the call.
+    let got = unsafe {
+        CertGetCertificateContextProperty(
+            context,
+            CERT_SHA1_HASH_PROP_ID,
+            Some(hash.as_mut_ptr().cast()),
+            &raw mut size,
+        )
+    };
+    // SAFETY: `context` was created above and is not used again.
+    let _ = unsafe { CertFreeCertificateContext(Some(context.cast_const())) };
+    got.map_err(io::Error::from)?;
+    let hex: Vec<String> = hash[..size as usize]
+        .chunks(4)
+        .map(|group| {
+            group.iter().fold(String::new(), |mut out, b| {
+                let _ = write!(out, "{b:02X}");
+                out
+            })
+        })
+        .collect();
+    Ok(hex.join(" "))
 }
 
 #[cfg(test)]
@@ -327,5 +370,27 @@ mod tests {
         for der in real.certificates().unwrap() {
             assert_eq!(der[0], 0x30);
         }
+    }
+
+    #[test]
+    fn the_thumbprint_is_the_sha1_that_windows_shows() {
+        let (tmp, _paths, ca) = ca();
+        let store = WindowsTrustStore::private_memory().unwrap();
+        let shown = store.thumbprint(ca.cert_der()).unwrap();
+        assert_eq!(shown.len(), 44, "{shown}");
+        assert_eq!(shown.split(' ').count(), 5, "{shown}");
+        // `certutil` hashes the same bytes on its own.
+        let file = tmp.path().join("ca.der");
+        std::fs::write(&file, ca.cert_der()).unwrap();
+        let system = crate::system_paths::system_directory().unwrap();
+        let output = std::process::Command::new(system.join("certutil.exe"))
+            .arg("-hashfile")
+            .arg(&file)
+            .arg("SHA1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout).to_ascii_uppercase();
+        assert!(text.contains(&shown.replace(' ', "")), "{text}");
+        assert_eq!(store.thumbprint(b"not a certificate"), None);
     }
 }

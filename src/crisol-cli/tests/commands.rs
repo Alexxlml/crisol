@@ -37,6 +37,8 @@ use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
+use crisol_core::trust::fake::FakeTrustStore;
+use crisol_core::trust::{AddOutcome, TrustStore};
 use crisol_core::userpath::fake::FakeUserPath;
 use crisol_core::userpath::{PathValue, UserPath};
 use crisol_core::web::AlwaysEffective;
@@ -138,6 +140,30 @@ impl UserPath for SharedUserPath {
     }
 }
 
+struct SharedTrust(Arc<FakeTrustStore>);
+
+impl TrustStore for SharedTrust {
+    fn contains(&self, cert_der: &[u8]) -> std::io::Result<bool> {
+        self.0.contains(cert_der)
+    }
+
+    fn add(&self, cert_der: &[u8]) -> std::io::Result<AddOutcome> {
+        self.0.add(cert_der)
+    }
+
+    fn remove(&self, cert_der: &[u8]) -> std::io::Result<bool> {
+        self.0.remove(cert_der)
+    }
+
+    fn certificates(&self) -> std::io::Result<Vec<Vec<u8>>> {
+        self.0.certificates()
+    }
+
+    fn thumbprint(&self, _cert_der: &[u8]) -> Option<String> {
+        Some("2B8F1B57 330DBBA2 D07A6C51 F70EE90D DAB9AD8E".to_owned())
+    }
+}
+
 struct Marked(Vec<Check>);
 
 impl SystemChecks for Marked {
@@ -160,6 +186,7 @@ struct Env {
     daemon_exe: std::path::PathBuf,
     autostart: Arc<FakeAutostart>,
     user_path: Arc<FakeUserPath>,
+    trust: Arc<FakeTrustStore>,
     shim_exe: std::path::PathBuf,
     /// The program that "started" `crisol` (none: the shell is guessed from the variables).
     parent_program: Option<String>,
@@ -222,6 +249,7 @@ impl Env {
             daemon_exe,
             autostart: Arc::new(FakeAutostart::new()),
             user_path: Arc::new(FakeUserPath::with_user(r"C:\Tools;%USERPROFILE%\bin")),
+            trust: Arc::new(FakeTrustStore::new()),
             shim_exe,
             parent_program: None,
             terminals: Arc::default(),
@@ -261,6 +289,12 @@ impl Env {
             autostart: Box::new(SharedAutostart(Arc::clone(&self.autostart))),
             daemon_exe: Some(self.daemon_exe.clone()),
             user_path: Box::new(SharedUserPath(Arc::clone(&self.user_path))),
+            trust_store: {
+                let trust = Arc::clone(&self.trust);
+                Box::new(move || {
+                    Ok(Box::new(SharedTrust(Arc::clone(&trust))) as Box<dyn TrustStore>)
+                })
+            },
             shim_exe: Some(self.shim_exe.clone()),
             reserved_name: Box::new(|name| name == "ping"),
             env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
@@ -1227,4 +1261,83 @@ fn shell_opens_the_terminal_it_was_called_from_with_crisol_first_and_gives_back_
     assert_eq!(env.run(&["shell", "--shell", "cmd", "--clean"]).0, 5);
     let launch = env.terminals.lock().unwrap().pop().unwrap();
     assert_eq!(launch.args[0], "/d");
+}
+
+// ---- trust and untrust ---------------------------------------------------------------------
+
+#[test]
+fn trust_describes_the_ca_before_windows_asks_and_untrust_takes_it_out() {
+    let env = Env::new(&[]);
+    let (code, out, _) = env.run(&["trust"]);
+    assert_eq!(code, 0, "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        lines[0].starts_with("Crisol Local CA ") && lines[0].ends_with("(made now)"),
+        "{out}"
+    );
+    assert!(out.contains("vouches only for: test, localhost"), "{out}");
+    assert!(out.contains("  SHA-1   2B8F1B57 330DBBA2"), "{out}");
+    let ask = out.find("Windows will ask you to confirm").unwrap();
+    let done = out.find("Windows trusts it now").unwrap();
+    assert!(
+        ask < done,
+        "the description comes before the question: {out}"
+    );
+    assert!(env.paths.ca_cert().is_file());
+    assert_eq!(env.trust.changes(), (1, 0));
+
+    let (code, out, _) = env.run(&["trust"]);
+    assert_eq!(code, 0);
+    assert!(
+        !out.contains("(made now)") && !out.contains("will ask"),
+        "{out}"
+    );
+    assert!(out.contains("already trusts it"), "{out}");
+
+    let (code, out, err) = env.run(&["untrust"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("may ask you to confirm"), "{err}");
+    assert!(
+        out.contains("Windows no longer trusts Crisol Local CA "),
+        "{out}"
+    );
+    assert!(out.contains("until `crisol trust`"), "{out}");
+    assert!(env.paths.ca_cert().is_file(), "the files stay");
+    assert_eq!(env.trust.changes(), (1, 1));
+
+    let (_, out, _) = env.run(&["untrust", "--stale"]);
+    assert!(out.contains("No older Crisol CA is trusted"), "{out}");
+}
+
+#[test]
+fn a_no_in_the_dialog_of_windows_is_a_failure_that_changes_nothing() {
+    let env = Env::new(&[]);
+    env.trust.decline_next();
+    let (code, out, _) = env.run(&["trust"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("Windows was told no; nothing was changed"),
+        "{out}"
+    );
+    assert_eq!(env.trust.certificates().unwrap(), Vec::<Vec<u8>>::new());
+}
+
+#[test]
+fn trust_answers_in_json_and_refuses_an_open_home() {
+    let env = Env::new(&[]);
+    let (code, out, _) = env.run(&["--json", "trust"]);
+    assert_eq!(code, 0, "{out}");
+    let answer: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(answer["trust"], "added");
+    assert_eq!(answer["created"], true);
+    assert_eq!(
+        answer["thumbprint"],
+        "2B8F1B57 330DBBA2 D07A6C51 F70EE90D DAB9AD8E"
+    );
+    assert_eq!(answer["sha256"].as_str().unwrap().len(), 64);
+
+    env.dirs.expose(env.paths.home());
+    let (code, _, err) = env.run(&["trust"]);
+    assert_ne!(code, 0);
+    assert!(err.contains("other accounts"), "{err}");
 }

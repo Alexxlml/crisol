@@ -325,13 +325,7 @@ fn trust_check(paths: &CrisolPaths) -> Check {
         }
     };
     match trust_status(&store, &ca) {
-        Ok(state) if state.trusted => check(
-            name,
-            CheckStatus::Ok,
-            format!("{} is trusted by Windows", ca.info().common_name),
-            None,
-        ),
-        Ok(_) => check(
+        Ok(state) if !state.trusted => check(
             name,
             CheckStatus::Warning,
             format!(
@@ -339,6 +333,28 @@ fn trust_check(paths: &CrisolPaths) -> Check {
                  (`file_get_contents`) refuse them although cURL in PHP accepts them",
                 ca.info().common_name
             ),
+            Some("crisol trust"),
+        ),
+        // A CA that was replaced is still trusted until it is taken out (ADR-0013).
+        Ok(state) if !state.stale.is_empty() => check(
+            name,
+            CheckStatus::Warning,
+            format!(
+                "{} is trusted by Windows, and so are older Crisol CAs that nothing uses: {}",
+                ca.info().common_name,
+                state
+                    .stale
+                    .iter()
+                    .map(|c| c.common_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Some("crisol untrust --stale"),
+        ),
+        Ok(_) => check(
+            name,
+            CheckStatus::Ok,
+            format!("{} is trusted by Windows", ca.info().common_name),
             None,
         ),
         Err(error) => check(name, CheckStatus::Problem, error.to_string(), None),

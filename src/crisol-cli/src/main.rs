@@ -47,6 +47,10 @@ fn main() -> ExitCode {
         autostart: Box::new(RegistryAutostart::new()),
         daemon_exe: daemon.clone(),
         user_path: Box::new(RegistryUserPath::new()),
+        trust_store: Box::new(|| {
+            crisol_platform::WindowsTrustStore::current_user_root()
+                .map(|store| Box::new(store) as Box<dyn crisol_core::trust::TrustStore>)
+        }),
         shim_exe: std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|dir| dir.join("crisol-shim.exe"))),

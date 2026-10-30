@@ -163,6 +163,15 @@ pub struct CaInfo {
     pub permitted_ips: Vec<String>,
 }
 
+impl CaInfo {
+    /// The last day it is valid, as `2036-10-29` (UTC).
+    #[must_use]
+    pub fn valid_until(&self) -> String {
+        OffsetDateTime::from_unix_timestamp(self.not_after)
+            .map_or_else(|_| self.not_after.to_string(), |at| at.date().to_string())
+    }
+}
+
 /// The CA: its certificate and the key that signs with it.
 pub struct LocalCa {
     cert_pem: String,

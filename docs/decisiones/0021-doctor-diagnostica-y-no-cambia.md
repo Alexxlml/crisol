@@ -1,6 +1,6 @@
 # ADR-0021 — `doctor` diagnostica y no cambia nada
 
-- **Estado:** propuesta (2026-10-29, F11.1). Falta que el propietario confirme la sección 3 (Defender).
+- **Estado:** aceptada (2026-10-29, F11.1). El propietario confirmó la sección 3 (Defender) el mismo día y pidió `crisol trust` de una vez (sección 4).
 - **Fecha:** 2026-10-29
 
 ## Contexto
@@ -61,10 +61,27 @@ Tres cosas no son obvias:
   - `Add-MpPreference -ExclusionPath '<home>\data'`;
   - `Remove-MpPreference -ExclusionPath '<home>\data'`.
 - **Crisol no lo ejecuta ni lo pide por el ayudante elevado.** Así no hay nada de Crisol que revertir en F11.2. Si más adelante se quiere que Crisol añada la exclusión, será una operación nueva del ayudante con su ADR, marcada «requiere admin», y F11.2 tendrá que revertirla.
+- **Confirmado por el propietario:** Crisol no decide, pero le dice al usuario exactamente qué necesita. Los usuarios cautelosos lo agradecen.
+- **Para la GUI (pendiente, no se hace ahora):** el `fix` puede volverse un botón, siempre con estas condiciones:
+  - el botón **muestra** el comando exacto antes de ejecutarlo;
+  - lo ejecuta en un PowerShell elevado, así que el UAC es el consentimiento;
+  - como entonces sí lo hizo Crisol, deja constancia en `state/` para que `uninstall --all` (F11.2) ofrezca deshacerlo.
+  - Para eso, `Check` necesita, además del texto, una acción que una máquina pueda leer: un campo opcional, por ejemplo `action: Call | AdminCommand { program, args } | OpenUrl`. Se diseña con la GUI, sin cambiar lo que ve el CLI.
 
-### 4. Lo que queda sin solución sugerida
+### 4. `crisol trust` y `crisol untrust`
 
-- **La CA no confiada** no tiene comando: `crisol trust` no existe todavía (Fase 8, «comandos que faltan»). `doctor` explica la consecuencia: los navegadores avisan, y los *streams* de PHP (`file_get_contents`) rechazan los sitios locales aunque el cURL de PHP los acepte.
+Pedidos por el propietario el 2026-10-29. `doctor` los sugiere: `crisol trust` cuando la CA no está confiada, y `crisol untrust --stale` cuando siguen confiadas CA de Crisol antiguas.
+
+- **`crisol trust`:**
+  - Usa la CA de `certs/`; si no hay, la crea para el sufijo de `crisol.toml` (solo sufijos de uso especial, ADR-0013).
+  - **Antes** de que Windows pregunte, imprime: el nombre, para qué vale (el sufijo, `localhost` y las direcciones de loopback), hasta cuándo, la SHA-256 y la **SHA-1**, que es la huella que muestra el diálogo de Windows. La calcula CryptoAPI (`CERT_SHA1_HASH_PROP_ID`), sin dependencias nuevas.
+  - La confirmación es el diálogo de Windows: no hay un segundo «escribe yes».
+  - Decir que no en el diálogo da código de salida 1 y no cambia nada.
+- **`crisol untrust`** quita la CA actual del almacén del usuario.
+- **`crisol untrust --stale`** quita las CA de Crisol antiguas y nunca la actual. Si la actual no se puede leer (caducada, por ejemplo), cuenta como antigua.
+- Ninguno de los dos borra `certs/`: los sitios siguen con sus certificados, y el navegador avisa hasta el siguiente `crisol trust`.
+- **Dónde se ejecutan:** en el proceso del CLI, no en el daemon, para que el diálogo salga delante del usuario. El CLI solo encadena `trust::prepare_trust` (muestra el plan) y `trust::trust_ca`; `trust::untrust_local` hace el resto. La GUI llamará a las mismas funciones.
+- La parte manual, con el almacén real, la hace el propietario (ver «Verificación manual»).
 
 ## Consecuencias
 
@@ -74,3 +91,13 @@ Tres cosas no son obvias:
   - una consulta DNS a un nombre que no existe.
 - `Catalog::is_end_of_life` cambia de significado: una versión que el catálogo no lista toma lo que dice de su línea (sin soporte si todas las versiones de esa línea lo están). Lo usan `list`, la resolución de versiones y el `Installed::end_of_life` de `--from`.
 - Con el `hosts` real de este equipo (Herd y Laragon), la línea `hosts block` resume en una frase los 46 nombres ajenos en vez de listarlos. Todos apuntan a `127.0.0.1`, así que tampoco darían `site names` aunque coincidieran con un sitio de Crisol.
+
+## Verificación manual (propietario)
+
+Con una home de prueba, nunca `C:\Crisol`. Desde `src/`:
+
+1. `set CRISOL_HOME=D:\scratch\crisol-trust`, y después `cargo run -p crisol-cli -- trust`. Comprueba que la SHA-1 impresa es la «Huella digital (sha1)» del diálogo de Windows (mismo formato: mayúsculas en grupos de 8). Acepta.
+2. `cargo run -p crisol-cli -- doctor`: la línea `local CA` debe salir `ok`.
+3. Repite `trust`: «already trusts it», sin diálogo.
+4. `cargo run -p crisol-cli -- untrust`: anota si Windows pregunta. Luego `doctor` debe dar `fix: crisol trust`.
+5. Opcional: `trust` y después decir «No» en el diálogo. Debe dar código 1 y «nothing was changed».

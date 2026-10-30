@@ -21,10 +21,11 @@
 //!   itself, which is not the current one) and [`remove_stale`] removes them on request.
 
 use std::io;
+use std::time::SystemTime;
 
 use x509_parser::prelude::{FromDer, X509Certificate};
 
-use crate::ca::LocalCa;
+use crate::ca::{ensure_ca, load_ca, CaError, LocalCa};
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
 
 pub mod fake;
@@ -54,6 +55,13 @@ pub trait TrustStore: Send + Sync {
 
     /// Every certificate in the store (DER). Read only.
     fn certificates(&self) -> io::Result<Vec<Vec<u8>>>;
+
+    /// How the system's own confirmation names this certificate (Windows shows its SHA-1
+    /// thumbprint), so the user can tell it is the one Crisol described. `None` if the system
+    /// shows nothing of the kind.
+    fn thumbprint(&self, _cert_der: &[u8]) -> Option<String> {
+        None
+    }
 }
 
 /// Why the CA was not trusted.
@@ -62,9 +70,97 @@ pub enum TrustError {
     /// The home is open to other accounts: nothing is trusted from it.
     #[error(transparent)]
     Home(#[from] HomeError),
+    /// The local CA could not be made or read.
+    #[error(transparent)]
+    Ca(#[from] CaError),
     /// The trust store failed.
     #[error("trust store: {0}")]
     Store(#[from] io::Error),
+}
+
+/// What `crisol trust` shows before the system asks: the CA, made now if there was none.
+#[derive(Debug)]
+pub struct TrustPlan {
+    /// The CA to trust.
+    pub ca: LocalCa,
+    /// It was made now.
+    pub created: bool,
+    /// It is trusted already: nothing will be asked.
+    pub already: bool,
+    /// How the system's confirmation names it ([`TrustStore::thumbprint`]).
+    pub thumbprint: Option<String>,
+    /// Older Crisol CAs still trusted (`crisol untrust --stale` removes them).
+    pub stale: Vec<String>,
+}
+
+/// Gets the CA ready to be trusted (F11.1): the one in `certs/`, or a new one for `tld` if there
+/// is none. Nothing is added to the store yet: the caller shows the plan and then calls
+/// [`trust_ca`], which is when the system asks the user.
+pub fn prepare_trust(
+    store: &dyn TrustStore,
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    tld: &str,
+    now: SystemTime,
+) -> Result<TrustPlan, TrustError> {
+    require_private_home(paths, dirs)?;
+    let ensured = ensure_ca(paths, dirs, tld, now)?;
+    let state = status(store, &ensured.ca)?;
+    Ok(TrustPlan {
+        thumbprint: store.thumbprint(ensured.ca.cert_der()),
+        already: state.trusted,
+        stale: state.stale.into_iter().map(|c| c.common_name).collect(),
+        created: ensured.created,
+        ca: ensured.ca,
+    })
+}
+
+/// What `crisol untrust` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Untrusted {
+    /// The CAs taken out of the store, by name.
+    pub removed: Vec<String>,
+    /// The name of the CA in `certs/`, if there is one.
+    pub current: Option<String>,
+    /// Older Crisol CAs still in the store after this.
+    pub stale_left: usize,
+}
+
+/// Takes the CA of `certs/` out of the store, or, with `stale`, the older Crisol CAs and never
+/// the current one. The files in `certs/` stay: the sites keep their certificates, which
+/// browsers then warn about. A CA that can no longer be read (expired, say) is not the current
+/// one, so `stale` takes it out too.
+pub fn untrust_local(
+    store: &dyn TrustStore,
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    stale: bool,
+    now: SystemTime,
+) -> Result<Untrusted, TrustError> {
+    let current = match load_ca(paths, dirs, now) {
+        Ok(ca) => ca,
+        Err(_) if stale => None,
+        Err(error) => return Err(error.into()),
+    };
+    let current_der = current.as_ref().map(LocalCa::cert_der);
+    let mut removed = Vec::new();
+    if stale {
+        for old in crisol_cas_except(store, current_der)? {
+            if store.remove(&old.der)? {
+                removed.push(old.common_name);
+            }
+        }
+    } else if let Some(ca) = &current {
+        if untrust_ca(store, ca)? {
+            removed.push(ca.info().common_name.clone());
+        }
+    }
+    let stale_left = crisol_cas_except(store, current_der)?.len();
+    Ok(Untrusted {
+        removed,
+        current: current.map(|ca| ca.info().common_name.clone()),
+        stale_left,
+    })
 }
 
 /// Makes the system trust the CA. Refuses if the home, or the folders Crisol runs or trusts,
@@ -115,9 +211,14 @@ pub fn status(store: &dyn TrustStore, ca: &LocalCa) -> io::Result<TrustStatus> {
 /// with `Crisol Local CA `, whose organization is `Crisol`, that is a CA and is issued by
 /// itself. Nothing else is ever treated as ours.
 pub fn stale_cas(store: &dyn TrustStore, current: &LocalCa) -> io::Result<Vec<TrustedCa>> {
+    crisol_cas_except(store, Some(current.cert_der()))
+}
+
+/// The Crisol CAs in the store other than `current` (every one when there is none).
+fn crisol_cas_except(store: &dyn TrustStore, current: Option<&[u8]>) -> io::Result<Vec<TrustedCa>> {
     let mut found = Vec::new();
     for der in store.certificates()? {
-        if der == current.cert_der() {
+        if current == Some(der.as_slice()) {
             continue;
         }
         if let Some(common_name) = crisol_ca_name(&der) {

@@ -235,3 +235,101 @@ fn only_real_crisol_cas_are_ever_treated_as_ours() {
         "nothing was removed"
     );
 }
+
+// ---- `crisol trust` and `crisol untrust` (F11.1) ----------------------------------------------
+
+#[test]
+fn preparing_makes_the_ca_once_and_adds_nothing_to_the_store() {
+    let tmp = TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let dirs = FakePrivateDirs::new();
+    let (_old_tmp, _, old) = ca();
+    let store = FakeTrustStore::with(&[old.cert_der()]);
+    let now = SystemTime::now();
+
+    let first = prepare_trust(&store, &paths, &dirs, "test", now).unwrap();
+    assert!(first.created && !first.already);
+    assert_eq!(first.thumbprint, None, "the double shows no thumbprint");
+    assert_eq!(first.stale, [old.info().common_name.clone()]);
+    assert_eq!(
+        store.changes(),
+        (0, 0),
+        "nothing is asked before the plan is shown"
+    );
+
+    trust_ca(&store, &first.ca, &paths, &dirs).unwrap();
+    let again = prepare_trust(&store, &paths, &dirs, "test", now).unwrap();
+    assert!(!again.created && again.already);
+    assert_eq!(again.ca.cert_der(), first.ca.cert_der());
+}
+
+#[test]
+fn preparing_refuses_an_open_home_and_a_public_suffix() {
+    let tmp = TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    paths.ensure_layout().unwrap();
+    let dirs = FakePrivateDirs::new();
+    let store = FakeTrustStore::new();
+    let now = SystemTime::now();
+    assert!(matches!(
+        prepare_trust(&store, &paths, &dirs, "com", now),
+        Err(TrustError::Ca(_))
+    ));
+    dirs.expose(paths.home());
+    assert!(matches!(
+        prepare_trust(&store, &paths, &dirs, "test", now),
+        Err(TrustError::Home(_))
+    ));
+    assert!(!paths.ca_cert().exists());
+}
+
+#[test]
+fn untrusting_takes_out_the_current_ca_or_only_the_older_ones() {
+    let (_tmp, paths, current) = ca();
+    let (_old_tmp, _, old) = ca();
+    let other = stranger("bank.example.com");
+    let store = FakeTrustStore::with(&[current.cert_der(), old.cert_der(), &other]);
+    let dirs = FakePrivateDirs::new();
+    let now = SystemTime::now();
+
+    let stale = untrust_local(&store, &paths, &dirs, true, now).unwrap();
+    assert_eq!(stale.removed, [old.info().common_name.clone()]);
+    assert_eq!(stale.stale_left, 0);
+    assert!(
+        store.contains(current.cert_der()).unwrap(),
+        "never the current one"
+    );
+
+    let plain = untrust_local(&store, &paths, &dirs, false, now).unwrap();
+    assert_eq!(plain.removed, [current.info().common_name.clone()]);
+    assert_eq!(
+        plain.current.as_deref(),
+        Some(current.info().common_name.as_str())
+    );
+    assert_eq!(
+        store.certificates().unwrap(),
+        std::slice::from_ref(&other),
+        "nothing else is touched"
+    );
+    assert!(paths.ca_cert().is_file(), "certs/ stays");
+
+    let nothing = untrust_local(&store, &paths, &dirs, false, now).unwrap();
+    assert_eq!(nothing.removed, Vec::<String>::new());
+}
+
+#[test]
+fn without_a_ca_untrust_removes_nothing_and_stale_removes_every_crisol_ca() {
+    let tmp = TempDir::new().unwrap();
+    let paths = CrisolPaths::new(tmp.path().join("home")).unwrap();
+    let (_old_tmp, _, old) = ca();
+    let store = FakeTrustStore::with(&[old.cert_der()]);
+    let dirs = FakePrivateDirs::new();
+    let now = SystemTime::now();
+    let plain = untrust_local(&store, &paths, &dirs, false, now).unwrap();
+    assert_eq!(
+        (plain.removed.len(), plain.current, plain.stale_left),
+        (0, None, 1)
+    );
+    let stale = untrust_local(&store, &paths, &dirs, true, now).unwrap();
+    assert_eq!(stale.removed, [old.info().common_name.clone()]);
+}

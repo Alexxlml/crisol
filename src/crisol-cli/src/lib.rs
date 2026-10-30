@@ -13,7 +13,7 @@ pub mod render;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
 use crisol_core::config::Config;
@@ -24,6 +24,9 @@ use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
 use crisol_core::shell::{self, ShellLaunch, Terminal};
 use crisol_core::shimsetup::{self, Shell, ShimsError};
+use crisol_core::trust::{
+    prepare_trust, trust_ca, untrust_local, AddOutcome, TrustError, TrustStore,
+};
 use crisol_core::userpath::{PathChange, UserPath};
 use crisol_protocol::{
     Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
@@ -110,6 +113,9 @@ pub struct Context {
     pub daemon_exe: Option<PathBuf>,
     /// The user PATH (the registry; a double in the tests).
     pub user_path: Box<dyn UserPath>,
+    /// Opens the certificates the user trusts (the current user's root store; a double in the
+    /// tests).
+    pub trust_store: Box<dyn Fn() -> std::io::Result<Box<dyn TrustStore>>>,
     /// The `crisol-shim` that `shims install` copies (the one next to this program).
     pub shim_exe: Option<PathBuf>,
     /// Whether a program with that name is already in the `PATH` (a command of the shims would
@@ -188,6 +194,8 @@ impl Session<'_> {
             Plan::Follow { service, lines } => self.follow(&service, lines),
             Plan::Autostart(action) => self.autostart(action),
             Plan::System(action) => self.system(action),
+            Plan::Trust => self.trust(),
+            Plan::Untrust { stale } => self.untrust(stale),
             Plan::Shims(action) => self.shims(action),
             Plan::Path(action) => self.path(action),
             Plan::Env(shell) => self.env(shell),
@@ -500,6 +508,162 @@ impl Session<'_> {
             shell::ShellError::Io(_) => ErrorCode::Io,
         };
         self.fail(&RpcError::new(code, error.to_string()))
+    }
+
+    fn trust_error(&mut self, error: &TrustError) -> u8 {
+        let rpc = match error {
+            TrustError::Home(home) => crisol_core::engine::home_error(home),
+            TrustError::Ca(ca) => RpcError::new(ErrorCode::InvalidParams, ca.to_string()),
+            TrustError::Store(io) => RpcError::new(ErrorCode::Io, format!("trust store: {io}")),
+        };
+        self.fail(&rpc)
+    }
+
+    fn open_trust_store(&mut self) -> Result<Box<dyn TrustStore>, u8> {
+        (self.context.trust_store)().map_err(|e| {
+            self.fail(&RpcError::new(
+                ErrorCode::Io,
+                format!("cannot open the certificates you trust: {e}"),
+            ))
+        })
+    }
+
+    fn trust(&mut self) -> u8 {
+        let store = match self.open_trust_store() {
+            Ok(store) => store,
+            Err(code) => return code,
+        };
+        let paths = &self.context.paths;
+        let dirs = self.context.dirs.as_ref();
+        let tld = crisol_core::setup::suffix_of(paths);
+        let plan = match prepare_trust(store.as_ref(), paths, dirs, &tld, SystemTime::now()) {
+            Ok(plan) => plan,
+            Err(error) => return self.trust_error(&error),
+        };
+        let info = plan.ca.info().clone();
+        // What the CA is, before Windows asks about it.
+        if !self.json {
+            let mut lines = vec![
+                format!(
+                    "{}{}",
+                    info.common_name,
+                    if plan.created { " (made now)" } else { "" }
+                ),
+                format!(
+                    "  vouches only for: {} and their subdomains, and {}",
+                    info.permitted_dns.join(", "),
+                    info.permitted_ips.join(", ")
+                ),
+                format!("  valid until {}", info.valid_until()),
+                format!("  SHA-256 {}", info.fingerprint),
+            ];
+            if let Some(thumbprint) = &plan.thumbprint {
+                lines.push(format!("  SHA-1   {thumbprint}"));
+            }
+            if !plan.already {
+                lines.push(
+                    "Windows will ask you to confirm: check that the thumbprint (sha1) it shows is the SHA-1 above"
+                        .to_owned(),
+                );
+            }
+            for line in lines {
+                let _ = writeln!(self.out, "{line}");
+            }
+            let _ = self.out.flush();
+        }
+        let outcome = match trust_ca(store.as_ref(), &plan.ca, paths, dirs) {
+            Ok(outcome) => outcome,
+            Err(error) => return self.trust_error(&error),
+        };
+        let (word, mut lines, code) = match outcome {
+            AddOutcome::Added => (
+                "added",
+                vec![
+                    "Windows trusts it now; a browser that was open may need a restart".to_owned(),
+                ],
+                EXIT_OK,
+            ),
+            AddOutcome::AlreadyThere => (
+                "already",
+                vec!["Windows already trusts it; nothing was changed".to_owned()],
+                EXIT_OK,
+            ),
+            AddOutcome::Declined => (
+                "declined",
+                vec!["Windows was told no; nothing was changed".to_owned()],
+                EXIT_FAILED,
+            ),
+        };
+        if !plan.stale.is_empty() {
+            lines.push(format!(
+                "Older Crisol CAs are still trusted: {}; `crisol untrust --stale` takes them out",
+                plan.stale.join(", ")
+            ));
+        }
+        let json = serde_json::json!({
+            "trust": word,
+            "ca": info.common_name,
+            "created": plan.created,
+            "sha256": info.fingerprint,
+            "thumbprint": plan.thumbprint,
+            "valid_until": info.valid_until(),
+            "stale": plan.stale,
+        });
+        self.say(&lines.join("\n"), &json);
+        code
+    }
+
+    fn untrust(&mut self, stale: bool) -> u8 {
+        let store = match self.open_trust_store() {
+            Ok(store) => store,
+            Err(code) => return code,
+        };
+        if !self.json {
+            let _ = writeln!(
+                self.err,
+                "crisol: Windows may ask you to confirm each removal"
+            );
+        }
+        let paths = &self.context.paths;
+        let report = match untrust_local(
+            store.as_ref(),
+            paths,
+            self.context.dirs.as_ref(),
+            stale,
+            SystemTime::now(),
+        ) {
+            Ok(report) => report,
+            Err(error) => return self.trust_error(&error),
+        };
+        let tld = crisol_core::setup::suffix_of(paths);
+        let mut lines = vec![match (report.removed.is_empty(), stale, &report.current) {
+            (true, true, _) => "No older Crisol CA is trusted; nothing was changed".to_owned(),
+            (true, false, None) => format!(
+                "There is no local CA in {}; nothing was changed",
+                paths.certs_dir().display()
+            ),
+            (true, false, Some(name)) => {
+                format!("Windows did not trust {name}; nothing was changed")
+            }
+            (false, true, _) => format!("Windows no longer trusts: {}", report.removed.join(", ")),
+            (false, false, _) => format!(
+                "Windows no longer trusts {}: browsers warn about the secured sites under .{tld} until `crisol trust`",
+                report.removed.join(", ")
+            ),
+        }];
+        if !stale && report.stale_left > 0 {
+            lines.push(format!(
+                "{} older Crisol CA(s) are still trusted; `crisol untrust --stale` takes them out",
+                report.stale_left
+            ));
+        }
+        let json = serde_json::json!({
+            "removed": report.removed,
+            "current": report.current,
+            "stale_left": report.stale_left,
+        });
+        self.say(&lines.join("\n"), &json);
+        EXIT_OK
     }
 
     fn system(&mut self, action: SystemAction) -> u8 {

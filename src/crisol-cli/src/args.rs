@@ -179,6 +179,18 @@ pub enum Command {
         #[command(subcommand)]
         action: SystemAction,
     },
+    /// Makes Windows trust Crisol's local CA, so browsers open the sites secured with
+    /// `crisol secure` without a warning. It makes the CA if there is none. The CA can only
+    /// vouch for the local suffix and this computer. Windows asks you to confirm: check that
+    /// the thumbprint it shows is the one printed here.
+    Trust,
+    /// Takes Crisol's local CA out of the certificates Windows trusts. The files stay: the
+    /// secured sites keep their certificates, which browsers then warn about.
+    Untrust {
+        /// Take out only older Crisol CAs that are still trusted, never the current one.
+        #[arg(long)]
+        stale: bool,
+    },
     /// Starts the daemon when you sign in to Windows (or stops doing it).
     Autostart {
         /// `on`, `off` or `status` (the default).
@@ -326,6 +338,13 @@ pub enum Plan {
     System(SystemAction),
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
+    /// `trust`: here, so that the confirmation of Windows shows in front of the user.
+    Trust,
+    /// `untrust`, or `untrust --stale`.
+    Untrust {
+        /// Only the older CAs.
+        stale: bool,
+    },
     /// `shims`: the files in the shims folder, which belong to the user as well.
     Shims(ShimsAction),
     /// `path`: the user PATH.
@@ -474,6 +493,8 @@ impl Command {
             } => Call::ResetPassword { service },
             Self::Autostart { action } => return Plan::Autostart(action),
             Self::System { action } => return Plan::System(action),
+            Self::Trust => return Plan::Trust,
+            Self::Untrust { stale } => return Plan::Untrust { stale },
             Self::Shims { action } => return Plan::Shims(action),
             Self::Path { action } => return Plan::Path(action),
             Self::Env { shell } => return Plan::Env(shell),
