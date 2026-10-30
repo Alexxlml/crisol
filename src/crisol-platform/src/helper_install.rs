@@ -214,6 +214,7 @@ fn exclusions_ending(outcome: &ExclusionsOutcome) -> SetupDone {
     match outcome {
         ExclusionsOutcome::NoneFound => SetupDone::Done,
         ExclusionsOutcome::Removed(_) => SetupDone::ExclusionsRemoved,
+        ExclusionsOutcome::NotAllRemoved { .. } => SetupDone::ExclusionsLeft,
         ExclusionsOutcome::Unavailable(_) => SetupDone::ExclusionsUnavailable,
     }
 }

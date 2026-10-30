@@ -131,11 +131,16 @@ fn the_endings_that_worked_have_their_own_codes() {
         SetupDone::Done,
         SetupDone::ExclusionsRemoved,
         SetupDone::ExclusionsUnavailable,
+        SetupDone::ExclusionsLeft,
     ] {
         assert_eq!(SetupDone::from_code(done.code().into()), Some(done));
         assert_eq!(SetupFailure::from_code(done.code().into()), None);
     }
     assert_eq!(SetupDone::from_code(1), None);
+    // Looked at and partly removed is not "not looked at" (review of phase 11, finding 8).
+    let left = SetupDone::ExclusionsLeft.exclusions_sentence(Path::new(r"C:\Crisol"));
+    assert!(left.contains("could not be removed"), "{left}");
+    assert!(!left.contains("not looked at"), "{left}");
     let home = Path::new(r"C:\Users\O'Brien\Crisol");
     assert_eq!(
         remove_exclusion_command(home),

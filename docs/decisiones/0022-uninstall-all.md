@@ -65,7 +65,9 @@ Cada paso se intenta aunque falle uno anterior. Si el usuario dice que no (a una
   - La home va en hexadecimal UTF-8, porque los argumentos del UAC no pueden llevar espacios (`C:\Users\Nombre Apellido\…`).
   - El ayudante la valida: ruta absoluta con unidad, que no sea la raíz de una unidad, sin caracteres de control.
   - Los valores llegan a PowerShell entre comillas simples, con las comillas simples duplicadas.
-- **Cómo lo cuenta:** con el código de salida, que deja de ser solo de error. `0` hecho sin exclusiones dentro de la home; `20` hecho y se quitaron exclusiones; `21` hecho, pero Defender no respondió (otro antivirus, por ejemplo). En los tres casos se quitó todo lo demás.
+- **Cómo lo cuenta:** con el código de salida, que deja de ser solo de error. `0` hecho sin exclusiones dentro de la home; `20` hecho y se quitaron exclusiones; `21` hecho, pero Defender no respondió (otro antivirus, por ejemplo); `22` hecho, se leyó la lista, pero alguna exclusión de la home no se pudo quitar, por ejemplo una que fija una directiva de grupo (revisión de la Fase 11, hallazgo 8). En los cuatro casos se quitó todo lo demás.
+  - Una exclusión que no se puede quitar no detiene las demás: se intenta con cada una.
+  - **No se reconocen** las exclusiones escritas con variables (`%USERPROFILE%\Crisol\data`) ni con comodines (`C:\Crisol\*`): Defender las guarda tal cual, y no se comparan con la home. Se quedan sin aviso. Es poco probable, porque el comando que da `doctor` usa la ruta completa.
 - **Si el ayudante no está instalado** no se pide UAC, y la lista da **lo que el usuario tiene que hacer a mano** (acordado con el propietario):
   - la regla NRPT y el bloque de `hosts` se pueden **ver** sin administrador (`SystemSetup::leftovers`). Si siguen ahí (un ayudante borrado a mano, por ejemplo), da el comando de PowerShell que quita la regla con el comentario `Crisol` y la ruta de `hosts` con sus marcas `# BEGIN CRISOL` y `# END CRISOL`;
   - las exclusiones de Defender no se pueden ver: da el comando para quitar la de `<home>\data` y cómo listarlas.

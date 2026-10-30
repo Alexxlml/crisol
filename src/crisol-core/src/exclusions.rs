@@ -50,7 +50,16 @@ pub enum ExclusionsOutcome {
     NoneFound,
     /// These were removed.
     Removed(Vec<Exclusion>),
-    /// The store could not be read or changed; this is why.
+    /// The list was read, but some of the exclusions inside the home could not be removed
+    /// (Defender keeps the ones a group policy sets). Not "not looked at": review of phase 11,
+    /// finding 8.
+    NotAllRemoved {
+        /// The ones that went.
+        removed: Vec<Exclusion>,
+        /// The ones left, each with why.
+        left: Vec<(Exclusion, String)>,
+    },
+    /// The store could not be read; this is why.
     Unavailable(String),
 }
 
@@ -75,8 +84,8 @@ pub fn inside(home: &Path, value: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('\\'))
 }
 
-/// Removes the exclusions inside `home`, and no other. Stops at the first that cannot be
-/// removed.
+/// Removes the exclusions inside `home`, and no other. One that cannot be removed does not
+/// stop the rest.
 pub fn remove_inside(store: &dyn ScanExclusions, home: &Path) -> ExclusionsOutcome {
     let all = match store.list() {
         Ok(all) => all,
@@ -86,12 +95,18 @@ pub fn remove_inside(store: &dyn ScanExclusions, home: &Path) -> ExclusionsOutco
     if ours.is_empty() {
         return ExclusionsOutcome::NoneFound;
     }
-    for exclusion in &ours {
-        if let Err(error) = store.remove(exclusion) {
-            return ExclusionsOutcome::Unavailable(format!("{}: {error}", exclusion.value));
+    let (mut removed, mut left) = (Vec::new(), Vec::new());
+    for exclusion in ours {
+        match store.remove(&exclusion) {
+            Ok(()) => removed.push(exclusion),
+            Err(error) => left.push((exclusion, error.to_string())),
         }
     }
-    ExclusionsOutcome::Removed(ours)
+    if left.is_empty() {
+        ExclusionsOutcome::Removed(removed)
+    } else {
+        ExclusionsOutcome::NotAllRemoved { removed, left }
+    }
 }
 
 /// Reads the exclusions from the JSON the Windows implementation prints:
@@ -169,6 +184,8 @@ pub fn decode_home(word: &str) -> Result<PathBuf, String> {
 #[derive(Debug, Default)]
 pub struct FakeExclusions {
     state: std::sync::Mutex<(Vec<Exclusion>, Option<String>)>,
+    /// Exclusions it will not remove, as Defender with the ones a group policy sets.
+    kept: std::sync::Mutex<Vec<String>>,
 }
 
 impl FakeExclusions {
@@ -188,12 +205,21 @@ impl FakeExclusions {
         }));
         Self {
             state: std::sync::Mutex::new((all, None)),
+            kept: std::sync::Mutex::default(),
         }
     }
 
     /// Every call fails with this message.
     pub fn fail_with(&self, message: &str) {
         self.lock().1 = Some(message.to_owned());
+    }
+
+    /// Removing this one fails, as with an exclusion that a group policy sets.
+    pub fn keep(&self, value: &str) {
+        self.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(value.to_owned());
     }
 
     /// The exclusions left.
@@ -222,6 +248,13 @@ impl ScanExclusions for FakeExclusions {
         let mut state = self.lock();
         if let Some(message) = &state.1 {
             return Err(io::Error::other(message.clone()));
+        }
+        let kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.contains(&exclusion.value) {
+            return Err(io::Error::other("set by a group policy"));
         }
         state.0.retain(|e| e != exclusion);
         Ok(())
@@ -279,6 +312,31 @@ mod tests {
             remove_inside(&store, Path::new(r"C:\Crisol")),
             ExclusionsOutcome::NoneFound
         );
+    }
+
+    #[test]
+    fn one_that_cannot_be_removed_does_not_stop_the_rest_and_is_told_apart() {
+        // Review of phase 11, finding 8: the list was read and part was removed, which is not
+        // "not looked at".
+        let store = FakeExclusions::with(
+            &[r"C:\Crisol\data", r"C:\Crisol\www", r"D:\Projects"],
+            &[r"C:\Crisol\bin\mysqld.exe"],
+        );
+        store.keep(r"C:\Crisol\data");
+        let outcome = remove_inside(&store, Path::new(r"C:\Crisol"));
+        let ExclusionsOutcome::NotAllRemoved { removed, left } = outcome else {
+            panic!("{outcome:?}")
+        };
+        let values = |list: &[Exclusion]| list.iter().map(|e| e.value.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            values(&removed),
+            [r"C:\Crisol\www", r"C:\Crisol\bin\mysqld.exe"],
+            "the ones after the refused one were removed too"
+        );
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].0.value, r"C:\Crisol\data");
+        assert!(left[0].1.contains("group policy"), "{}", left[0].1);
+        assert_eq!(store.values(), [r"C:\Crisol\data", r"D:\Projects"]);
     }
 
     #[test]

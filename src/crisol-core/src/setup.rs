@@ -293,6 +293,9 @@ pub enum SetupDone {
     ExclusionsRemoved,
     /// Done, but the antivirus did not answer, so its exclusions were not looked at.
     ExclusionsUnavailable,
+    /// Done, and the exclusions inside the home were looked at, but some could not be removed
+    /// (review of phase 11, finding 8).
+    ExclusionsLeft,
 }
 
 impl SetupDone {
@@ -303,6 +306,7 @@ impl SetupDone {
             Self::Done => 0,
             Self::ExclusionsRemoved => 20,
             Self::ExclusionsUnavailable => 21,
+            Self::ExclusionsLeft => 22,
         }
     }
 
@@ -313,6 +317,7 @@ impl SetupDone {
             Self::Done,
             Self::ExclusionsRemoved,
             Self::ExclusionsUnavailable,
+            Self::ExclusionsLeft,
         ]
         .into_iter()
         .find(|d| u32::from(d.code()) == code)
@@ -333,6 +338,10 @@ impl SetupDone {
                 "Defender did not answer, so its exclusions were not looked at; if you excluded a folder inside {}, `{}` (as an administrator) takes it out",
                 home.display(),
                 remove_exclusion_command(home)
+            ),
+            Self::ExclusionsLeft => format!(
+                "Some Defender exclusions inside {} could not be removed (Defender keeps the ones a group policy sets); `(Get-MpPreference).ExclusionPath` and `(Get-MpPreference).ExclusionProcess` (as an administrator) list the ones left, and `Remove-MpPreference -ExclusionPath <path>` takes one out",
+                home.display()
             ),
         }
     }
