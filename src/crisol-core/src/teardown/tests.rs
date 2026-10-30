@@ -432,3 +432,102 @@ fn a_trust_store_that_cannot_be_opened_is_told_with_the_way_by_hand() {
         plan.problems
     );
 }
+
+#[test]
+fn the_user_is_given_the_whole_plan_and_nothing_changes_without_a_yes() {
+    let world = World::everything();
+    fs::create_dir_all(world.paths.data_dir().join("mysql").join("8.4")).unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+    let plan = plan(&system, true);
+
+    let mut shown = Vec::new();
+    let answer = run_if_agreed(
+        &system,
+        &plan,
+        &mut |given| {
+            shown.push(given.clone());
+            false
+        },
+        &mut || unreachable!("no daemon"),
+    );
+    assert_eq!(answer, Agreed::No);
+    assert_eq!(
+        shown,
+        std::slice::from_ref(&plan),
+        "the plan itself, not a sentence"
+    );
+    assert!(shown[0].deletes_home());
+    assert_eq!(shown[0].purge.as_ref().unwrap().databases, ["mysql"]);
+    assert!(
+        world.autostart.current().unwrap().is_some(),
+        "nothing changed"
+    );
+    assert!(world.paths.home().is_dir());
+
+    let answer = run_if_agreed(&system, &plan, &mut |_| true, &mut || unreachable!());
+    let Agreed::Ran(outcomes) = answer else {
+        panic!("{answer:?}");
+    };
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert!(!world.paths.home().exists());
+}
+
+#[test]
+fn an_empty_plan_asks_nothing() {
+    let world = World::new();
+    world.trust.remove(&world.ca_der).unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+    let plan = plan(&system, false);
+    // Only the clean-up of the home is left; without it there is nothing to agree to.
+    let plan = Plan {
+        steps: plan
+            .steps
+            .into_iter()
+            .filter(|s| !matches!(s, Step::Clean { .. }))
+            .collect(),
+        ..plan
+    };
+    assert!(plan.is_empty(), "{:?}", ids(&plan));
+    let answer = run_if_agreed(
+        &system,
+        &plan,
+        &mut |_| unreachable!("nothing to ask"),
+        &mut || unreachable!(),
+    );
+    assert_eq!(answer, Agreed::NothingToDo);
+}
+
+#[test]
+fn the_plan_and_the_outcomes_serialize_as_a_client_reads_them() {
+    let world = World::new();
+    fs::create_dir_all(world.paths.www_dir().join("shop")).unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+    let plan = plan(&system, true);
+
+    let json = serde_json::to_value(&plan).unwrap();
+    assert_eq!(json["steps"][0]["step"], "ca");
+    assert_eq!(json["steps"][0]["description"], plan.steps[0].describe());
+    assert_eq!(
+        json["purge"]["home"],
+        world.paths.home().display().to_string()
+    );
+    assert_eq!(json["purge"]["projects"], serde_json::json!(["shop"]));
+    assert_eq!(json["purge"]["foreign"], serde_json::json!([]));
+    assert!(json["by_hand"].is_array() && json["problems"].is_array() && json["kept"].is_array());
+    assert!(json.get("der").is_none() && !json.to_string().contains("\"der\""));
+
+    let outcome = Outcome {
+        step: "ca",
+        kind: OutcomeKind::Declined,
+        message: "no".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap(),
+        serde_json::json!({"step": "ca", "result": "declined", "message": "no"})
+    );
+    let no_purge = serde_json::to_value(super::plan(&system, false)).unwrap();
+    assert!(no_purge["purge"].is_null());
+}

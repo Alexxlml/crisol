@@ -276,6 +276,20 @@ pub fn progress(event: &Event, last_percent: &mut Option<u64>) -> Option<String>
 #[cfg(test)]
 mod tests;
 
+/// What the terminal asks after printing the plan of `uninstall --all`, answered with `yes`.
+/// When the home is deleted, it asks about backups first.
+#[must_use]
+pub fn teardown_question(plan: &crisol_core::teardown::Plan) -> &'static str {
+    if plan.deletes_home() {
+        "
+Have you backed up your projects and the databases you need? The folder above is deleted and cannot be recovered.
+Type yes to go on:"
+    } else {
+        "
+Type yes to go on:"
+    }
+}
+
 /// The list `uninstall --all` shows before it asks. Ends with a newline.
 #[must_use]
 pub fn teardown_plan(plan: &crisol_core::teardown::Plan) -> String {

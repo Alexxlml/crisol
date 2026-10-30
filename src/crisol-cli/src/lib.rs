@@ -52,8 +52,9 @@ pub type RunTerminal = Box<dyn Fn(&ShellLaunch) -> std::io::Result<i32>>;
 /// Reads a variable of the environment of the process.
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
 
-/// Asks the user a question that is answered by typing `yes`; says whether they did.
-pub type Confirm = Box<dyn Fn(&str) -> bool>;
+/// Shows the user the plan of `uninstall --all` and asks whether to go on; says whether they
+/// agreed. The terminal asks with [`render::teardown_question`]; a GUI would show the plan.
+pub type Confirm = Box<dyn Fn(&teardown::Plan) -> bool>;
 
 /// Deletes files once this program has ended.
 pub type RemovePrograms = Box<dyn Fn(&[PathBuf]) -> std::io::Result<()>>;
@@ -750,62 +751,40 @@ impl Session<'_> {
             remove_programs: context.remove_programs.as_ref(),
         };
         let plan = teardown::plan(&system, purge);
-        let notice = plan.purge.as_ref().map(|n| {
-            serde_json::json!({
-                "home": n.home.display().to_string(),
-                "databases": n.databases,
-                "projects": n.projects,
-                "foreign": n.foreign.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-            })
-        });
-        let mut json = serde_json::json!({
-            "steps": plan.steps.iter().map(|s| serde_json::json!({
-                "step": s.id(), "description": s.describe(),
-            })).collect::<Vec<_>>(),
-            "by_hand": plan.by_hand,
-            "problems": plan.problems,
-            "kept": plan.kept,
-            "purge": notice,
-        });
+        let mut json = serde_json::to_value(&plan).unwrap_or_default();
         if !self.json {
             let _ = write!(self.out, "{}", render::teardown_plan(&plan));
             let _ = self.out.flush();
         }
-        if plan.is_empty() {
-            if self.json {
-                let _ = writeln!(self.out, "{json}");
-            }
-            return if plan.problems.is_empty() {
-                EXIT_OK
-            } else {
-                EXIT_FAILED
-            };
+        if !yes && self.json && !plan.is_empty() {
+            // Without `--yes` the JSON is only the list: nothing can be asked.
+            let _ = writeln!(self.out, "{json}");
+            return EXIT_OK;
         }
-        if !yes {
-            if self.json {
-                // Without `--yes` the JSON is only the list: nothing can be asked.
-                let _ = writeln!(self.out, "{json}");
-                return EXIT_OK;
+        let agreed = teardown::run_if_agreed(
+            &system,
+            &plan,
+            &mut |plan| yes || (context.confirm)(plan),
+            &mut || self.stop_daemon(),
+        );
+        let outcomes = match agreed {
+            teardown::Agreed::NothingToDo => {
+                if self.json {
+                    let _ = writeln!(self.out, "{json}");
+                }
+                return if plan.problems.is_empty() {
+                    EXIT_OK
+                } else {
+                    EXIT_FAILED
+                };
             }
-            let deletes = plan
-                .steps
-                .iter()
-                .any(|s| matches!(s, teardown::Step::Purge { .. }));
-            let question = if deletes {
-                "\nHave you backed up your projects and the databases you need? The folder above is deleted and cannot be recovered.\nType yes to go on:"
-            } else {
-                "\nType yes to go on:"
-            };
-            if !(context.confirm)(question) {
+            teardown::Agreed::No => {
                 let _ = writeln!(self.out, "Nothing was changed");
                 return EXIT_FAILED;
             }
-        }
-        let outcomes = teardown::run(&system, &plan, &mut || self.stop_daemon());
-        json["results"] = outcomes
-            .iter()
-            .map(|o| serde_json::json!({"step": o.step, "result": o.kind.word(), "message": o.message}))
-            .collect();
+            teardown::Agreed::Ran(outcomes) => outcomes,
+        };
+        json["results"] = serde_json::to_value(&outcomes).unwrap_or_default();
         let done = teardown::all_done(&outcomes);
         if self.json {
             let _ = writeln!(self.out, "{json}");

@@ -172,3 +172,12 @@ Al responder la revisión, el propietario cambió lo que hace `uninstall --all` 
   - si algo anterior se rechazó o falló, ni la home ni los programas se tocan («skipped»), para poder volver a ejecutarlo con los mismos programas.
   - **Lo mismo si la lista no pudo comprobar algo** (revisión de la Fase 11, hallazgo 1): un almacén de certificados que no se abre, no saber si el ayudante está instalado, la entrada de inicio de sesión o el PATH ilegibles, o algo ajeno en la home. Eso puede seguir en el sistema, y quitarlo necesita los programas.
 - **Una sola confirmación** también con `--purge`: el aviso ya lo dice todo (propietario).
+
+## Ampliación: el acuerdo recibe el plan (propietario, 2026-10-30)
+
+La GUI mostrará la lista y pedirá al usuario que esté de acuerdo (respuesta 3 a la revisión de la Fase 11). Para que muestre exactamente lo mismo que el CLI y no repita sus reglas:
+
+- **`teardown::run_if_agreed`** hace «plan → acuerdo → ejecutar»: con un plan vacío no pregunta, y sin un sí no cambia nada. Quien pregunta recibe el `Plan` entero (pasos, `by_hand`, `problems`, `kept` y el `PurgeNotice`), no una frase.
+- **El plan se serializa en el núcleo** (`Plan`, `Step` como `{step, description}`, `PurgeNotice`, `Outcome` como `{step, result, message}`). `crisol --json uninstall --all` usa esa serialización; su forma no cambió.
+- `Plan::deletes_home` dice si hay que preguntar por las copias de seguridad. La frase de la pregunta es de cada interfaz (`render::teardown_question` en el CLI).
+- `--yes` y «`--json` sin `--yes` solo lista» siguen siendo modos del CLI.

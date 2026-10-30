@@ -9,7 +9,9 @@
 //! Rules:
 //!
 //! - **First the list, then the changes.** [`plan`] only reads; [`run`] does what the plan says
-//!   and nothing else.
+//!   and nothing else. [`run_if_agreed`] puts the user in between: whoever asks (a terminal, a
+//!   GUI) gets the whole [`Plan`], and nothing changes without a yes. The plan serializes to
+//!   JSON, the same for `--json` and for a GUI.
 //! - **A "no" is an answer.** Windows asks about each CA and about the elevation; a refusal is
 //!   [`OutcomeKind::Declined`], and the rest goes on. Running it again finishes what was left.
 //! - **A safe uninstall keeps what is the user's** (decision of the owner, ADR-0022): the data
@@ -28,6 +30,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 
 use crate::autostart::Autostart;
 use crate::dbservice::DbKind;
@@ -165,21 +170,42 @@ impl Step {
     }
 }
 
+/// In JSON a step is `{"step": <id>, "description": <sentence>}`.
+impl Serialize for Step {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut step = serializer.serialize_struct("Step", 2)?;
+        step.serialize_field("step", self.id())?;
+        step.serialize_field("description", &self.describe())?;
+        step.end()
+    }
+}
+
 /// What `--purge` would delete, said before the user agrees.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PurgeNotice {
     /// The home.
+    #[serde(serialize_with = "path_text")]
     pub home: PathBuf,
     /// The services with data in `data/` (`mysql`, `postgresql`…).
     pub databases: Vec<String>,
     /// The entries in `www/`, where projects may be kept.
     pub projects: Vec<String>,
     /// Entries of the home that are not Crisol's. With any, the home is not deleted.
+    #[serde(serialize_with = "paths_text")]
     pub foreign: Vec<PathBuf>,
 }
 
+/// A path as the user reads it (a path that is not valid Unicode would fail as a `PathBuf`).
+fn path_text<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&path.display())
+}
+
+fn paths_text<S: Serializer>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(paths.iter().map(|p| p.display().to_string()))
+}
+
 /// Everything the removal will do, and what it cannot.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct Plan {
     /// What will be undone, in order.
     pub steps: Vec<Step>,
@@ -199,10 +225,18 @@ impl Plan {
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
+
+    /// Whether the home is deleted, data and projects included: the user should be asked
+    /// whether they have a backup.
+    #[must_use]
+    pub fn deletes_home(&self) -> bool {
+        self.steps.iter().any(|s| matches!(s, Step::Purge { .. }))
+    }
 }
 
 /// How one step went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutcomeKind {
     /// Done.
     Done,
@@ -230,12 +264,13 @@ impl OutcomeKind {
     }
 }
 
-/// How one step went, in a sentence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How one step went, in a sentence. In JSON: `{"step", "result", "message"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Outcome {
     /// [`Step::id`].
     pub step: &'static str,
     /// How it went.
+    #[serde(rename = "result")]
     pub kind: OutcomeKind,
     /// What happened.
     pub message: String,
@@ -602,6 +637,36 @@ pub fn run(
         });
     }
     outcomes
+}
+
+/// How an uninstall that needed the user's agreement ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Agreed {
+    /// The plan was empty: nobody was asked and nothing was done.
+    NothingToDo,
+    /// The user did not agree: nothing changed.
+    No,
+    /// The user agreed and the steps ran.
+    Ran(Vec<Outcome>),
+}
+
+/// Gives `agree` the whole `plan` (the steps, what is done by hand, what could not be looked
+/// at, what stays and what `--purge` deletes) and, only if it says yes, runs it. A terminal
+/// prints the plan and waits for `yes`; a GUI shows it and waits for a button. An empty plan
+/// asks nothing.
+pub fn run_if_agreed(
+    system: &System<'_>,
+    plan: &Plan,
+    agree: &mut dyn FnMut(&Plan) -> bool,
+    stop_daemon: &mut dyn FnMut() -> Result<(), String>,
+) -> Agreed {
+    if plan.is_empty() {
+        Agreed::NothingToDo
+    } else if agree(plan) {
+        Agreed::Ran(run(system, plan, stop_daemon))
+    } else {
+        Agreed::No
+    }
 }
 
 fn delete_programs(system: &System<'_>, files: &[PathBuf]) -> (OutcomeKind, String) {

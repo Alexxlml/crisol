@@ -309,6 +309,6 @@ El daemon se va.
 Algunas cosas no pasan por el daemon y no forman parte de este contrato. Una GUI llamaría a las mismas funciones del núcleo, en su propio proceso:
 
 - **`trust`/`untrust`:** el diálogo de Windows tiene que salir delante del usuario.
-- **`uninstall --all`:** para el daemon.
+- **`uninstall --all`:** para el daemon. Una GUI hace lo mismo que el CLI con el núcleo: `teardown::plan` (solo lee) y `teardown::run_if_agreed`, que le pasa el `Plan` completo (pasos, lo que se hace a mano, lo que no se pudo comprobar, lo que se queda y, con purga, lo que se borra) y no cambia nada sin un sí. El `Plan` y cada `Outcome` se serializan a JSON con la misma forma que `crisol --json uninstall --all`.
 - **`system install|uninstall`:** UAC.
 - **`autostart`, `shims`, `path`, `env` y `shell`:** son ajustes del usuario.

@@ -60,8 +60,8 @@ fn main() -> ExitCode {
         env_vars: Box::new(|| std::env::vars_os().collect()),
         find_terminal: Box::new(crisol_platform::find_terminal),
         run_terminal: Box::new(crisol_platform::run_terminal),
-        confirm: Box::new(|question| {
-            eprint!("{question} ");
+        confirm: Box::new(|plan| {
+            eprint!("{} ", crisol_cli::render::teardown_question(plan));
             let _ = std::io::stderr().flush();
             let mut answer = String::new();
             std::io::stdin().read_line(&mut answer).is_ok()

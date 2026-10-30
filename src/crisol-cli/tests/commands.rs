@@ -37,6 +37,7 @@ use crisol_core::process::fake::FakeSupervisor;
 use crisol_core::process::ProcessId;
 use crisol_core::project::TrustAllOwners;
 use crisol_core::setup::{FakeSetup, SetupReport, SystemSetup};
+use crisol_core::teardown;
 use crisol_core::trust::fake::FakeTrustStore;
 use crisol_core::trust::{AddOutcome, RemoveOutcome, TrustStore};
 use crisol_core::userpath::fake::FakeUserPath;
@@ -199,6 +200,8 @@ struct Env {
     setup: Arc<FakeSetup>,
     /// What `confirm` answers, and the questions it was asked.
     confirm: Arc<Mutex<(bool, Vec<String>)>>,
+    /// The plans `confirm` was given.
+    confirmed_plans: Arc<Mutex<Vec<teardown::Plan>>>,
     /// The programs `uninstall --all` asked to delete.
     removed_programs: Arc<Mutex<Vec<std::path::PathBuf>>>,
     driver_stop: Arc<AtomicBool>,
@@ -263,6 +266,7 @@ impl Env {
             terminals: Arc::default(),
             setup: Arc::new(FakeSetup::new()),
             confirm: Arc::default(),
+            confirmed_plans: Arc::default(),
             removed_programs: Arc::default(),
             driver_stop,
             driver,
@@ -331,9 +335,13 @@ impl Env {
             },
             confirm: {
                 let confirm = Arc::clone(&self.confirm);
-                Box::new(move |question| {
+                let plans = Arc::clone(&self.confirmed_plans);
+                Box::new(move |plan| {
+                    plans.lock().unwrap().push(plan.clone());
                     let mut state = confirm.lock().unwrap();
-                    state.1.push(question.to_owned());
+                    state
+                        .1
+                        .push(crisol_cli::render::teardown_question(plan).to_owned());
                     state.0
                 })
             },
@@ -1461,6 +1469,15 @@ fn uninstall_all_with_purge_asks_about_backups_and_deletes_the_home() {
         assert!(out.contains(line), "{line}: {out}");
     }
     assert!(env.confirm.lock().unwrap().1[0].contains("backed up"));
+    // The confirmation gets the plan itself, not only a sentence: what a GUI would show.
+    {
+        let plans = env.confirmed_plans.lock().unwrap();
+        let notice = plans[0].purge.as_ref().unwrap();
+        assert_eq!(notice.databases, ["mysql"]);
+        assert_eq!(notice.projects, ["shop"]);
+        assert!(plans[0].deletes_home());
+        assert_ne!(plans[0].by_hand, Vec::<String>::new());
+    }
     assert!(!env.paths.home().exists());
 }
 
