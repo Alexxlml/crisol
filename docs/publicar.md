@@ -15,7 +15,7 @@ Lo hace GitHub Actions (`.github/workflows/release.yml`, ADR-0024). Tú solo pre
 
 1. Sube `version` en `[workspace.package]` de `src/Cargo.toml`, haz commit y push a `main`.
 2. Crea y sube la etiqueta, que debe coincidir con la versión: `git tag v0.1.0 && git push origin v0.1.0`. Sube la etiqueta **sola**: empujarla junto con una rama en el mismo `push` no disparó el flujo.
-3. El flujo corre `check.sh`, compila, arma `crisol-<versión>-windows-x64.zip`, `SHA256SUMS` y `SHA256SUMS.minisig`, y deja un **borrador** de release. Una etiqueta con guion (`v0.2.0-rc.1`) sale marcada como pre-release.
+3. El flujo corre `check.sh`, compila, arma `crisol-<versión>-windows-x64.zip`, `SHA256SUMS` y `SHA256SUMS.minisig`, y deja un **borrador** de release. Una etiqueta con guion (`v0.2.0-rc.1`) sale marcada como pre-release. Son dos jobs: `build` compila y empaqueta sin secretos y con permiso de solo lectura; `release` no compila nada, comprueba el ZIP contra `SHA256SUMS`, firma con los scripts de su propio checkout y crea el borrador. Así el código de las dependencias, que corre al compilar, nunca está en el mismo job que la clave.
 4. Revisa el borrador, descarga el ZIP, comprueba `sha256sum -c SHA256SUMS` y `minisign -V -p crisol-release.pub -m SHA256SUMS`, y entonces publícalo.
 
 ## Probar el empaquetado en local

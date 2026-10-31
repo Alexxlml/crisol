@@ -1,6 +1,10 @@
 # Release flow (ADR-0024, task P.2): a `v*` tag runs the checks, builds, packages, signs
 # SHA256SUMS with minisign and leaves a DRAFT release for the owner to review and publish.
 #
+# Two jobs on purpose: `build` runs third-party code (build scripts, proc macros, tests) and has
+# no secrets and a read-only token; `release` never compiles, runs the scripts of its own fresh
+# checkout, and is the only one with the signing key and write access.
+#
 # Secrets and variables the owner creates (Settings > Secrets and variables > Actions):
 #   secret   MINISIGN_SECRET_KEY    full contents of the minisign secret key file
 #   secret   MINISIGN_PASSWORD      its password (create it empty or leave it out if the key has none)
@@ -27,24 +31,27 @@ env:
   MINISIGN_ZIP_SHA256: "37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479"
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     timeout-minutes: 60
-    permissions:
-      contents: write # creating the draft release
     defaults:
       run:
         shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: The tag must match the workspace version
+        id: version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           version="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' src/Cargo.toml)"
           echo "tag=$tag workspace=$version"
           [ -n "$version" ] && [ "$tag" = "$version" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version $version in src/Cargo.toml"; exit 1; }
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Checks (fmt, clippy, tests)
         run: bash src/scripts/check.sh
@@ -63,7 +70,43 @@ jobs:
           echo "$(cygpath -w "$RUNNER_TEMP/cargo-about-${CARGO_ABOUT_VERSION}-x86_64-pc-windows-msvc")" >> "$GITHUB_PATH"
 
       - name: Package
-        run: bash src/scripts/package.sh "$VERSION" dist
+        run: bash src/scripts/package.sh "${{ steps.version.outputs.version }}" dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: |
+            dist/crisol-${{ steps.version.outputs.version }}-windows-x64.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # creating the draft release
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      - name: The ZIP matches SHA256SUMS
+        working-directory: dist
+        run: |
+          [ "$(wc -l < SHA256SUMS)" -eq 1 ] || { echo "::error::SHA256SUMS must have exactly one line"; exit 1; }
+          sha256sum -c SHA256SUMS
 
       - name: Install minisign
         run: |
@@ -91,7 +134,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          flags=(--draft --verify-tag --title "Crisol $VERSION" --generate-notes)
+          flags=(--repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Crisol $VERSION" --generate-notes)
           case "$VERSION" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
             "dist/crisol-$VERSION-windows-x64.zip" dist/SHA256SUMS dist/SHA256SUMS.minisig
