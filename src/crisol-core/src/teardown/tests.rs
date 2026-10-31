@@ -59,6 +59,7 @@ impl World {
             daemon_running,
             programs: Vec::new(),
             remove_programs: &|_| Ok(()),
+            winget: false,
         }
     }
 }
@@ -530,4 +531,26 @@ fn the_plan_and_the_outcomes_serialize_as_a_client_reads_them() {
     );
     let no_purge = serde_json::to_value(super::plan(&system, false)).unwrap();
     assert!(no_purge["purge"].is_null());
+}
+
+#[test]
+fn programs_that_winget_installed_are_not_deleted_and_the_last_line_says_how_winget_removes_them() {
+    let world = World::everything();
+    let setup = FakeSetup::new();
+    let mut system = world.system(&setup, false);
+    system.winget = true;
+    let plan = plan(&system, false);
+
+    assert!(!plan
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::Programs { .. })));
+    assert!(
+        plan.kept
+            .iter()
+            .any(|k| k.contains("winget uninstall Alexxlml.Crisol")),
+        "{:?}",
+        plan.kept
+    );
+    assert!(!plan.kept.iter().any(|k| k.contains("delete them yourself")));
 }

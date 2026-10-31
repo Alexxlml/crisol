@@ -200,6 +200,16 @@ pub enum Command {
         #[command(subcommand)]
         action: SystemAction,
     },
+    /// Sets Crisol up once, after installing it: the commands (`php`, `node`, `npm`, `composer`…)
+    /// in your PATH, and, each asked on its own, Windows trusting Crisol's local CA, the
+    /// administrator helper that makes `.test` names work, and starting Crisol when you sign in.
+    /// It lists what it will do and asks first. Run it again whenever: it only does what is left.
+    Setup {
+        /// Do everything that is left without asking (Windows and the administrator prompt
+        /// still ask for themselves).
+        #[arg(long)]
+        yes: bool,
+    },
     /// Makes Windows trust Crisol's local CA, so browsers open the sites secured with
     /// `crisol secure` without a warning. It makes the CA if there is none. The CA can only
     /// vouch for the local suffix and this computer. Windows asks you to confirm: check that
@@ -365,6 +375,11 @@ pub enum Plan {
         /// Without asking.
         yes: bool,
     },
+    /// `setup`: the first-run steps, which change the user's Windows and ask for it.
+    Setup {
+        /// Without asking (Windows still asks for itself).
+        yes: bool,
+    },
     /// `autostart`: a setting of the user, not something the daemon does.
     Autostart(AutostartAction),
     /// `trust`: here, so that the confirmation of Windows shows in front of the user.
@@ -435,6 +450,7 @@ fn name_of(path: &str) -> String {
 impl Command {
     /// What this command asks for. `cwd` is the folder the command ran in.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per command: a table, not logic
     pub fn plan(self, cwd: &Path) -> Plan {
         let call = match self {
             Self::Start { service } => Call::Start { service },
@@ -529,6 +545,7 @@ impl Command {
             } => Call::ResetPassword { service },
             Self::Autostart { action } => return Plan::Autostart(action),
             Self::System { action } => return Plan::System(action),
+            Self::Setup { yes } => return Plan::Setup { yes },
             Self::Trust => return Plan::Trust,
             Self::Untrust { stale } => return Plan::Untrust { stale },
             Self::Shims { action } => return Plan::Shims(action),

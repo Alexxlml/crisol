@@ -3,11 +3,19 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crisol_cli::{run, Context, Link, Remote};
+use crisol_core::programs::{is_winget_package, winget_package_folders};
 use crisol_platform::{
     connect_to_daemon, default_deps, pipe_name_for_user, resolve_paths, spawn_daemon,
     RegistryAutostart, RegistryUserPath, WindowsPrivateDirs, WindowsSetup,
 };
 
+/// Reads one line from the terminal: whether it is `yes`.
+fn ask_yes() -> bool {
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).is_ok() && answer.trim().eq_ignore_ascii_case("yes")
+}
+
+#[allow(clippy::too_many_lines)] // wires every dependency of the context, top to bottom
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().collect();
     let paths = match resolve_paths() {
@@ -24,10 +32,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // `crisold.exe` is installed next to `crisol.exe`.
-    let daemon = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("crisold.exe")));
+    // The programs come together in one folder. `crisol` may be reached through a link (winget
+    // puts one in its links folder), so the folder is that of the real file.
+    let folder = crisol_platform::real_program_folder();
+    let daemon = folder.as_ref().map(|dir| dir.join("crisold.exe"));
+    let winget = folder.as_deref().is_some_and(|dir| {
+        is_winget_package(
+            dir,
+            &winget_package_folders(&|name| std::env::var(name).ok()),
+        )
+    });
     let reserved_name = crisol_platform::path_program_guard(&paths);
     let context = Context {
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -51,9 +65,7 @@ fn main() -> ExitCode {
             crisol_platform::WindowsTrustStore::current_user_root()
                 .map(|store| Box::new(store) as Box<dyn crisol_core::trust::TrustStore>)
         }),
-        shim_exe: std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("crisol-shim.exe"))),
+        shim_exe: folder.as_ref().map(|dir| dir.join("crisol-shim.exe")),
         reserved_name: Box::new(reserved_name),
         env: Box::new(|name| std::env::var(name).ok()),
         parent_program: crisol_platform::parent_program(),
@@ -67,10 +79,31 @@ fn main() -> ExitCode {
             std::io::stdin().read_line(&mut answer).is_ok()
                 && answer.trim().eq_ignore_ascii_case("yes")
         }),
-        // The programs that came together; `uninstall --all` deletes the ones that are there.
-        programs: std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        confirm_setup: Box::new(|plan| {
+            eprint!(
+                "
+{} ",
+                crisol_cli::render::setup_question(plan)
+            );
+            let _ = std::io::stderr().flush();
+            ask_yes()
+        }),
+        confirm_step: Box::new(|step| {
+            eprint!(
+                "
+{}
+{} (yes/no) ",
+                step.describe(),
+                step.question()
+            );
+            let _ = std::io::stderr().flush();
+            ask_yes()
+        }),
+        // The programs that came together; `uninstall --all` deletes the ones that are there,
+        // unless winget installed them: then winget owns them.
+        programs: folder
+            .as_ref()
+            .filter(|_| !winget)
             .map(|dir| {
                 [
                     "crisol.exe",
@@ -84,6 +117,7 @@ fn main() -> ExitCode {
                 .collect()
             })
             .unwrap_or_default(),
+        winget,
         remove_programs: Box::new(crisol_platform::schedule_delete),
         dirs: std::sync::Arc::new(WindowsPrivateDirs::new()),
         spawn_daemon: Box::new(move || match &daemon {

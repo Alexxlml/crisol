@@ -19,6 +19,7 @@ use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
 use crisol_core::config::Config;
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::{Deps, Engine};
+use crisol_core::onboarding;
 use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_core::setup::SystemSetup;
@@ -30,7 +31,7 @@ use crisol_core::trust::{
 };
 use crisol_core::userpath::{PathChange, UserPath};
 use crisol_protocol::{
-    Call, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
+    Call, Check, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
 use crate::args::{
@@ -55,6 +56,12 @@ pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
 /// Shows the user the plan of `uninstall --all` and asks whether to go on; says whether they
 /// agreed. The terminal asks with [`render::teardown_question`]; a GUI would show the plan.
 pub type Confirm = Box<dyn Fn(&teardown::Plan) -> bool>;
+
+/// Shows the user the plan of `setup` and asks whether to go on.
+pub type ConfirmSetup = Box<dyn Fn(&onboarding::Plan) -> bool>;
+
+/// Asks about one step of `setup` that is asked alone (the CA, the helper, the sign-in entry).
+pub type ConfirmStep = Box<dyn Fn(&onboarding::Step) -> bool>;
 
 /// Deletes files once this program has ended.
 pub type RemovePrograms = Box<dyn Fn(&[PathBuf]) -> std::io::Result<()>>;
@@ -141,8 +148,14 @@ pub struct Context {
     pub run_terminal: RunTerminal,
     /// Asks before something that cannot be undone (`uninstall --all`).
     pub confirm: Confirm,
+    /// Asks before `setup` changes anything.
+    pub confirm_setup: ConfirmSetup,
+    /// Asks about each step of `setup` that is asked alone.
+    pub confirm_step: ConfirmStep,
     /// Crisol's programs (`crisol.exe` and the ones next to it), which `uninstall --all` deletes.
     pub programs: Vec<PathBuf>,
+    /// winget installed those programs, so winget removes them and `uninstall --all` does not.
+    pub winget: bool,
     /// Deletes them once this program has ended.
     pub remove_programs: RemovePrograms,
     /// Judges who can write to the programs before they are registered or launched.
@@ -189,6 +202,7 @@ pub fn run(
         json,
         out,
         err,
+        daemon_version: None,
     };
     session.execute(args)
 }
@@ -198,6 +212,8 @@ struct Session<'a> {
     json: bool,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
+    /// The version of the daemon the last connection spoke with.
+    daemon_version: Option<String>,
 }
 
 impl Session<'_> {
@@ -209,6 +225,7 @@ impl Session<'_> {
             Plan::Autostart(action) => self.autostart(action),
             Plan::System(action) => self.system(action),
             Plan::UninstallAll { purge, yes } => self.uninstall_all(purge, yes),
+            Plan::Setup { yes } => self.setup(yes),
             Plan::Trust => self.trust(),
             Plan::Untrust { stale } => self.untrust(stale),
             Plan::Shims(action) => self.shims(action),
@@ -733,6 +750,91 @@ impl Session<'_> {
         }
     }
 
+    fn setup(&mut self, yes: bool) -> u8 {
+        let context = self.context;
+        let store = (context.trust_store)();
+        let system = onboarding::System {
+            paths: &context.paths,
+            dirs: context.dirs.as_ref(),
+            autostart: context.autostart.as_ref(),
+            user_path: context.user_path.as_ref(),
+            trust: match &store {
+                Ok(store) => Ok(store.as_ref()),
+                Err(error) => Err(error.to_string()),
+            },
+            setup: context.setup.as_ref(),
+            shim_exe: context.shim_exe.clone(),
+            daemon_exe: context.daemon_exe.clone(),
+            reserved_name: context.reserved_name.as_ref(),
+        };
+        let now = SystemTime::now();
+        let plan = onboarding::plan(&system, now);
+        let mut json = serde_json::to_value(&plan).unwrap_or_default();
+        if !self.json {
+            let _ = write!(self.out, "{}", render::setup_plan(&plan));
+            let _ = self.out.flush();
+        }
+        if !yes && self.json && !plan.is_empty() && !plan.is_blocked() {
+            // Without `--yes` the JSON is only the list: nothing can be asked.
+            let _ = writeln!(self.out, "{json}");
+            return EXIT_OK;
+        }
+        let agreed = onboarding::run_if_agreed(
+            &system,
+            &plan,
+            // What is asked alone is asked when its turn comes; if that is all there is, one
+            // more question about the whole list would only repeat them.
+            &mut |plan| {
+                yes || plan.steps.iter().all(onboarding::Step::optional)
+                    || (context.confirm_setup)(plan)
+            },
+            &mut |step| yes || (context.confirm_step)(step),
+            now,
+        );
+        let outcomes = match agreed {
+            onboarding::Agreed::Blocked => {
+                if self.json {
+                    let _ = writeln!(self.out, "{json}");
+                }
+                return EXIT_FAILED;
+            }
+            onboarding::Agreed::NothingToDo => {
+                if self.json {
+                    let _ = writeln!(self.out, "{json}");
+                }
+                return EXIT_OK;
+            }
+            onboarding::Agreed::No => {
+                let _ = writeln!(self.out, "Nothing was changed");
+                return EXIT_FAILED;
+            }
+            onboarding::Agreed::Ran(outcomes) => outcomes,
+        };
+        json["results"] = serde_json::to_value(&outcomes).unwrap_or_default();
+        let failed = outcomes
+            .iter()
+            .any(|o| o.kind == teardown::OutcomeKind::Failed);
+        if self.json {
+            let _ = writeln!(self.out, "{json}");
+        } else {
+            let _ = write!(self.out, "\n{}", render::teardown_outcomes(&outcomes));
+            let _ = writeln!(
+                self.out,
+                "{}",
+                if failed {
+                    "Something failed; solve what is said above and run `crisol setup` again: it only does what is left."
+                } else {
+                    "Done. Open a new terminal for the commands to be in your PATH; `crisol start` starts the sites."
+                }
+            );
+        }
+        if failed {
+            EXIT_FAILED
+        } else {
+            EXIT_OK
+        }
+    }
+
     fn uninstall_all(&mut self, purge: bool, yes: bool) -> u8 {
         let context = self.context;
         let daemon_running = (context.connect)().is_ok();
@@ -749,6 +851,7 @@ impl Session<'_> {
             daemon_running,
             programs: context.programs.clone(),
             remove_programs: context.remove_programs.as_ref(),
+            winget: context.winget,
         };
         let plan = teardown::plan(&system, purge);
         let mut json = serde_json::to_value(&plan).unwrap_or_default();
@@ -880,7 +983,12 @@ impl Session<'_> {
             protocol: PROTOCOL_VERSION,
         };
         match link.call(&hello, &mut |_| {}) {
-            Ok(_) => Ok(link),
+            Ok(reply) => {
+                if let Reply::Hello(info) = reply {
+                    self.daemon_version = Some(info.daemon);
+                }
+                Ok(link)
+            }
             Err(error) => Err(client_error(error)),
         }
     }
@@ -951,9 +1059,22 @@ impl Session<'_> {
             }
         });
         match outcome {
-            Ok(reply) => self.show(&reply),
+            Ok(mut reply) => {
+                self.note_daemon_version(&mut reply);
+                self.show(&reply)
+            }
             Err(error) => self.fail(&client_error(error)),
         }
+    }
+
+    /// `doctor` says when the daemon that answers is not of the version of this program: after
+    /// an update the old one keeps running until it is stopped (Windows does not let the
+    /// program be replaced while it runs, so the update itself needs it stopped).
+    fn note_daemon_version(&self, reply: &mut Reply) {
+        let (Reply::Doctor { checks }, Some(daemon)) = (reply, &self.daemon_version) else {
+            return;
+        };
+        checks.extend(daemon_version_check(daemon, env!("CARGO_PKG_VERSION")));
     }
 
     fn show(&mut self, reply: &Reply) -> u8 {
@@ -1033,6 +1154,18 @@ impl Session<'_> {
 }
 
 /// The lines about the commands of global programs (`tsc`), for what `shims install|sync` did.
+/// The `doctor` line for a daemon of another version than this program, if it is.
+fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
+    (daemon != mine).then(|| Check {
+        name: "daemon version".to_owned(),
+        status: CheckStatus::Warning,
+        detail: format!(
+            "the daemon that is running is {daemon} and this program is {mine}: it was started before an update"
+        ),
+        fix: Some("crisol shutdown, then any command starts the new one".to_owned()),
+    })
+}
+
 fn globals_text(added: &[String], removed: &[String], skipped: &[(String, String)]) -> String {
     let mut lines = Vec::new();
     if !added.is_empty() {
@@ -1057,5 +1190,20 @@ fn client_error(error: ClientError) -> RpcError {
     match error {
         ClientError::Rpc(error) => error,
         other => RpcError::new(ErrorCode::Io, other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_daemon_of_another_version_is_a_warning_with_the_way_out_and_the_same_version_says_nothing()
+    {
+        assert!(daemon_version_check("0.1.0", "0.1.0").is_none());
+        let check = daemon_version_check("0.1.0", "0.2.0").unwrap();
+        assert_eq!(check.status, CheckStatus::Warning);
+        assert!(check.detail.contains("0.1.0") && check.detail.contains("0.2.0"));
+        assert!(check.fix.unwrap().starts_with("crisol shutdown"));
     }
 }

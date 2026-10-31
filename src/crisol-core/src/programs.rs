@@ -102,6 +102,50 @@ pub fn program_error(error: &ProgramError) -> RpcError {
     }
 }
 
+/// The winget package that installs Crisol (ADR-0024).
+pub const WINGET_ID: &str = "Alexxlml.Crisol";
+
+/// The folders winget unpacks packages in: the user's, and the one for all users.
+/// `env` reads an environment variable.
+#[must_use]
+pub fn winget_package_folders(env: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let under = |variable: &str, rest: &[&str]| {
+        env(variable).filter(|base| !base.is_empty()).map(|base| {
+            rest.iter()
+                .fold(PathBuf::from(base), |path, part| path.join(part))
+        })
+    };
+    [
+        under("LOCALAPPDATA", &["Microsoft", "WinGet", "Packages"]),
+        under("ProgramFiles", &["WinGet", "Packages"]),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Whether `folder` is inside one of the folders winget keeps its packages in (`roots`): then
+/// winget owns the programs, and deleting them by hand would leave it believing they are there.
+/// Windows paths do not care about case or the kind of slash, and neither does this.
+#[must_use]
+pub fn is_winget_package(folder: &Path, roots: &[PathBuf]) -> bool {
+    let normal = |path: &Path| {
+        let mut text = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        while text.ends_with('\\') {
+            text.pop();
+        }
+        text
+    };
+    let folder = normal(folder);
+    roots.iter().any(|root| {
+        let root = normal(root);
+        !root.is_empty() && folder.starts_with(&format!("{root}\\"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +205,35 @@ mod tests {
         });
         assert_eq!(rpc.code, ErrorCode::HomeExposed);
         assert_eq!(rpc.fix.as_deref(), Some("icacls x"));
+    }
+
+    #[test]
+    fn a_folder_inside_wingets_packages_is_wingets_whatever_the_case_or_the_slashes() {
+        let roots = winget_package_folders(&|name| match name {
+            "LOCALAPPDATA" => Some(r"C:\Users\Ana\AppData\Local".to_owned()),
+            "ProgramFiles" => Some(r"C:\Program Files".to_owned()),
+            _ => None,
+        });
+        assert_eq!(roots.len(), 2);
+        for inside in [
+            r"C:\Users\Ana\AppData\Local\Microsoft\WinGet\Packages\Alexxlml.Crisol_Microsoft.Winget.Source_8wekyb3d8bbwe",
+            r"c:/users/ana/appdata/local/microsoft/winget/packages/Alexxlml.Crisol",
+            r"C:\Program Files\WinGet\Packages\Alexxlml.Crisol\",
+        ] {
+            assert!(is_winget_package(Path::new(inside), &roots), "{inside}");
+        }
+        for outside in [
+            r"C:\Users\Ana\AppData\Local\Microsoft\WinGet\Links",
+            r"C:\Users\Ana\AppData\Local\Microsoft\WinGet\Packages",
+            r"C:\Users\Ana\AppData\Local\Microsoft\WinGet\PackagesX\Crisol",
+            r"C:\Users\Ana\Crisol",
+            r"D:\Microsoft\WinGet\Packages\Crisol",
+        ] {
+            assert!(!is_winget_package(Path::new(outside), &roots), "{outside}");
+        }
+        // Without the variables there is nothing to compare with: never "winget".
+        assert_eq!(winget_package_folders(&|_| None), Vec::<PathBuf>::new());
+        assert!(!is_winget_package(Path::new(r"C:\anything"), &[]));
     }
 
     #[test]

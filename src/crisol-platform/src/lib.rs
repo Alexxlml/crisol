@@ -33,6 +33,8 @@ mod port_probe;
 #[cfg(windows)]
 mod private_dir;
 #[cfg(windows)]
+mod real_exe;
+#[cfg(windows)]
 mod root_certs;
 #[cfg(windows)]
 mod system;
@@ -78,6 +80,8 @@ pub use parent_process::parent_program;
 pub use port_probe::WindowsPortProbe;
 #[cfg(windows)]
 pub use private_dir::WindowsPrivateDirs;
+#[cfg(windows)]
+pub use real_exe::{real_current_exe, real_program_folder};
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
 #[cfg(windows)]

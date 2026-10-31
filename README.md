@@ -69,6 +69,7 @@ crisol use php 8.3 --local      # this project uses PHP 8.3
 crisol enable mysql && crisol start
 crisol db credentials mysql     # lines ready for your .env
 crisol doctor                   # checks the installation and tells you what to fix
+crisol setup                    # first run: the commands in your PATH, and (asking each) the CA, .test names and start at sign-in
 crisol trust                    # Windows trusts the local CA (no browser warnings)
 crisol uninstall --all          # takes Crisol out of Windows; your databases and projects stay
 ```

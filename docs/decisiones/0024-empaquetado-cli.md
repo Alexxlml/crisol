@@ -65,6 +65,17 @@ La GUI será un quinto programa en el mismo paquete (o un paquete de winget que 
 - **P.4** Manifiesto de winget, PR a `microsoft/winget-pkgs` y guía de instalación en `docs/`.
 - **P.1** (ya en el plan) Firma Authenticode, cuando haya cómo (SignPath Foundation o certificado propio).
 
+## Implementación de P.3 (2026-10-30)
+
+- `crisol setup [--yes]` vive en `crisol-core::onboarding`; el CLI solo parsea, imprime y pregunta. Pasos, en orden: **shims**, **PATH**, y, **cada uno con su pregunta**, **CA**, **ayudante** y **autoarranque**. Solo se listan los que faltan; con todo hecho no pregunta nada, así que volver a ejecutarlo es seguro (y es lo que corrige un autoarranque que apunta a otra ruta tras una actualización).
+- Antes de todo comprueba que la carpeta de los programas es privada (`require_trusted_program` sobre `crisol-shim.exe` y `crisold.exe`, que comparten carpeta: se dice una vez, con el `icacls` que la cierra). Mientras haya un problema no se cambia nada.
+- Una negativa del usuario (a una pregunta, al diálogo de Windows de la CA o al aviso de administrador) es un resultado, no un fallo: el código de salida es 0 salvo que un paso falle de verdad.
+- `--yes` no pregunta, pero Windows sigue preguntando por sí mismo (CA y UAC). `crisol trust` sigue mostrando las huellas **antes** del diálogo; `setup` las menciona en el resultado y recomienda `crisol trust` a quien quiera compararlas primero.
+- **Enlaces:** `crisol-platform::real_current_exe` resuelve el enlace (`canonicalize` y quita el prefijo `\\?\`), y de ahí salen los programas hermanos, el autoarranque y el ayudante.
+- **winget:** si la carpeta de los programas está dentro de `%LOCALAPPDATA%\Microsoft\WinGet\Packages` o `%ProgramFiles%\WinGet\Packages`, `uninstall --all` no los borra y termina diciendo `winget uninstall Alexxlml.Crisol`. El identificador del paquete está en `crisol_core::programs::WINGET_ID` y debe coincidir con el manifiesto de P.4.
+- **`doctor`:** compara la versión del daemon que contesta (`hello`) con la del programa y avisa, con `crisol shutdown` como arreglo.
+- **Sin comprobar todavía** (prueba de aceptación, con el manifiesto de P.4): si la carpeta del paquete lleva la versión, y qué hace winget si no puede crear el enlace simbólico.
+
 ## Consecuencias
 
 - Crisol se instala, se actualiza y se quita con una herramienta que Windows ya trae, sin administrador. El administrador solo se pide para los nombres `.test` (`system install`), como hasta ahora.

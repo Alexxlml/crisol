@@ -323,6 +323,7 @@ El daemon se va. Llega después del `stopped` de cada servicio (o de matarlos, s
 Algunas cosas no pasan por el daemon y no forman parte de este contrato. Una GUI llamaría a las mismas funciones del núcleo, en su propio proceso:
 
 - **`trust`/`untrust`:** el diálogo de Windows tiene que salir delante del usuario.
+- **`setup`:** no usa el daemon. Una GUI hace lo mismo que el CLI con el núcleo: `onboarding::plan` (solo lee), `onboarding::run_if_agreed` y, para los pasos que se preguntan uno por uno (`Step::optional`: la CA, el ayudante y el autoarranque), la respuesta de cada uno. El `Plan` (pasos, lo que ya está hecho, problemas que impiden empezar y notas) y cada `Outcome` se serializan a JSON con la misma forma que `crisol --json setup`.
 - **`uninstall --all`:** para el daemon. Una GUI hace lo mismo que el CLI con el núcleo: `teardown::plan` (solo lee) y `teardown::run_if_agreed`, que le pasa el `Plan` completo (pasos, lo que se hace a mano, lo que no se pudo comprobar, lo que se queda y, con purga, lo que se borra) y no cambia nada sin un sí. El `Plan` y cada `Outcome` se serializan a JSON con la misma forma que `crisol --json uninstall --all`.
 - **`system install|uninstall`:** UAC.
 - **`autostart`, `shims`, `path`, `env` y `shell`:** son ajustes del usuario.

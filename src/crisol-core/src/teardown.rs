@@ -39,6 +39,7 @@ use crate::dbservice::DbKind;
 use crate::dns::RULE_COMMENT;
 use crate::hosts::{BEGIN, END};
 use crate::paths::CrisolPaths;
+use crate::programs::WINGET_ID;
 use crate::setup::{remove_exclusion_command, suffix_of, SystemSetup};
 use crate::shimsetup::{path_remove, path_status};
 use crate::trust::{crisol_cas, RemoveOutcome, TrustStore};
@@ -62,6 +63,9 @@ pub struct System<'a> {
     pub programs: Vec<PathBuf>,
     /// Deletes them once this program has ended (it is one of them).
     pub remove_programs: &'a dyn Fn(&[PathBuf]) -> io::Result<()>,
+    /// The programs were installed by winget, which owns them: they are not deleted here
+    /// (`programs` is empty then) and the last line says how winget removes them.
+    pub winget: bool,
 }
 
 impl std::fmt::Debug for System<'_> {
@@ -485,7 +489,17 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             .problems
             .push(format!("cannot read {}: {error}", home.display())),
     }
-    if system.programs.is_empty() {
+    programs_notice(system, &mut plan);
+    plan
+}
+
+/// What happens to Crisol's programs: deleted, left to winget, or left to the user.
+fn programs_notice(system: &System<'_>, plan: &mut Plan) {
+    if system.winget {
+        plan.kept.push(format!(
+            "crisol.exe and the programs next to it belong to winget: when this is done, `winget uninstall {WINGET_ID}` removes them"
+        ));
+    } else if system.programs.is_empty() {
         plan.kept.push(
             "crisol.exe and the programs next to it: delete them yourself when this is done"
                 .to_owned(),
@@ -495,7 +509,6 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             files: system.programs.clone(),
         });
     }
-    plan
 }
 
 /// With no helper there is no prompt to ask for: what needs an administrator is told as

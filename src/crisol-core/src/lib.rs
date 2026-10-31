@@ -23,6 +23,7 @@ pub mod manage;
 pub mod mongowire;
 pub mod nginx;
 pub mod nodetool;
+pub mod onboarding;
 pub mod paths;
 pub mod phpini;
 pub mod phppool;

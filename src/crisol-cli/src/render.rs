@@ -354,3 +354,76 @@ pub fn teardown_outcomes(outcomes: &[crisol_core::teardown::Outcome]) -> String 
     }
     out
 }
+
+/// What `setup` will do, what is in place already and what stops it. Ends with a newline.
+#[must_use]
+pub fn setup_plan(plan: &crisol_core::onboarding::Plan) -> String {
+    let mut out = String::new();
+    if plan.is_blocked() {
+        out.push_str(
+            "Crisol cannot be set up yet:
+",
+        );
+        for problem in &plan.problems {
+            let _ = writeln!(out, "  - {}", problem.message);
+            if let Some(fix) = &problem.fix {
+                let _ = writeln!(out, "    fix: {fix}");
+            }
+        }
+        return out;
+    }
+    if plan.is_empty() {
+        out.push_str(
+            "Crisol is set up: there is nothing left to do.
+",
+        );
+    } else {
+        out.push_str(
+            "Crisol will set up, in this order:
+",
+        );
+        for (n, step) in plan.steps.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "  {}. {}{}",
+                n + 1,
+                step.describe(),
+                if step.optional() { " [asks first]" } else { "" }
+            );
+        }
+    }
+    for (title, lines) in [
+        (
+            "
+Already in place:",
+            &plan.done,
+        ),
+        (
+            "
+Note:",
+            &plan.notes,
+        ),
+    ] {
+        if !lines.is_empty() {
+            let _ = writeln!(out, "{title}");
+            for line in lines {
+                let _ = writeln!(out, "  - {line}");
+            }
+        }
+    }
+    out
+}
+
+/// The question before `setup` changes anything.
+#[must_use]
+pub fn setup_question(plan: &crisol_core::onboarding::Plan) -> &'static str {
+    if plan
+        .steps
+        .iter()
+        .any(crisol_core::onboarding::Step::optional)
+    {
+        "Type yes to go on (the steps marked [asks first] ask again):"
+    } else {
+        "Type yes to go on:"
+    }
+}

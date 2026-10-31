@@ -204,6 +204,12 @@ struct Env {
     confirmed_plans: Arc<Mutex<Vec<teardown::Plan>>>,
     /// The programs `uninstall --all` asked to delete.
     removed_programs: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// The steps of `setup` that are asked alone, in the order they were asked.
+    asked_steps: Arc<Mutex<Vec<String>>>,
+    /// The steps of `setup` the user says no to.
+    refused_steps: Arc<Mutex<Vec<String>>>,
+    /// Whether winget installed the programs.
+    winget: bool,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -268,11 +274,15 @@ impl Env {
             confirm: Arc::default(),
             confirmed_plans: Arc::default(),
             removed_programs: Arc::default(),
+            asked_steps: Arc::default(),
+            refused_steps: Arc::default(),
+            winget: false,
             driver_stop,
             driver,
         }
     }
 
+    #[allow(clippy::too_many_lines)] // every field of the context, once
     fn context(&self) -> Context {
         let pipe = self.pipe.clone();
         let (deps, daemon_deps) = (self.deps.clone(), self.deps.clone());
@@ -345,7 +355,30 @@ impl Env {
                     state.0
                 })
             },
-            programs: vec![self.daemon_exe.clone(), self.shim_exe.clone()],
+            confirm_setup: {
+                let confirm = Arc::clone(&self.confirm);
+                Box::new(move |_| {
+                    let mut state = confirm.lock().unwrap();
+                    state.1.push("setup".to_owned());
+                    state.0
+                })
+            },
+            confirm_step: {
+                let confirm = Arc::clone(&self.confirm);
+                let asked = Arc::clone(&self.asked_steps);
+                let refused = Arc::clone(&self.refused_steps);
+                Box::new(move |step| {
+                    asked.lock().unwrap().push(step.id().to_owned());
+                    confirm.lock().unwrap().0
+                        && !refused.lock().unwrap().iter().any(|id| id == step.id())
+                })
+            },
+            programs: if self.winget {
+                Vec::new()
+            } else {
+                vec![self.daemon_exe.clone(), self.shim_exe.clone()]
+            },
+            winget: self.winget,
             remove_programs: {
                 let removed = Arc::clone(&self.removed_programs);
                 Box::new(move |files| {
@@ -1529,4 +1562,128 @@ fn uninstall_all_in_json_only_lists_unless_told_yes() {
         let (code, _, err) = env.run(&wrong);
         assert_eq!(code, 2, "{wrong:?}: {err}");
     }
+}
+
+#[test]
+fn setup_lists_what_it_will_do_and_changes_nothing_if_the_answer_is_no() {
+    let env = Env::new(&[]);
+    let (code, out, _) = env.run(&["setup"]);
+
+    assert_eq!(code, 1, "{out}");
+    for line in [
+        "Crisol will set up, in this order:",
+        "1. Put the commands php, node, npm, composer",
+        "first in your user PATH",
+        "2. Put ",
+        "local certificate authority",
+        "[asks first]",
+        "Nothing was changed",
+    ] {
+        assert!(out.contains(line), "{line}: {out}");
+    }
+    assert_eq!(env.confirm.lock().unwrap().1, ["setup"]);
+    assert!(env.autostart.current().unwrap().is_none());
+    assert_eq!(env.trust.certificates().unwrap(), Vec::<Vec<u8>>::new());
+    assert_eq!(env.setup.calls(), Vec::<String>::new());
+    assert!(!env.paths.shims_dir().join("php.exe").exists());
+}
+
+#[test]
+fn setup_with_yes_does_everything_and_a_second_run_has_nothing_left() {
+    let mut env = Env::new(&[]);
+    env.setup = Arc::new(FakeSetup::not_installed());
+    let (code, out, _) = env.run(&["setup", "--yes"]);
+
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        env.confirm.lock().unwrap().1.is_empty(),
+        "--yes asks nothing"
+    );
+    for line in [
+        "[done] ",
+        "is first in your user PATH",
+        "Windows trusts Crisol Local CA",
+        "Crisol will start when you sign in",
+        "Done. Open a new terminal",
+    ] {
+        assert!(out.contains(line), "{line}: {out}");
+    }
+    assert_eq!(env.setup.calls(), ["install test"]);
+    assert!(env.autostart.current().unwrap().is_some());
+    assert_eq!(env.trust.certificates().unwrap().len(), 1);
+    assert!(env.paths.shims_dir().join("php.exe").is_file());
+
+    // The helper double does not remember that it was installed, so only that step is left.
+    let (code, out, _) = env.run(&["setup", "--yes"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(env.trust.certificates().unwrap().len(), 1, "{out}");
+}
+
+#[test]
+fn setup_asks_about_the_certificate_the_helper_and_the_sign_in_entry_one_by_one() {
+    let mut env = Env::new(&[]);
+    env.setup = Arc::new(FakeSetup::not_installed());
+    env.confirm.lock().unwrap().0 = true;
+    *env.refused_steps.lock().unwrap() = vec!["helper".to_owned()];
+    let (code, out, _) = env.run(&["setup"]);
+
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        *env.asked_steps.lock().unwrap(),
+        ["trust", "helper", "autostart"]
+    );
+    assert!(
+        out.contains("[declined] Left as it was; `crisol system install`"),
+        "{out}"
+    );
+    assert!(
+        env.setup.calls().is_empty(),
+        "no administrator prompt for a no"
+    );
+    assert!(env.autostart.current().unwrap().is_some());
+    assert_eq!(env.trust.certificates().unwrap().len(), 1);
+    // Only a no to a question, not a failure: the exit code is 0.
+}
+
+#[test]
+fn setup_refuses_programs_that_other_accounts_can_replace_and_says_the_fix() {
+    let env = Env::new(&[]);
+    env.dirs.expose(env.shim_exe.parent().unwrap());
+    let (code, out, _) = env.run(&["setup", "--yes"]);
+
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("Crisol cannot be set up yet"), "{out}");
+    assert!(out.contains("fix: icacls"), "{out}");
+    assert!(env.autostart.current().unwrap().is_none());
+    assert!(!env.paths.shims_dir().join("php.exe").exists());
+}
+
+#[test]
+fn setup_in_json_only_lists_unless_told_yes() {
+    let env = Env::new(&[]);
+    let (code, out, _) = env.run(&["--json", "setup"]);
+    assert_eq!(code, 0, "{out}");
+    let plan: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(plan["steps"][0]["step"], "shims");
+    assert_eq!(plan["steps"][2]["optional"], true);
+    assert!(env.autostart.current().unwrap().is_none());
+    assert_eq!(env.confirm.lock().unwrap().1, Vec::<String>::new());
+
+    let (code, out, _) = env.run(&["--json", "setup", "--yes"]);
+    assert_eq!(code, 0, "{out}");
+    let done: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(done["results"][0]["result"], "done");
+}
+
+#[test]
+fn uninstall_all_leaves_the_programs_that_winget_owns_and_names_the_winget_command() {
+    let mut env = Env::new(&[]);
+    env.winget = true;
+    env.ok(&["autostart", "on"]);
+    let (code, out, _) = env.run(&["uninstall", "--all", "--yes"]);
+
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("winget uninstall Alexxlml.Crisol"), "{out}");
+    assert!(!out.contains("Delete Crisol's programs"), "{out}");
+    assert!(env.removed_programs.lock().unwrap().is_empty());
 }
