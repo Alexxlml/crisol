@@ -230,6 +230,9 @@ mod tests {
     /// only run on the test's own temporary folder, to read.
     #[test]
     fn the_real_judge_refuses_a_helper_in_a_folder_the_user_made() {
+        if crate::private_dir::tests::runs_as_builtin_administrator() {
+            return; // the user is an administrator already: nothing to refuse
+        }
         let (dir, exe, _) = installed_in_a_temp_folder();
         let location = HelperLocation::at(exe, Arc::new(WindowsPrivateDirs::new()));
         let error = location.verify().unwrap_err();

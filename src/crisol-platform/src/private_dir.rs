@@ -426,7 +426,7 @@ fn aces(sddl: &str) -> Option<Vec<&str>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
@@ -512,6 +512,13 @@ mod tests {
         ] {
             assert!(!exposes_write(fine, ME), "{fine}");
         }
+    }
+
+    /// Whether the tests run as the built-in Administrator account (RID 500, the runner of
+    /// GitHub Actions). Its folders belong to `LA`, an administrator, so "a folder the user made
+    /// is not fit for a privileged program" cannot hold for it: the user already is one.
+    pub(crate) fn runs_as_builtin_administrator() -> bool {
+        current_user_sid().is_ok_and(|sid| sid.starts_with("S-1-5-21-") && sid.ends_with("-500"))
     }
 
     #[test]
@@ -613,6 +620,9 @@ mod tests {
 
     #[test]
     fn the_real_folders_of_the_system_and_the_user_are_judged_apart() {
+        if runs_as_builtin_administrator() {
+            return; // see `runs_as_builtin_administrator`
+        }
         let dirs = WindowsPrivateDirs::new();
         let system = crate::system_paths::system_directory().unwrap();
         assert!(!dirs.is_writable_by_non_administrators(&system).unwrap());
