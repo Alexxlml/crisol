@@ -38,7 +38,7 @@ Es el quinto programa del paquete (ADR-0024 §6, ADR-0026) y va **dentro del wor
 - **`build.rs` copia `assets/brand/tokens.css` y `symbol.svg` a `ui/`** antes de compilar (son la única copia de la identidad, ADR-0027); las copias no se versionan.
 - **Los iconos** (`src/crisol-gui/icons/`) salen de `assets/brand/` con `src/scripts/gui-icons.sh` (necesita `resvg`, `cargo install resvg --locked`, y Python con Pillow) y **sí se versionan**: el script solo se corre cuando cambian los SVG.
 - **WebView2** debe estar en el equipo del usuario (viene con Windows 11 y con Windows 10 actualizado). El ZIP no lo instala: `crisol-gui.exe` lo comprueba al arrancar y, si falta, dice dónde descargarlo.
-- **Pendiente para F13.9** (empaquetado): meter `crisol-gui.exe` en `package.sh` y en `release.yml`, y decidir la licencia MPL-2.0 de `cssparser`, `selectors`, `dtoa-short` y `option-ext`, que Tauri trae y `src/about.toml` no acepta todavía (hoy haría fallar el paso de `cargo-about`).
+- **Pendiente para F13.9** (empaquetado): meter `crisol-gui.exe` en `package.sh` y en `release.yml`. La licencia MPL-2.0 de `cssparser`, `selectors`, `dtoa-short` y `option-ext`, que trae Tauri, ya está aceptada en `src/about.toml`.
 
 ## winget
 

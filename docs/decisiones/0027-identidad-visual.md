@@ -2,7 +2,7 @@
 
 - **Estado:** aceptada (propietario, 2026-10-31)
 - **Contexto de fase:** antes de F13.3 (esqueleto de la GUI, ADR-0026)
-- **Archivos:** `assets/brand/` (`tokens.css`, `symbol.svg`, `tray/`). Propuestas en el lienzo «Identidad de Crisol» (claude.ai, privado del propietario).
+- **Archivos:** `assets/brand/` (`tokens.css`, `symbol.svg`, `app-icon.svg`, `tray/`). Propuestas en el lienzo «Identidad de Crisol» (claude.ai, privado del propietario).
 
 ## Contexto
 
@@ -84,7 +84,7 @@ Cuadrados (`--radius-sm`), con fondo y texto del estado (`--state-*`) y un signo
 
 - La GUI importa `assets/brand/tokens.css` y **no escribe colores sueltos**: todo va por variables. Lo que falte se añade como token.
 - **Los iconos de la bandeja salen de `assets/brand/tray/`.** Tauri necesita PNG o ICO: la conversión (por ejemplo con `tauri icon` o un script) se documenta y los resultados se versionan. Hay que elegir la variante `-dark` o `-light` según el tema de la barra de tareas de Windows (`SystemUsesLightTheme`), y cambiarla si el usuario cambia el tema.
-- **El icono de la aplicación** (ventana, menú Inicio y `.exe`) sale de `symbol.svg`.
+- **El icono de la aplicación** (ventana, menú Inicio y `.exe`) sale de `app-icon.svg`: el símbolo sobre un cuadrado redondeado de `--bg`. Sin el fondo, el borde crema se perdía sobre un menú Inicio o un explorador claros (propietario, 2026-10-31, revisión de F13.3). La bandeja sigue con sus variantes `-dark` y `-light`.
 - **Las fuentes** se empaquetan con sus licencias.
 - **Los nombres de los estados** salen de la tabla de arriba, en el mecanismo de traducción que elija F13.3.
 

@@ -215,7 +215,7 @@ Reglas de toda la fase:
   - la identidad visual de la ADR-0027:
     - estilos solo con `assets/brand/tokens.css`, tema oscuro principal y claro según Windows;
     - los iconos de la bandeja de `assets/brand/tray/` convertidos a PNG o ICO, con la variante según el tema de la barra de tareas;
-    - el icono de la aplicación sale de `assets/brand/symbol.svg`;
+    - el icono de la aplicación sale de `assets/brand/app-icon.svg` (el símbolo sobre fondo oscuro);
     - Space Grotesk, Inter y JetBrains Mono empaquetadas, con sus licencias OFL en `licenses/` y `THIRD-PARTY-NOTICES.md`;
     - los nombres de los estados, de la tabla de la ADR-0027.
 

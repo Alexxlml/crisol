@@ -10,6 +10,10 @@ accepted = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
     "Unlicense",
+    # File-level copyleft: only the files of these crates are covered, and they are linked
+    # unmodified (cssparser, selectors, dtoa-short and option-ext, through Tauri). Accepted by
+    # the owner on 2026-10-31 (review of F13.3).
+    "MPL-2.0",
 ]
 targets = ["x86_64-pc-windows-msvc"]
 workarounds = ["ring"]

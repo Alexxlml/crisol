@@ -13,9 +13,10 @@ for svg in "$root"/assets/brand/tray/*.svg; do
   resvg -w 32 -h 32 "$svg" "$out/tray/$name.png"
 done
 
-# Application: window, Start menu and .exe come from the symbol.
+# Application: window, Start menu and .exe come from the symbol on its dark square, which
+# holds on a light Start menu or Explorer too (app-icon.svg).
 for size in 32 128 256 512; do
-  resvg -w "$size" -h "$size" "$root/assets/brand/symbol.svg" "$out/icon-$size.png"
+  resvg -w "$size" -h "$size" "$root/assets/brand/app-icon.svg" "$out/icon-$size.png"
 done
 cp "$out/icon-512.png" "$out/icon.png"
 python - "$out" <<'PY'
