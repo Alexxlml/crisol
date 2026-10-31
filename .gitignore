@@ -1,4 +1,7 @@
 /src/target/
+# prototipos de la GUI (F13.2): fuera del workspace, con su propio target
+/prototipos/*/target*/
+/prototipos/gui-tauri/gen/
 *.log
 .vscode/
 .idea/

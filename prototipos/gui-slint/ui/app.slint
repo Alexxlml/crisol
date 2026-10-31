@@ -1,0 +1,63 @@
+import { Button, ListView } from "std-widgets.slint";
+
+export struct ServiceRow { name: string, state: string, detail: string }
+
+export component MainWindow inherits Window {
+    title: "Crisol";
+    preferred-width: 520px;
+    preferred-height: 420px;
+
+    in property <[ServiceRow]> services;
+    in property <string> connection;
+    in property <bool> any-running;
+    callback start(string);
+    callback stop(string);
+    callback toggle-all();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: root.connection; vertical-alignment: center; horizontal-stretch: 1; }
+            Button {
+                text: root.any-running ? @tr("Stop all") : @tr("Start all");
+                clicked => { root.toggle-all(); }
+            }
+        }
+        ListView {
+            for row in root.services: HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                Text { text: row.name; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { text: row.state + (row.detail == "" ? "" : " (" + row.detail + ")"); vertical-alignment: center; }
+                Button { text: @tr("Start"); clicked => { root.start(row.name); } }
+                Button { text: @tr("Stop"); clicked => { root.stop(row.name); } }
+            }
+        }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    in property <bool> any-running;
+    in property <string> summary;
+    callback toggle-all();
+    callback open();
+    callback quit();
+    callback stop-and-quit();
+
+    icon: @image-url("../assets/icon.png");
+    tooltip: "Crisol: " + root.summary;
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem {
+            title: root.any-running ? @tr("Stop all") : @tr("Start all");
+            activated => { root.toggle-all(); }
+        }
+        MenuItem { title: @tr("Open Crisol"); activated => { root.open(); } }
+        MenuSeparator {}
+        MenuItem { title: @tr("Quit"); activated => { root.quit(); } }
+        MenuItem { title: @tr("Stop all and quit"); activated => { root.stop-and-quit(); } }
+    }
+}

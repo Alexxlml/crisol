@@ -1,0 +1,28 @@
+[package]
+name = "crisol-gui-slint-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Outside the Crisol workspace on purpose (F13.2): `cargo test --workspace` never builds it.
+[workspace]
+
+[features]
+# The renderer is a build choice that changes RAM and size: both are measured.
+default = ["renderer-femtovg"]
+renderer-femtovg = ["slint/renderer-femtovg"]
+renderer-software = ["slint/renderer-software"]
+
+[dependencies]
+slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "compat-1-2", "accessibility", "system-tray"] }
+crisol-client = { path = "../../src/crisol-client" }
+crisol-protocol = { path = "../../src/crisol-protocol" }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
+
+[build-dependencies]
+slint-build = "1.18.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
