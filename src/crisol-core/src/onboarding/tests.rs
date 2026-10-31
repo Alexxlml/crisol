@@ -272,6 +272,27 @@ fn nobody_is_asked_when_everything_is_in_place_and_a_no_changes_nothing() {
 }
 
 #[test]
+fn after_an_update_the_shims_of_the_old_program_are_listed_again_and_brought_up_to_date() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let system = world.system(&setup);
+    let first = plan(&system, SystemTime::now());
+    run(&system, &first, &mut |_| true, SystemTime::now());
+    assert!(plan(&system, SystemTime::now()).is_empty());
+
+    // What `winget upgrade` does: a new `crisol-shim.exe` in the same place.
+    fs::write(world.programs.join("crisol-shim.exe"), "crisol-shim.exe 2").unwrap();
+    let after = plan(&system, SystemTime::now());
+    assert_eq!(ids(&after), ["shims"]);
+    assert!(matches!(after.steps[0], Step::Shims { refresh: true, .. }));
+    assert!(after.steps[0].describe().starts_with("Update the commands"));
+
+    let outcomes = run(&system, &after, &mut |_| true, SystemTime::now());
+    assert_eq!(kinds(&outcomes), [("shims", OutcomeKind::Done)]);
+    assert!(plan(&system, SystemTime::now()).is_empty());
+}
+
+#[test]
 fn another_crisold_in_the_sign_in_entry_is_replaced_and_said() {
     let world = World::new();
     world.autostart.set(r#""C:\old\crisold.exe""#).unwrap();

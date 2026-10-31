@@ -67,7 +67,7 @@ La GUI será un quinto programa en el mismo paquete (o un paquete de winget que 
 
 ## Implementación de P.3 (2026-10-30)
 
-- `crisol setup [--yes]` vive en `crisol-core::onboarding`; el CLI solo parsea, imprime y pregunta. Pasos, en orden: **shims**, **PATH**, y, **cada uno con su pregunta**, **CA**, **ayudante** y **autoarranque**. Solo se listan los que faltan; con todo hecho no pregunta nada, así que volver a ejecutarlo es seguro (y es lo que corrige un autoarranque que apunta a otra ruta tras una actualización).
+- `crisol setup [--yes]` vive en `crisol-core::onboarding`; el CLI solo parsea, imprime y pregunta. Pasos, en orden: **shims**, **PATH**, y, **cada uno con su pregunta**, **CA**, **ayudante** y **autoarranque**. Solo se listan los que faltan; con todo hecho no pregunta nada, así que volver a ejecutarlo es seguro. Es también el paso tras una actualización: los shims se listan si alguno no es una copia exacta del `crisol-shim.exe` actual (no solo si faltan), y el autoarranque si apunta a otra ruta.
 - Antes de todo comprueba que la carpeta de los programas es privada (`require_trusted_program` sobre `crisol-shim.exe` y `crisold.exe`, que comparten carpeta: se dice una vez, con el `icacls` que la cierra). Mientras haya un problema no se cambia nada.
 - Una negativa del usuario (a una pregunta, al diálogo de Windows de la CA o al aviso de administrador) es un resultado, no un fallo: el código de salida es 0 salvo que un paso falle de verdad.
 - `--yes` no pregunta, pero Windows sigue preguntando por sí mismo (CA y UAC). `crisol trust` sigue mostrando las huellas **antes** del diálogo; `setup` las menciona en el resultado y recomienda `crisol trust` a quien quiera compararlas primero.

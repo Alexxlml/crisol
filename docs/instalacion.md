@@ -32,10 +32,10 @@ Las primeras versiones **no están firmadas** con Authenticode (ADR-0024, secci�
 ```powershell
 crisol shutdown
 winget upgrade Alexxlml.Crisol
-crisol shims sync
+crisol setup
 ```
 
-Hay que parar el daemon antes: Windows no deja reemplazar un `.exe` que está en uso. `crisol doctor` avisa si el daemon que corre es de otra versión que el programa instalado. Si el arranque al iniciar sesión apuntaba a una ruta que cambió, `crisol setup` lo corrige.
+Hay que parar el daemon antes: Windows no deja reemplazar un `.exe` que está en uso. `crisol setup` actualiza los comandos (`php`, `node`…), que son copias del programa anterior, y corrige el arranque al iniciar sesión si apuntaba a una ruta que cambió. `crisol doctor` avisa si el daemon que corre es de otra versión que el programa instalado.
 
 ## Desinstalar
 

@@ -7,6 +7,7 @@
 //! accounts could have replaced, and what to tell the user when something else in the `PATH`
 //! wins over the shims (the Node of the machine, say).
 
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -113,6 +114,19 @@ pub fn shims_present(paths: &CrisolPaths) -> Vec<(&'static str, bool)> {
         .iter()
         .map(|c| (*c, dir.join(shim_file_name(c)).is_file()))
         .collect()
+}
+
+/// Whether every shim in `shims/` is a copy of `shim_exe` as it is now: not when one is missing,
+/// nor after an update, when they are still copies of the previous program. Read only.
+#[must_use]
+pub fn shims_current(paths: &CrisolPaths, shim_exe: &Path) -> bool {
+    let Ok(program) = fs::read(shim_exe) else {
+        return false;
+    };
+    let dir = paths.shims_dir();
+    SHIM_COMMANDS
+        .iter()
+        .all(|c| fs::read(dir.join(shim_file_name(c))).ok().as_deref() == Some(program.as_slice()))
 }
 
 /// Puts `shims/` first in the user `PATH`.

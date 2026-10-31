@@ -22,7 +22,7 @@ use crate::ca::load_ca;
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::setup::{suffix_of, SystemSetup};
-use crate::shimsetup::{install_shims, path_add, path_status, shims_present};
+use crate::shimsetup::{install_shims, path_add, path_status, shims_current, shims_present};
 use crate::teardown::{Outcome, OutcomeKind};
 use crate::trust::{prepare_trust, status, trust_ca, AddOutcome, TrustStore};
 use crate::userpath::{PathChange, UserPath};
@@ -66,6 +66,8 @@ pub enum Step {
     Shims {
         /// The shims folder.
         folder: PathBuf,
+        /// They are all there, but copies of another `crisol-shim` (the one before an update).
+        refresh: bool,
     },
     /// Put the shims folder first in the user `PATH`.
     Path {
@@ -113,7 +115,14 @@ impl Step {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
-            Self::Shims { folder } => format!(
+            Self::Shims {
+                folder,
+                refresh: true,
+            } => format!(
+                "Update the commands php, node, npm, composer and the rest in {} to this version of Crisol",
+                folder.display()
+            ),
+            Self::Shims { folder, .. } => format!(
                 "Put the commands php, node, npm, composer and the rest in {}, so each runs the version your project asks for",
                 folder.display()
             ),
@@ -210,14 +219,20 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
     }
 
     let folder = paths.shims_dir();
-    if shims_present(paths).iter().all(|(_, present)| *present) {
+    // `check_programs` has made sure there is a `shim_exe`.
+    if system
+        .shim_exe
+        .as_deref()
+        .is_some_and(|exe| shims_current(paths, exe))
+    {
         plan.done.push(format!(
-            "The commands are in {} (`crisol shims sync` refreshes them after an update)",
+            "The commands are in {} and up to date",
             folder.display()
         ));
     } else {
         plan.steps.push(Step::Shims {
             folder: folder.clone(),
+            refresh: shims_present(paths).iter().all(|(_, present)| *present),
         });
     }
     match path_status(system.user_path, paths, &|_| false) {
@@ -380,7 +395,7 @@ fn declined_message(step: &Step) -> String {
 
 fn do_step(system: &System<'_>, step: &Step, now: SystemTime) -> (OutcomeKind, String) {
     match step {
-        Step::Shims { folder } => shims(system, folder),
+        Step::Shims { folder, .. } => shims(system, folder),
         Step::Path { folder } => match path_add(system.user_path, system.paths) {
             Ok(PathChange::Added) => (
                 OutcomeKind::Done,
