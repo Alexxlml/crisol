@@ -1154,15 +1154,18 @@ impl WebStack {
 
     /// The round failed: the files in `etc/nginx/` are untouched. If this was the first start
     /// and an earlier configuration exists, Nginx starts with it.
+    ///
+    /// The failure is said after Nginx's `starting`: a start forgets earlier trouble
+    /// ([`crate::trouble::WebTrouble`]), and this failure is about the start.
     fn fail_reload(&mut self, reason: String, now: Instant, events: &mut Vec<WebEvent>) {
         let then_start = self.reload.as_ref().is_some_and(|r| r.then_start);
         self.cancel_reload();
-        events.push(WebEvent::ReloadFailed { reason });
         if then_start && self.running && self.main_conf().is_ok_and(|main| main.is_file()) {
             // With the configuration that worked before, which may or may not use TLS.
             let https = self.disk_has_tls();
             self.start_nginx(now, events, https);
         }
+        events.push(WebEvent::ReloadFailed { reason });
         self.finish_reload_round(now, false);
     }
 

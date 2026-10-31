@@ -43,6 +43,7 @@ pub mod shimsetup;
 pub mod sites;
 pub mod teardown;
 pub mod tls;
+pub mod trouble;
 pub mod trust;
 pub mod userpath;
 pub mod version;

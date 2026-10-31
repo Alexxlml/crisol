@@ -107,6 +107,8 @@ fn every_reply() -> Vec<Reply> {
             services: vec![],
             warnings: vec![],
             seq: None,
+            blocked: None,
+            reload_error: None,
         }),
         Reply::Done(DoneInfo {
             message: text(),

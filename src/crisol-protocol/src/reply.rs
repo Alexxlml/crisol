@@ -94,6 +94,15 @@ pub struct StatusInfo {
     /// answering by itself, with no daemon).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
+    /// The last `blocked` that still holds: Crisol will not change the running web stack until
+    /// a folder is closed (ADR-0025, extension). Absent when nothing is blocked, and from a
+    /// daemon older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
+    /// The last `reload_failed` that still holds: the new web configuration was not applied
+    /// and the previous one goes on. Absent when the last one was applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload_error: Option<String>,
 }
 
 /// "Done", with a sentence and anything worth adding.

@@ -34,6 +34,7 @@ use crate::manage::list_installed;
 use crate::ports::PortStatus;
 use crate::service::{FailureReason, ServiceState};
 use crate::sites::SitesFile;
+use crate::trouble::WebTrouble;
 use crate::web::{plan_web, WebError, WebEvent, WebPlan, WebStack};
 
 /// How often the user's files are looked at.
@@ -66,6 +67,8 @@ pub struct Daemon {
     /// Facts without an action for the user, from the last time the web stack was applied
     /// (see [`Daemon::take_notes`]).
     notes: Vec<String>,
+    /// What the events said against the web stack and still holds, for `status`.
+    trouble: WebTrouble,
     /// The notes already handed out, so a reload does not repeat them.
     reported_notes: Vec<String>,
 }
@@ -117,6 +120,7 @@ impl Daemon {
             reported_db_ports: Vec::new(),
             notes: Vec::new(),
             reported_notes: Vec::new(),
+            trouble: WebTrouble::default(),
         }
     }
 
@@ -221,6 +225,23 @@ impl Daemon {
         now: Instant,
         events: &mut dyn FnMut(Event),
     ) -> Result<Reply, RpcError> {
+        let mut sent = Vec::new();
+        let answer = self.answer(call, now, &mut |event| {
+            sent.push(event.clone());
+            events(event);
+        });
+        for event in &sent {
+            self.trouble.note(event);
+        }
+        answer
+    }
+
+    fn answer(
+        &mut self,
+        call: &Call,
+        now: Instant,
+        events: &mut dyn FnMut(Event),
+    ) -> Result<Reply, RpcError> {
         if let Some(answer) = self.engine.handle(call, events) {
             // A change to the user's files is applied to the running services at once.
             if answer.is_ok() && changes_sites(call) {
@@ -300,6 +321,9 @@ impl Daemon {
             self.refresh(now, &mut |e| out.push(e));
         }
         self.watch_database_ports(now, &mut |e| out.push(e));
+        for event in &out {
+            self.trouble.note(event);
+        }
         out
     }
 
@@ -363,6 +387,9 @@ impl Daemon {
             warnings: Vec::new(),
             // The events are numbered by whoever sends them (`crisold`), which adds it.
             seq: None,
+            // What the events said and still holds, so a client that arrives late sees it.
+            blocked: self.trouble.blocked.clone(),
+            reload_error: self.trouble.reload_error.clone(),
         }))
     }
 
@@ -905,9 +932,17 @@ impl Daemon {
                 // is followed by `reloaded` or `reload_failed`: a request may be merged into a
                 // round under way, or find the files already as wanted and test nothing.
                 Ok(applied) => self.notes.extend(applied.notes),
-                Err(WebError::Home(error)) => events(Event::Blocked {
-                    reason: format!("{} ({})", home_error(&error).message, home_fix(&error)),
-                }),
+                Err(WebError::Home(error)) => {
+                    // Nothing was written, and closing the folder changes no file the watch
+                    // looks at: the next look tries again, so the change is applied (and
+                    // `reloaded` lifts the block) as soon as the home is private.
+                    self.fingerprint = None;
+                    let reason = format!("{} ({})", home_error(&error).message, home_fix(&error));
+                    // Said once per reason, not at every look.
+                    if self.trouble.blocked.as_ref() != Some(&reason) {
+                        events(Event::Blocked { reason });
+                    }
+                }
                 Err(error) => events(Event::ReloadFailed {
                     reason: error.to_string(),
                 }),
@@ -1026,7 +1061,7 @@ fn state_text(state: &ServiceState) -> (&'static str, Option<String>) {
     }
 }
 
-fn map_event(event: WebEvent) -> Option<Event> {
+pub(crate) fn map_event(event: WebEvent) -> Option<Event> {
     Some(match event {
         WebEvent::Service { name, event } => match event {
             crate::service::ServiceEvent::StateChanged { to, .. } => {

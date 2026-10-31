@@ -290,6 +290,8 @@ fn replies_ignore_fields_they_do_not_know_so_the_daemon_can_add_some() {
             }],
             warnings: vec![],
             seq: None,
+            blocked: None,
+            reload_error: None,
         })
     );
 }
@@ -314,12 +316,36 @@ fn an_event_and_a_status_carry_their_number_and_older_messages_still_read() {
     assert_eq!(older.params.seq, None);
     let older: Reply =
         serde_json::from_str(r#"{"type":"status","services":[],"warnings":[]}"#).unwrap();
-    assert!(matches!(older, Reply::Status(StatusInfo { seq: None, .. })));
+    assert!(matches!(
+        older,
+        Reply::Status(StatusInfo {
+            seq: None,
+            blocked: None,
+            reload_error: None,
+            ..
+        })
+    ));
+    // Review of F13.1 and F13.2, finding 1: what still holds travels in the picture.
+    let held = Reply::Status(StatusInfo {
+        services: vec![],
+        warnings: vec![],
+        seq: Some(7),
+        blocked: Some("close the home".to_owned()),
+        reload_error: Some("nginx -t said no".to_owned()),
+    });
+    let line = serde_json::to_string(&held).unwrap();
+    assert_eq!(
+        line,
+        r#"{"type":"status","services":[],"warnings":[],"seq":7,"blocked":"close the home","reload_error":"nginx -t said no"}"#
+    );
+    assert_eq!(serde_json::from_str::<Reply>(&line).unwrap(), held);
 
     let status = Reply::Status(StatusInfo {
         services: vec![],
         warnings: vec![],
         seq: Some(41),
+        blocked: None,
+        reload_error: None,
     });
     assert_eq!(
         serde_json::to_string(&status).unwrap(),

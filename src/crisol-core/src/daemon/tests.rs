@@ -1357,3 +1357,82 @@ fn php_and_a_database_that_need_a_missing_runtime_are_refused_with_what_to_do() 
     assert_eq!(rig.service_state("mysql").as_deref(), Some("stopped"));
     assert_eq!(rig.supervisor.spawned().len(), 0);
 }
+
+/// The `status` picture, whole.
+fn picture(rig: &mut Rig) -> StatusInfo {
+    match rig.call(&Call::Status { service: None }, 0).unwrap() {
+        Reply::Status(info) => info,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Review of F13.1 and F13.2, finding 1: a block is in the picture for a client that arrives
+/// late, is said once, and lifts by itself once the home is private again.
+#[test]
+fn a_blocked_reload_is_in_the_picture_said_once_and_lifted_when_the_home_is_closed() {
+    let mut rig = Rig::new();
+    rig.start_running();
+    assert_eq!(picture(&mut rig).blocked, None);
+    rig.dirs.expose(rig.paths.home());
+    fs::create_dir_all(rig.paths.www_dir().join("shop")).unwrap();
+
+    let blocked = |events: &[Event]| {
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::Blocked { .. }))
+            .count()
+    };
+    assert_eq!(blocked(&rig.tick(3000)), 1);
+    let reason = picture(&mut rig).blocked.expect("the picture says it");
+    assert!(reason.contains("icacls"), "{reason}");
+    // Looked at again, still open: not said again.
+    assert_eq!(blocked(&rig.tick(5100)), 0);
+    assert_eq!(picture(&mut rig).blocked.as_deref(), Some(reason.as_str()));
+
+    // Closing the folder touches no file, and still the change is applied.
+    rig.dirs.close(rig.paths.home());
+    let mut events = rig.tick(7200);
+    events.extend(rig.tick(7250));
+    let (test, args) = rig.controls().pop().unwrap();
+    assert_eq!(args, ["-t"]);
+    rig.supervisor.exit(test, 0).unwrap();
+    events.extend(rig.tick(7300));
+    let (reload, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(reload, 0).unwrap();
+    events.extend(rig.tick(7400));
+    assert!(events.contains(&Event::Reloaded), "{events:?}");
+    let after = picture(&mut rig);
+    assert_eq!((after.blocked, after.reload_error), (None, None));
+}
+
+/// A failed reload is in the picture until a configuration is applied or Nginx starts again.
+#[test]
+fn a_failed_reload_is_in_the_picture_until_nginx_starts_again() {
+    let mut rig = Rig::new();
+    rig.start_running();
+    fs::write(
+        rig.paths.config_file(),
+        "[services.nginx]\nhttp_port = 19081\nhttps_port = 19443\n\n[php]\nbase_port = 19100\n",
+    )
+    .unwrap();
+    rig.tick(5000);
+    let error = picture(&mut rig).reload_error.expect("the picture says it");
+    assert!(error.contains("crisol restart"), "{error}");
+
+    let (_, mut events) = rig.call_events(&Call::Restart { service: None }, 5100);
+    for at in [5200, 11_000, 11_100, 16_000] {
+        events.extend(rig.tick(at));
+    }
+    let (test, args) = rig.controls().pop().unwrap();
+    assert_eq!(args, ["-t"]);
+    rig.supervisor.exit(test, 0).unwrap();
+    events.extend(rig.tick(16_100));
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ServiceState { service, state, .. } if service == "nginx" && state == "starting"
+        )),
+        "{events:?}"
+    );
+    assert_eq!(picture(&mut rig).reload_error, None);
+}

@@ -635,6 +635,13 @@ fn a_rejected_new_configuration_at_start_falls_back_to_the_one_that_worked() {
         1,
         "started again with the previous files"
     );
+    // The failure comes after Nginx's `starting`, so what still holds keeps it (the start
+    // forgets what came before it).
+    let mut trouble = crate::trouble::WebTrouble::default();
+    for event in events.into_iter().filter_map(crate::daemon::map_event) {
+        trouble.note(&event);
+    }
+    assert!(trouble.reload_error.is_some(), "{trouble:?}");
     assert_eq!(fs::read(rig.final_conf("sites/a.conf")).unwrap(), good);
     assert!(!rig.final_conf("sites/b.conf").exists());
 }

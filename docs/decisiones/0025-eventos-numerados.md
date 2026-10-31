@@ -37,3 +37,22 @@ Lo describe `docs/protocolo.md` («Un cliente mínimo» y «Eventos») y lo impl
 - El CLI no cambia: no sigue eventos de estado.
 - `Shared.events` pasa de `broadcast::Sender<Event>` a `Bus` en `crisol-daemon`.
 - Una GUI ya no tiene que adivinar si su vista está al día: o los números son seguidos, o sabe que debe volver a pedir el estado.
+
+## Ampliación (2026-10-31): lo que sigue vigente va en la foto
+
+Revisión de F13.1 y F13.2, hallazgo 1 (`claude/revisiones/2026-10-31-opus-f131-f132.md`). Aceptada por el propietario el 2026-10-31.
+
+**Problema.** `blocked` y `reload_failed` solo existían como eventos, y la foto de `status` no los traía. Una GUI que se abre después de un bloqueo, o que se reconecta, mostraba «todo bien» mientras Crisol se negaba a aplicar cambios. Tras un salto de `seq`, un aviso podía quedarse puesto sin motivo, o faltar. Además, un bloqueo no se levantaba solo: cerrar la carpeta no cambia ningún archivo vigilado, así que el cambio pendiente no se reintentaba y no llegaba nunca el `reloaded`.
+
+**Decisión.**
+
+- `StatusInfo` gana **`blocked?`** y **`reload_error?`**, opcionales. Es un cambio compatible y el protocolo sigue en la versión 3.
+- Una sola regla, `crisol_core::trouble::WebTrouble::note`, decide qué sigue vigente. El daemon la aplica a todos sus eventos para hacer su foto, y `LiveState` la aplica a los que recibe, así que no pueden contradecirse:
+  - `blocked` y `reload_failed` se recuerdan;
+  - `reload_started` olvida el último fallo;
+  - `reloaded` olvida los dos;
+  - `nginx` → `starting` olvida los dos.
+- Para que la última regla no borre el fallo de un primer arranque que vuelve a la configuración anterior, `WebStack::fail_reload` arranca Nginx **antes** de decir `reload_failed`.
+- Cuando el daemon encuentra la home abierta al aplicar un cambio, olvida la huella de los archivos y lo reintenta en cada vistazo (cada 2 s). `blocked` se dice una vez por motivo, no en cada vistazo. Al cerrarse la carpeta, el cambio se aplica y `reloaded` levanta el bloqueo.
+
+**Lo que no cubre.** Si el vigilante de servicios reinicia Nginx tras una caída, el `starting` borra un `reload_error` aunque la configuración nueva siga sin aplicarse. Es raro, y el siguiente cambio de archivos vuelve a probarla.

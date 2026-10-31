@@ -460,3 +460,41 @@ fn a_daemon_of_another_protocol_is_shown_as_refused() {
     assert!(matches!(&state.connection, Connection::Refused(m) if m.contains("protocol 4")));
     assert_eq!(state.services, []);
 }
+
+/// Review of F13.1 and F13.2, finding 1: a view that connects after the daemon was blocked, or
+/// after a reload failed, sees it in the picture; and after a gap, the picture corrects what
+/// the lost events would have said.
+#[test]
+fn what_still_holds_comes_with_the_picture_also_after_a_gap() {
+    let late = r#"{"jsonrpc":"2.0","id":3,"result":{"type":"status","services":[],"warnings":[],"seq":7,"blocked":"close the home (icacls ...)","reload_error":"nginx -t said no"}}"#;
+    let (_, state, published, _) = run_script(&[
+        HELLO.to_owned(),
+        SUBSCRIBED.to_owned(),
+        late.to_owned(),
+        // 8, the `reloaded` that lifted both, was lost.
+        service_event("nginx", "running", 9),
+        status_numbered(4, &[("nginx", "running")], Some(9)),
+    ]);
+    assert_eq!(
+        published[0].blocked.as_deref(),
+        Some("close the home (icacls ...)")
+    );
+    assert_eq!(
+        published[0].reload_error.as_deref(),
+        Some("nginx -t said no")
+    );
+    assert_eq!((state.blocked, state.reload_error), (None, None));
+}
+
+/// Nginx starting again makes earlier trouble moot, as the daemon counts it.
+#[test]
+fn a_new_start_of_nginx_clears_what_held_against_the_old_one() {
+    let (_, state, _, _) = run_script(&[
+        HELLO.to_owned(),
+        SUBSCRIBED.to_owned(),
+        status(&[], Some(1)),
+        event_with("reload_failed", "reason", "could not start", 2),
+        service_event("nginx", "starting", 3),
+    ]);
+    assert_eq!(state.reload_error, None);
+}

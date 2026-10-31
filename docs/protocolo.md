@@ -225,6 +225,10 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 - `services`: lista, en orden estable, de `{name, state, detail?}`. `state` es `stopped`, `starting`, `running`, `stopping` o `failed`; `detail` dice por qué falló.
 - `warnings`: textos.
 - `seq?`: el número del último evento que la foto ya refleja (ver «Eventos»). Lo pone el daemon también en la respuesta final de `start` y `restart`; falta cuando contesta el CLI sin daemon.
+- `blocked?`: el último `blocked` que sigue vigente (ver «Eventos»). Falta si no hay nada bloqueado.
+- `reload_error?`: el último `reload_failed` que sigue vigente: la configuración web nueva no se aplicó y sigue la anterior. Falta si la última se aplicó.
+
+Los dos siguen la misma regla que un cliente aplica a los eventos (`crisol_core::trouble::WebTrouble`): `blocked` y `reload_failed` se recuerdan; `reload_started` olvida el último fallo; `reloaded` olvida los dos; y que `nginx` pase a `starting` también olvida los dos, porque un arranque nuevo vuelve a probar la configuración y dice lo que falle **después** de ese evento. Con eso, un cliente que llega tarde, o que perdió eventos, ve en la foto lo mismo que habría deducido de ellos.
 
 ### `done`
 
@@ -302,7 +306,9 @@ Nginx aceptó la configuración y se le pidió recargarla.
 
 ### `blocked`
 
-`reason`: Crisol no arrancará ni cambiará nada hasta que se cierre una carpeta. El texto trae el comando y se muestra tal cual.
+`reason`: Crisol no cambiará la pila web en marcha hasta que se cierre una carpeta. El texto trae el comando y se muestra tal cual.
+
+Se dice una vez por motivo. El daemon vuelve a intentar el cambio en cada vistazo a los archivos (cada 2 s), así que, en cuanto la carpeta se cierra, el cambio se aplica y `reloaded` levanta el bloqueo, sin que el usuario toque nada más. Un `start` con la carpeta abierta no emite `blocked`: responde con el error `home_exposed`.
 
 ### `log`
 

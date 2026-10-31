@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crisol_core::trouble::WebTrouble;
 use crisol_protocol::{
     Call, Check, ClientError, Event, HelloInfo, Numbered, Reply, ServiceInfo, StatusInfo,
 };
@@ -52,10 +53,12 @@ pub struct LiveState {
     pub warnings: Vec<String>,
     /// A new web configuration is being tested: between `reload_started` and its closing.
     pub reloading: bool,
-    /// Why the last web configuration was not applied; it stays until one is.
+    /// Why the last web configuration was not applied; it stays until one is, or Nginx starts
+    /// again ([`WebTrouble`]). The `status` picture carries it too.
     pub reload_error: Option<String>,
-    /// Crisol will not start or change anything until a folder is closed; shown as it is.
-    /// It stays until a configuration is applied or the connection is made again.
+    /// Crisol will not change the running web stack until a folder is closed; shown as it is.
+    /// It stays until a configuration is applied, or Nginx starts again ([`WebTrouble`]). The
+    /// `status` picture carries it too, so a view that connects late sees it.
     pub blocked: Option<String>,
 }
 
@@ -63,6 +66,15 @@ impl LiveState {
     /// Takes `event` into account. `Log` and `Progress` are not state, and `ShuttingDown` is
     /// the end of the connection: [`follow`] handles it.
     fn apply(&mut self, event: &Event) {
+        // What still holds against the web stack follows the daemon's own rule, so the events
+        // and the next picture agree.
+        let mut trouble = WebTrouble {
+            blocked: self.blocked.take(),
+            reload_error: self.reload_error.take(),
+        };
+        trouble.note(event);
+        self.blocked = trouble.blocked;
+        self.reload_error = trouble.reload_error;
         match event {
             Event::ServiceState {
                 service,
@@ -79,30 +91,23 @@ impl LiveState {
                     detail: detail.clone(),
                 }),
             },
-            Event::ReloadStarted => {
-                self.reloading = true;
-                self.reload_error = None;
-            }
-            Event::Reloaded => {
-                self.reloading = false;
-                self.reload_error = None;
-                self.blocked = None;
-            }
-            Event::ReloadFailed { reason } => {
-                self.reloading = false;
-                self.reload_error = Some(reason.clone());
-            }
-            Event::Blocked { reason } => self.blocked = Some(reason.clone()),
-            Event::Log { .. } | Event::Progress { .. } | Event::ShuttingDown => {}
+            Event::ReloadStarted => self.reloading = true,
+            Event::Reloaded | Event::ReloadFailed { .. } => self.reloading = false,
+            Event::Blocked { .. }
+            | Event::Log { .. }
+            | Event::Progress { .. }
+            | Event::ShuttingDown => {}
         }
     }
 
-    /// The daemon's own picture replaces what was known. Whether a reload is under way is not
-    /// in it, so after a gap in the events it is taken as not: a spinner that never ends is
-    /// worse than one that was missed.
+    /// The daemon's own picture replaces what was known, including what still holds against
+    /// the web stack. Whether a reload is under way is not in it, so after a gap in the events
+    /// it is taken as not: a spinner that never ends is worse than one that was missed.
     fn replace(&mut self, status: StatusInfo) {
         self.services = status.services;
         self.warnings = status.warnings;
+        self.blocked = status.blocked;
+        self.reload_error = status.reload_error;
         self.reloading = false;
     }
 }

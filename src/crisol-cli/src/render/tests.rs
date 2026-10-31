@@ -35,6 +35,8 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
         ],
         warnings: vec![],
         seq: None,
+        blocked: None,
+        reload_error: None,
     }));
     assert_eq!(
         text,
@@ -44,6 +46,8 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
         services: vec![],
         warnings: vec![],
         seq: None,
+        blocked: None,
+        reload_error: None,
     }));
     assert!(empty.contains("crisol install nginx"), "{empty}");
 }
