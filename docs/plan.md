@@ -221,8 +221,15 @@ Reglas de toda la fase:
   - el aviso de `blocked` con su comando;
   - la lista de sitios (`sites`) con park, unpark, link, unlink, secure y unsecure, y «abrir en el navegador».
 
+  - **Iniciar todo y Detener todo** (`start`/`stop` sin servicio), en la ventana además de en el menú de la bandeja.
+  - **Abrir terminal de Crisol** (ADR-0026 §3.4): por proyecto («abrir terminal aquí», en la carpeta del sitio) y general (en la home de los proyectos).
+    - Es lo que hace `crisol shell` (ADR-0019), pero en una **ventana nueva**: `run_terminal` del CLI hereda la consola y espera a que termine, y una GUI no tiene consola. Hace falta un lanzador de ventana nueva, sin esperar, detrás de un trait de `crisol-platform`.
+    - Qué terminal se ofrece (cmd, PowerShell 5.1 y 7, Git Bash, Windows Terminal si está), cuál es la predeterminada y qué pasa si no hay ninguna, lo decide `crisol-client` con pruebas. La GUI solo muestra la lista y lanza.
+    - `parent_program`, `find_terminal` y `run_terminal` pasan de `crisol-cli` a `crisol-client` (respuesta del propietario a la pregunta 3 de la revisión de F13.1 y F13.2), y el CLI los usa desde allí.
+    - Comprobar que la terminal abierta tiene el entorno limpio y los shims delante: `php -v`, `node -v` y `npm -v` resuelven a Crisol sin PHP ni Node globales.
+
   Elegir carpeta usa el diálogo del sistema. Los errores muestran `message` y `fix` tal cual.
-  - *Aceptación:* lo que decide qué botón se ofrece en cada estado está en `crisol-client`, con pruebas; verificación manual de cada acción contra un `crisold` real.
+  - *Aceptación:* lo que decide qué botón se ofrece en cada estado está en `crisol-client`, con pruebas; verificación manual de cada acción contra un `crisold` real, incluida la terminal en una máquina (o Windows Sandbox) sin PHP ni Node globales.
 - **F13.5** Versiones: lo instalado y lo disponible (`list`), instalar con la barra de progreso (evento `progress`, que llega solo a la conexión que pidió `install`), desinstalar, `use` y los avisos de vulnerabilidad y fin de soporte que ya dan `install` y `list`. `install --from` queda para el CLI en esta versión.
   - *Aceptación:* progreso visible de principio a fin con una descarga real 🌐; cancelar la ventana durante una instalación no deja nada a medias (lo garantiza el núcleo; se comprueba).
 - **F13.6** Logs y credenciales.
