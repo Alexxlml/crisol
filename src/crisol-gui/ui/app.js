@@ -27,7 +27,8 @@ const OVERALL_KEYS = {
   no_daemon: "overall.no_daemon",
 };
 // The look of a state: the chip class and the sign that does not depend on color (ADR-0027).
-// The signs are drawn by CSS (`.sign.*`), not with characters: those come from different
+// The signs are drawn by CSS (`.sign-*`, prefixed so they never meet a class such as the
+// panels' `.empty`), not with characters: those come from different
 // fallback fonts and do not sit on the same line.
 const CHIPS = {
   running: ["running", "full"],
@@ -65,7 +66,7 @@ function translatePage() {
 function chip(kind, label) {
   const [className, shape] = CHIPS[kind] || CHIPS.stopped;
   const node = el("span", "chip " + className);
-  const sign = el("span", "sign " + shape);
+  const sign = el("span", "sign sign-" + shape);
   sign.setAttribute("aria-hidden", "true"); // the label says it in words
   node.append(sign, el("span", null, label));
   return node;
