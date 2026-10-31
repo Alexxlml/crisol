@@ -620,9 +620,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_real_folders_of_the_system_and_the_user_are_judged_apart() {
-        if runs_as_builtin_administrator() {
-            return; // see `runs_as_builtin_administrator`
-        }
         let dirs = WindowsPrivateDirs::new();
         let system = crate::system_paths::system_directory().unwrap();
         assert!(!dirs.is_writable_by_non_administrators(&system).unwrap());
@@ -632,7 +629,11 @@ pub(crate) mod tests {
         let private = tmp.path().join("private");
         assert!(dirs.create_private_dir(&private).unwrap());
         assert!(!dirs.is_writable_by_others(&private).unwrap());
-        assert!(dirs.is_writable_by_non_administrators(&private).unwrap());
+        // See `runs_as_builtin_administrator`: for that account, its own folder is an
+        // administrator's.
+        if !runs_as_builtin_administrator() {
+            assert!(dirs.is_writable_by_non_administrators(&private).unwrap());
+        }
     }
 
     #[test]
