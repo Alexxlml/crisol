@@ -78,7 +78,7 @@ Nada de «frío», «agrietado» ni «calentando».
 
 ### Chips de estado
 
-Cuadrados (`--radius-sm`), con fondo y texto del estado (`--state-*`) y un signo que no depende del color: ● corriendo, ◐ arrancando y deteniendo, ○ parado y ✕ falló.
+Cuadrados (`--radius-sm`), con fondo y texto del estado (`--state-*`) y un signo que no depende del color: ● corriendo, ◐ arrancando y deteniendo, ○ parado y ✕ falló. En la GUI se dibujan con CSS (`.sign`), no con caracteres: los caracteres salían de fuentes de respaldo distintas y no quedaban centrados (verificación de F13.3).
 
 ## Lo que esto fija para F13.3
 

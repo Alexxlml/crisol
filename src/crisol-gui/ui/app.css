@@ -87,6 +87,22 @@ button { font: inherit; color: inherit; }
 .chip.stopped { background: var(--state-stopped-bg); color: var(--state-stopped-fg); }
 .chip.failed { background: var(--state-failed-bg); color: var(--state-failed-fg); }
 
+/* The sign of a state, in the text color, centred on the label by the flex row. */
+.sign { position: relative; flex: none; width: 0.6em; height: 0.6em; box-sizing: border-box; }
+.sign.full { border-radius: 50%; background: currentColor; }
+.sign.empty { border-radius: 50%; border: 1.5px solid currentColor; }
+.sign.half {
+  border-radius: 50%; border: 1.5px solid currentColor;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+.sign.dash::before, .sign.cross::before, .sign.cross::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 100%; height: 1.5px; background: currentColor; border-radius: 1px;
+}
+.sign.dash::before { transform: translate(-50%, -50%); }
+.sign.cross::before { transform: translate(-50%, -50%) rotate(45deg); width: 130%; }
+.sign.cross::after { transform: translate(-50%, -50%) rotate(-45deg); width: 130%; }
+
 /* Services */
 .services { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .service {

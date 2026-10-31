@@ -27,13 +27,15 @@ const OVERALL_KEYS = {
   no_daemon: "overall.no_daemon",
 };
 // The look of a state: the chip class and the sign that does not depend on color (ADR-0027).
+// The signs are drawn by CSS (`.sign.*`), not with characters: those come from different
+// fallback fonts and do not sit on the same line.
 const CHIPS = {
-  running: ["running", "●"],
-  starting: ["busy", "◐"],
-  stopping: ["busy", "◐"],
-  stopped: ["stopped", "○"],
-  failed: ["failed", "✕"],
-  no_daemon: ["stopped", "–"],
+  running: ["running", "full"],
+  starting: ["busy", "half"],
+  stopping: ["busy", "half"],
+  stopped: ["stopped", "empty"],
+  failed: ["failed", "cross"],
+  no_daemon: ["stopped", "dash"],
 };
 
 function t(key, values) {
@@ -61,9 +63,11 @@ function translatePage() {
 }
 
 function chip(kind, label) {
-  const [className, sign] = CHIPS[kind] || CHIPS.stopped;
+  const [className, shape] = CHIPS[kind] || CHIPS.stopped;
   const node = el("span", "chip " + className);
-  node.append(el("span", null, sign), el("span", null, label));
+  const sign = el("span", "sign " + shape);
+  sign.setAttribute("aria-hidden", "true"); // the label says it in words
+  node.append(sign, el("span", null, label));
   return node;
 }
 
