@@ -13,26 +13,22 @@ pub mod render;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
-use crisol_core::autostart::{Autostart, AutostartChange, AutostartState};
+use crisol_client::connect::{self, client_error};
+use crisol_client::Link;
+use crisol_core::autostart::{AutostartChange, AutostartState};
 use crisol_core::config::Config;
-use crisol_core::daemon::Daemon;
-use crisol_core::engine::{Deps, Engine};
 use crisol_core::onboarding;
-use crisol_core::paths::{CrisolPaths, PrivateDirs};
-use crisol_core::programs::{program_error, require_trusted_program};
-use crisol_core::setup::SystemSetup;
+use crisol_core::programs::program_error;
 use crisol_core::shell::{self, ShellLaunch, Terminal};
 use crisol_core::shimsetup::{self, Shell, ShimsError};
 use crisol_core::teardown;
 use crisol_core::trust::{
     prepare_trust, trust_ca, untrust_local, AddOutcome, TrustError, TrustStore,
 };
-use crisol_core::userpath::{PathChange, UserPath};
-use crisol_protocol::{
-    Call, Check, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
-};
+use crisol_core::userpath::PathChange;
+use crisol_protocol::{Call, CheckStatus, ErrorCode, Reply, RpcError};
 
 use crate::args::{
     Args, AutostartAction, PathAction, Plan, ShellArg, ShimsAction, SystemAction, TerminalArg,
@@ -63,79 +59,12 @@ pub type ConfirmSetup = Box<dyn Fn(&onboarding::Plan) -> bool>;
 /// Asks about one step of `setup` that is asked alone (the CA, the helper, the sign-in entry).
 pub type ConfirmStep = Box<dyn Fn(&onboarding::Step) -> bool>;
 
-/// Deletes files once this program has ended.
-pub type RemovePrograms = Box<dyn Fn(&[PathBuf]) -> std::io::Result<()>>;
-
-/// A way to make calls: the daemon, or this process.
-pub trait Link {
-    /// Makes `call`. `on_event` receives the progress of long operations.
-    fn call(&mut self, call: &Call, on_event: &mut dyn FnMut(Event)) -> Result<Reply, ClientError>;
-}
-
-/// The daemon, through a protocol client.
-#[derive(Debug)]
-pub struct Remote<R, W>(pub crisol_protocol::Client<R, W>);
-
-impl<R: std::io::BufRead, W: Write> Link for Remote<R, W> {
-    fn call(&mut self, call: &Call, on_event: &mut dyn FnMut(Event)) -> Result<Reply, ClientError> {
-        self.0.call_with_events(call, on_event)
-    }
-}
-
-/// This process, for when no daemon is running. It answers the file operations and says the
-/// services are stopped; anything that would start something is refused (that is the daemon's).
-struct Local(Daemon);
-
-impl Link for Local {
-    fn call(&mut self, call: &Call, on_event: &mut dyn FnMut(Event)) -> Result<Reply, ClientError> {
-        // With no daemon there is nothing running to stop.
-        if matches!(call, Call::Stop { .. } | Call::Shutdown) {
-            return Ok(Reply::Done(crisol_protocol::DoneInfo {
-                message: "Nothing was running (the daemon is not running)".to_owned(),
-                changed: false,
-                warnings: Vec::new(),
-            }));
-        }
-        let local_ok =
-            !call.needs_daemon() || matches!(call, Call::Hello { .. } | Call::Status { .. });
-        if !local_ok {
-            return Err(ClientError::Rpc(RpcError::new(
-                ErrorCode::NotAvailable,
-                "the daemon is not running; `crisol start` starts it",
-            )));
-        }
-        Ok(self.0.handle(call, Instant::now(), on_event)?)
-    }
-}
-
 /// Everything the command line touches besides its own arguments.
 pub struct Context {
-    /// The Crisol home.
-    pub paths: CrisolPaths,
+    /// What the command line shares with the GUI: the home, the daemon, Windows.
+    pub client: crisol_client::Context,
     /// The folder the command ran in.
     pub cwd: PathBuf,
-    /// Builds the dependencies of the engine (only needed when there is no daemon).
-    pub deps: Box<dyn Fn() -> std::io::Result<Deps>>,
-    /// Connects to the daemon: `NotFound` when there is none.
-    pub connect: Box<dyn Fn() -> std::io::Result<Box<dyn Link>>>,
-    /// Starts the daemon without waiting for it.
-    pub spawn_daemon: Box<dyn Fn() -> std::io::Result<()>>,
-    /// The one-time setup that needs an administrator (the helper and the DNS rule).
-    pub setup: Box<dyn SystemSetup>,
-    /// The sign-in entry that starts the daemon.
-    pub autostart: Box<dyn Autostart>,
-    /// The `crisold` that entry would start (the one next to this program).
-    pub daemon_exe: Option<PathBuf>,
-    /// The user PATH (the registry; a double in the tests).
-    pub user_path: Box<dyn UserPath>,
-    /// Opens the certificates the user trusts (the current user's root store; a double in the
-    /// tests).
-    pub trust_store: Box<dyn Fn() -> std::io::Result<Box<dyn TrustStore>>>,
-    /// The `crisol-shim` that `shims install` copies (the one next to this program).
-    pub shim_exe: Option<PathBuf>,
-    /// Whether a program with that name is already in the `PATH` (a command of the shims would
-    /// hide it).
-    pub reserved_name: Box<dyn Fn(&str) -> bool>,
     /// The environment of this process, to tell which shell this is.
     pub env: EnvLookup,
     /// The program that started this one (`pwsh.exe`), which tells the shell better.
@@ -152,16 +81,6 @@ pub struct Context {
     pub confirm_setup: ConfirmSetup,
     /// Asks about each step of `setup` that is asked alone.
     pub confirm_step: ConfirmStep,
-    /// Crisol's programs (`crisol.exe` and the ones next to it), which `uninstall --all` deletes.
-    pub programs: Vec<PathBuf>,
-    /// winget installed those programs, so winget removes them and `uninstall --all` does not.
-    pub winget: bool,
-    /// Deletes them once this program has ended.
-    pub remove_programs: RemovePrograms,
-    /// Judges who can write to the programs before they are registered or launched.
-    pub dirs: std::sync::Arc<dyn PrivateDirs>,
-    /// How long to wait for a daemon that was just started.
-    pub daemon_wait: Duration,
     /// Time between asking again for the log of `logs -f`.
     pub follow_every: Duration,
     /// Stops `logs -f` after this many rounds (`None`: until the process is killed).
@@ -171,7 +90,7 @@ pub struct Context {
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Context")
-            .field("paths", &self.paths)
+            .field("client", &self.client)
             .finish_non_exhaustive()
     }
 }
@@ -255,7 +174,7 @@ impl Session<'_> {
 
     /// The `crisol-shim` next to this program, or the failure that says it is not there.
     fn shim_exe(&mut self) -> Result<PathBuf, u8> {
-        match self.context.shim_exe.clone() {
+        match self.context.client.shim_exe.clone() {
             Some(exe) => Ok(exe),
             None => Err(self.fail(&RpcError::new(
                 ErrorCode::NotAvailable,
@@ -276,12 +195,12 @@ impl Session<'_> {
             Ok(exe) => exe,
             Err(code) => return code,
         };
-        let folder = self.context.paths.shims_dir().display().to_string();
+        let folder = self.context.client.paths.shims_dir().display().to_string();
         let done = match shimsetup::install_shims(
-            &self.context.paths,
+            &self.context.client.paths,
             &exe,
-            self.context.dirs.as_ref(),
-            self.context.reserved_name.as_ref(),
+            self.context.client.dirs.as_ref(),
+            self.context.client.reserved_name.as_ref(),
         ) {
             Ok(done) => done,
             Err(error) => return self.shims_error(&error),
@@ -334,10 +253,10 @@ impl Session<'_> {
             Err(code) => return code,
         };
         let done = match shimsetup::sync_globals(
-            &self.context.paths,
+            &self.context.client.paths,
             &exe,
-            self.context.dirs.as_ref(),
-            self.context.reserved_name.as_ref(),
+            self.context.client.dirs.as_ref(),
+            self.context.client.reserved_name.as_ref(),
         ) {
             Ok(done) => done,
             Err(error) => return self.shims_error(&error),
@@ -357,8 +276,8 @@ impl Session<'_> {
     }
 
     fn shims_remove(&mut self) -> u8 {
-        let folder = self.context.paths.shims_dir().display().to_string();
-        match shimsetup::remove_shims_files(&self.context.paths) {
+        let folder = self.context.client.paths.shims_dir().display().to_string();
+        match shimsetup::remove_shims_files(&self.context.client.paths) {
             Ok(removed) => {
                 let text = if removed.is_empty() {
                     format!("There were no shims in {folder}")
@@ -373,7 +292,7 @@ impl Session<'_> {
     }
 
     fn shims_status(&mut self) -> u8 {
-        let paths = &self.context.paths;
+        let paths = &self.context.client.paths;
         let folder = paths.shims_dir().display().to_string();
         let present = shimsetup::shims_present(paths);
         let missing: Vec<&str> = present
@@ -406,8 +325,8 @@ impl Session<'_> {
     }
 
     fn path(&mut self, action: PathAction) -> u8 {
-        let paths = &self.context.paths;
-        let store = self.context.user_path.as_ref();
+        let paths = &self.context.client.paths;
+        let store = self.context.client.user_path.as_ref();
         let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
         let folder = paths.shims_dir().display().to_string();
         let word = match action {
@@ -477,7 +396,7 @@ impl Session<'_> {
             ),
         };
         // The script itself, nothing else, so that it can be piped into the shell.
-        let script = shimsetup::env_script(&self.context.paths.shims_dir(), shell);
+        let script = shimsetup::env_script(&self.context.client.paths.shims_dir(), shell);
         if self.json {
             let _ = writeln!(self.out, "{}", serde_json::json!({ "script": script }));
         } else {
@@ -499,16 +418,16 @@ impl Session<'_> {
             Ok(chosen) => chosen,
             Err(error) => return self.shell_error(&error),
         };
-        let config = match Config::load_from(&self.context.paths) {
+        let config = match Config::load_from(&self.context.client.paths) {
             Ok(loaded) => loaded.config,
             Err(error) => {
                 return self.fail(&RpcError::new(ErrorCode::InvalidParams, error.to_string()))
             }
         };
-        let front = shell::front_folders(&self.context.paths, &config);
+        let front = shell::front_folders(&self.context.client.paths, &config);
         let env = (self.context.env_vars)();
         let launch = match shell::plan_shell(&shell::ShellInput {
-            paths: &self.context.paths,
+            paths: &self.context.client.paths,
             terminal,
             program: &program,
             clean,
@@ -552,7 +471,7 @@ impl Session<'_> {
     }
 
     fn open_trust_store(&mut self) -> Result<Box<dyn TrustStore>, u8> {
-        (self.context.trust_store)().map_err(|e| {
+        (self.context.client.trust_store)().map_err(|e| {
             self.fail(&RpcError::new(
                 ErrorCode::Io,
                 format!("cannot open the certificates you trust: {e}"),
@@ -565,8 +484,8 @@ impl Session<'_> {
             Ok(store) => store,
             Err(code) => return code,
         };
-        let paths = &self.context.paths;
-        let dirs = self.context.dirs.as_ref();
+        let paths = &self.context.client.paths;
+        let dirs = self.context.client.dirs.as_ref();
         let tld = crisol_core::setup::suffix_of(paths);
         let plan = match prepare_trust(store.as_ref(), paths, dirs, &tld, SystemTime::now()) {
             Ok(plan) => plan,
@@ -656,11 +575,11 @@ impl Session<'_> {
                 "crisol: Windows may ask you to confirm each removal"
             );
         }
-        let paths = &self.context.paths;
+        let paths = &self.context.client.paths;
         let report = match untrust_local(
             store.as_ref(),
             paths,
-            self.context.dirs.as_ref(),
+            self.context.client.dirs.as_ref(),
             stale,
             SystemTime::now(),
         ) {
@@ -713,11 +632,11 @@ impl Session<'_> {
     }
 
     fn system(&mut self, action: SystemAction) -> u8 {
-        let setup = self.context.setup.as_ref();
-        let suffix = &crisol_core::setup::suffix_of(&self.context.paths);
+        let setup = self.context.client.setup.as_ref();
+        let suffix = &crisol_core::setup::suffix_of(&self.context.client.paths);
         let outcome = match action {
             SystemAction::Install => setup.install(suffix),
-            SystemAction::Uninstall => setup.uninstall(suffix, self.context.paths.home()),
+            SystemAction::Uninstall => setup.uninstall(suffix, self.context.client.paths.home()),
         };
         match outcome {
             Ok(report) => {
@@ -752,20 +671,20 @@ impl Session<'_> {
 
     fn setup(&mut self, yes: bool) -> u8 {
         let context = self.context;
-        let store = (context.trust_store)();
+        let store = (context.client.trust_store)();
         let system = onboarding::System {
-            paths: &context.paths,
-            dirs: context.dirs.as_ref(),
-            autostart: context.autostart.as_ref(),
-            user_path: context.user_path.as_ref(),
+            paths: &context.client.paths,
+            dirs: context.client.dirs.as_ref(),
+            autostart: context.client.autostart.as_ref(),
+            user_path: context.client.user_path.as_ref(),
             trust: match &store {
                 Ok(store) => Ok(store.as_ref()),
                 Err(error) => Err(error.to_string()),
             },
-            setup: context.setup.as_ref(),
-            shim_exe: context.shim_exe.clone(),
-            daemon_exe: context.daemon_exe.clone(),
-            reserved_name: context.reserved_name.as_ref(),
+            setup: context.client.setup.as_ref(),
+            shim_exe: context.client.shim_exe.clone(),
+            daemon_exe: context.client.daemon_exe.clone(),
+            reserved_name: context.client.reserved_name.as_ref(),
         };
         let now = SystemTime::now();
         let plan = onboarding::plan(&system, now);
@@ -837,21 +756,21 @@ impl Session<'_> {
 
     fn uninstall_all(&mut self, purge: bool, yes: bool) -> u8 {
         let context = self.context;
-        let daemon_running = (context.connect)().is_ok();
-        let store = (context.trust_store)();
+        let daemon_running = (context.client.connect)().is_ok();
+        let store = (context.client.trust_store)();
         let system = teardown::System {
-            paths: &context.paths,
-            autostart: context.autostart.as_ref(),
-            user_path: context.user_path.as_ref(),
+            paths: &context.client.paths,
+            autostart: context.client.autostart.as_ref(),
+            user_path: context.client.user_path.as_ref(),
             trust: match &store {
                 Ok(store) => Ok(store.as_ref()),
                 Err(error) => Err(error.to_string()),
             },
-            setup: context.setup.as_ref(),
+            setup: context.client.setup.as_ref(),
             daemon_running,
-            programs: context.programs.clone(),
-            remove_programs: context.remove_programs.as_ref(),
-            winget: context.winget,
+            programs: context.client.programs.clone(),
+            remove_programs: context.client.remove_programs.as_ref(),
+            winget: context.client.winget,
         };
         let plan = teardown::plan(&system, purge);
         let mut json = serde_json::to_value(&plan).unwrap_or_default();
@@ -912,31 +831,23 @@ impl Session<'_> {
 
     /// Asks the daemon to stop and waits until its pipe is gone, so its files are free.
     fn stop_daemon(&mut self) -> Result<(), String> {
-        let mut link = self.link(&Call::Shutdown).map_err(|e| e.message)?;
-        link.call(&Call::Shutdown, &mut |_| {})
-            .map_err(|e| client_error(e).message)?;
-        drop(link);
-        let end = Instant::now() + self.context.daemon_wait;
-        while (self.context.connect)().is_ok() {
-            if Instant::now() >= end {
-                return Err("the daemon said it would stop, but it is still running".to_owned());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Ok(())
+        let err = &mut *self.err;
+        connect::stop_daemon(&self.context.client, &mut |line| {
+            let _ = writeln!(err, "{line}");
+        })
     }
 
     fn autostart(&mut self, action: AutostartAction) -> u8 {
-        let Some(daemon) = self.context.daemon_exe.clone() else {
+        let Some(daemon) = self.context.client.daemon_exe.clone() else {
             return self.fail(&RpcError::new(
                 ErrorCode::NotAvailable,
                 "crisold.exe was not found next to this program",
             ));
         };
-        let store = self.context.autostart.as_ref();
+        let store = self.context.client.autostart.as_ref();
         let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
         let (word, message) = match action {
-            AutostartAction::On => match crisol_core::autostart::enable(store, &daemon, self.context.dirs.as_ref()) {
+            AutostartAction::On => match crisol_core::autostart::enable(store, &daemon, self.context.client.dirs.as_ref()) {
                 Ok(AutostartChange::Enabled) => ("on", "Crisol will start when you sign in".to_owned()),
                 Ok(AutostartChange::Replaced) => ("on", "Crisol will start when you sign in (the entry of another crisold was replaced)".to_owned()),
                 Ok(AutostartChange::Unchanged) => ("on", "Crisol already starts when you sign in".to_owned()),
@@ -965,82 +876,12 @@ impl Session<'_> {
 
     /// Connects to the daemon, starting it if the call is one that should.
     fn link(&mut self, call: &Call) -> Result<Box<dyn Link>, RpcError> {
-        let mut link = match (self.context.connect)() {
-            Ok(link) => Some(link),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(RpcError::new(ErrorCode::Io, error.to_string())),
-        };
-        if link.is_none() && matches!(call, Call::Start { .. } | Call::Restart { .. }) {
-            link = Some(self.start_daemon()?);
-        }
-        let mut link = match link {
-            Some(link) => link,
-            None => self.local(call)?,
-        };
-        // The handshake: same protocol on both sides, or nothing is sent.
-        let hello = Call::Hello {
-            client: format!("crisol {}", env!("CARGO_PKG_VERSION")),
-            protocol: PROTOCOL_VERSION,
-        };
-        match link.call(&hello, &mut |_| {}) {
-            Ok(reply) => {
-                if let Reply::Hello(info) = reply {
-                    self.daemon_version = Some(info.daemon);
-                }
-                Ok(link)
-            }
-            Err(error) => Err(client_error(error)),
-        }
-    }
-
-    fn local(&self, call: &Call) -> Result<Box<dyn Link>, RpcError> {
-        let deps =
-            (self.context.deps)().map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
-        let engine = Engine::new(self.context.paths.clone(), deps);
-        // The first command of a new user may be this one: the home must be born private. The
-        // commands that only look do not make it.
-        if call.writes() {
-            engine.prepare_home()?;
-        }
-        Ok(Box::new(Local(Daemon::new(engine))))
-    }
-
-    fn start_daemon(&mut self) -> Result<Box<dyn Link>, RpcError> {
-        // The daemon runs with the user's rights: not if someone else could have replaced it.
-        if let Some(exe) = &self.context.daemon_exe {
-            require_trusted_program(exe, self.context.dirs.as_ref())
-                .map_err(|e| program_error(&e))?;
-        }
-        (self.context.spawn_daemon)().map_err(|e| {
-            RpcError::new(
-                ErrorCode::Io,
-                format!("could not start the daemon (crisold): {e}"),
-            )
+        let err = &mut *self.err;
+        let opened = connect::open(&self.context.client, call, &mut |line| {
+            let _ = writeln!(err, "{line}");
         })?;
-        let _ = writeln!(self.err, "Starting the daemon...");
-        let end = Instant::now() + self.context.daemon_wait;
-        loop {
-            match (self.context.connect)() {
-                Ok(link) => return Ok(link),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    if Instant::now() >= end {
-                        return Err(RpcError::new(
-                            ErrorCode::NotAvailable,
-                            format!(
-                                "the daemon did not open its pipe in {} seconds; its log is {}",
-                                self.context.daemon_wait.as_secs(),
-                                self.context.paths.runtime_log("crisold").map_or_else(
-                                    |_| "logs/crisold/runtime.log".to_owned(),
-                                    |p| p.display().to_string()
-                                )
-                            ),
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(RpcError::new(ErrorCode::Io, error.to_string())),
-            }
-        }
+        self.daemon_version = opened.daemon_version;
+        Ok(opened.link)
     }
 
     fn one(&mut self, call: &Call) -> u8 {
@@ -1074,7 +915,10 @@ impl Session<'_> {
         let (Reply::Doctor { checks }, Some(daemon)) = (reply, &self.daemon_version) else {
             return;
         };
-        checks.extend(daemon_version_check(daemon, env!("CARGO_PKG_VERSION")));
+        checks.extend(connect::daemon_version_check(
+            daemon,
+            &self.context.client.version,
+        ));
     }
 
     fn show(&mut self, reply: &Reply) -> u8 {
@@ -1154,18 +998,6 @@ impl Session<'_> {
 }
 
 /// The lines about the commands of global programs (`tsc`), for what `shims install|sync` did.
-/// The `doctor` line for a daemon of another version than this program, if it is.
-fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
-    (daemon != mine).then(|| Check {
-        name: "daemon version".to_owned(),
-        status: CheckStatus::Warning,
-        detail: format!(
-            "the daemon that is running is {daemon} and this program is {mine}: it was started before an update"
-        ),
-        fix: Some("crisol shutdown, then any command starts the new one".to_owned()),
-    })
-}
-
 fn globals_text(added: &[String], removed: &[String], skipped: &[(String, String)]) -> String {
     let mut lines = Vec::new();
     if !added.is_empty() {
@@ -1184,26 +1016,4 @@ fn globals_text(added: &[String], removed: &[String], skipped: &[(String, String
         lines.push(["no command `", name, "`: ", why].concat());
     }
     lines.iter().flat_map(|l| ["\n  ", l.as_str()]).collect()
-}
-
-fn client_error(error: ClientError) -> RpcError {
-    match error {
-        ClientError::Rpc(error) => error,
-        other => RpcError::new(ErrorCode::Io, other.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_daemon_of_another_version_is_a_warning_with_the_way_out_and_the_same_version_says_nothing()
-    {
-        assert!(daemon_version_check("0.1.0", "0.1.0").is_none());
-        let check = daemon_version_check("0.1.0", "0.2.0").unwrap();
-        assert_eq!(check.status, CheckStatus::Warning);
-        assert!(check.detail.contains("0.1.0") && check.detail.contains("0.2.0"));
-        assert!(check.fix.unwrap().starts_with("crisol shutdown"));
-    }
 }

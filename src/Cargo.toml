@@ -6,6 +6,7 @@ members = [
     "crisol-protocol",
     "crisol-daemon",
     "crisol-cli",
+    "crisol-client",
     "crisol-shim",
     "crisol-elevate",
 ]
@@ -45,6 +46,7 @@ insta = "1.49.0"
 crisol-core = { path = "crisol-core" }
 crisol-platform = { path = "crisol-platform" }
 crisol-protocol = { path = "crisol-protocol" }
+crisol-client = { path = "crisol-client" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

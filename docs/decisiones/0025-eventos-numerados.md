@@ -26,7 +26,7 @@ Una carcasa (GUI, panel, `watch`) se suscribe, pide `status` y desde ahí sigue 
 
 ## Lo que hace un cliente
 
-Lo describe `docs/protocolo.md` («Un cliente mínimo» y «Eventos») y lo implementa `crisol-platform/examples/watch.rs`:
+Lo describe `docs/protocolo.md` («Un cliente mínimo» y «Eventos») y lo implementa `crisol-client` (`LiveView`; antes, `crisol-platform/examples/watch.rs`):
 
 1. Durante la llamada a `status`, guarda los eventos que llegan; después aplica la foto y, encima, los de `seq` mayor que el de la respuesta.
 2. Después, ignora un evento con `seq` menor o igual que el último aplicado.

@@ -41,7 +41,7 @@ Para distinguirlas al leer: una notificación tiene `method` y `params`; una res
 
 ## Un cliente mínimo
 
-`crisol-platform/examples/watch.rs` es un cliente completo en unas 150 líneas: se suscribe y muestra el estado de los servicios mientras cambia (`cargo run -p crisol-platform --example watch`). Sigue el orden que debería seguir cualquier carcasa:
+`crisol-client` (`LiveView`) implementa este orden y `crisol-client/examples/watch.rs` lo usa para mostrar el estado de los servicios mientras cambia (`cargo run -p crisol-client --example watch`). Una carcasa en Rust usa `LiveView`; otra, en otro lenguaje, sigue el mismo orden:
 
 1. `hello`, para saber que el daemon habla esta versión;
 2. `subscribe` **antes** de pedir el estado, para que ningún cambio caiga entre los dos;

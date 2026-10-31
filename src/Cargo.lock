@@ -241,6 +241,7 @@ name = "crisol-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crisol-client",
  "crisol-core",
  "crisol-daemon",
  "crisol-platform",
@@ -249,6 +250,17 @@ dependencies = [
  "sha2",
  "tempfile",
  "zip",
+]
+
+[[package]]
+name = "crisol-client"
+version = "0.1.0"
+dependencies = [
+ "crisol-core",
+ "crisol-platform",
+ "crisol-protocol",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

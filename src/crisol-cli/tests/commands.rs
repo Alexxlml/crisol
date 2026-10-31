@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crisol_cli::{run, Context, Link, Remote};
+use crisol_cli::{run, Context};
+use crisol_client::{Link, Remote};
 use crisol_core::autostart::{Autostart, FakeAutostart};
 use crisol_core::cacert::NoRoots;
 use crisol_core::catalog::{Arch, Catalog, Os, Target};
@@ -288,11 +289,12 @@ impl Env {
         let (deps, daemon_deps) = (self.deps.clone(), self.deps.clone());
         let (paths, daemon_paths) = (self.paths.clone(), self.paths.clone());
         let (pipe_for_daemon, daemon_slot) = (self.pipe.clone(), Arc::clone(&self.daemon));
-        Context {
+        let client = crisol_client::Context {
+            client: "crisol".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             paths,
-            cwd: self.paths.home().join("work"),
             deps: Box::new(move || Ok(deps.clone())),
-            connect: Box::new(move || {
+            connect: Arc::new(move || {
                 let client = connect_to_daemon(&pipe)?;
                 Ok(Box::new(Remote(client)) as Box<dyn Link>)
             }),
@@ -321,6 +323,25 @@ impl Env {
             },
             shim_exe: Some(self.shim_exe.clone()),
             reserved_name: Box::new(|name| name == "ping"),
+            programs: if self.winget {
+                Vec::new()
+            } else {
+                vec![self.daemon_exe.clone(), self.shim_exe.clone()]
+            },
+            winget: self.winget,
+            remove_programs: {
+                let removed = Arc::clone(&self.removed_programs);
+                Box::new(move |files| {
+                    removed.lock().unwrap().extend(files.iter().cloned());
+                    Ok(())
+                })
+            },
+            dirs: self.dirs.clone(),
+            daemon_wait: Duration::from_secs(10),
+        };
+        Context {
+            client,
+            cwd: self.paths.home().join("work"),
             env: Box::new(|name| (name == "PROMPT").then(|| "$P$G".to_owned())),
             parent_program: self.parent_program.clone(),
             env_vars: Box::new(|| {
@@ -373,21 +394,6 @@ impl Env {
                         && !refused.lock().unwrap().iter().any(|id| id == step.id())
                 })
             },
-            programs: if self.winget {
-                Vec::new()
-            } else {
-                vec![self.daemon_exe.clone(), self.shim_exe.clone()]
-            },
-            winget: self.winget,
-            remove_programs: {
-                let removed = Arc::clone(&self.removed_programs);
-                Box::new(move |files| {
-                    removed.lock().unwrap().extend(files.iter().cloned());
-                    Ok(())
-                })
-            },
-            dirs: self.dirs.clone(),
-            daemon_wait: Duration::from_secs(10),
             follow_every: Duration::from_millis(25),
             follow_rounds: Some(40),
         }

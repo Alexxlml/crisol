@@ -28,7 +28,8 @@
 | `crisol-platform` | lib | Implementación de los traits para Windows (después Linux/macOS): procesos, confianza de certificados, DNS, privilegios. |
 | `crisol-protocol` | lib | Tipos de request/response del IPC, versionados. **Es el contrato que usarán las GUIs.** |
 | `crisol-daemon` | bin (`crisold`) | Mantiene vivos los servicios, expone el IPC, observa cambios de config. |
-| `crisol-cli` | bin (`crisol`) | Interfaz de línea de comandos. Habla con el daemon; algunas operaciones (instalar versiones, `doctor`) pueden ir directo al núcleo si el daemon no corre. |
+| `crisol-client` | lib | Lo que comparten el CLI y la GUI para hablar con Crisol (ADR-0026 §5): el montaje de Windows (`Context`), la conexión con arranque del daemon (`Link`, `connect`) y la vista en vivo (`LiveView`). Sin interfaz. |
+| `crisol-cli` | bin (`crisol`) | Interfaz de línea de comandos: argumentos e impresión sobre `crisol-client`. Algunas operaciones (instalar versiones, `doctor`) van directo al núcleo si el daemon no corre. |
 | `crisol-shim` | bin | Se copia/enlaza como `php.exe`, `composer.bat`, `node.exe`, etc. en `shims/`. Resuelve la versión del proyecto y hace `exec` al binario real. Debe arrancar en milisegundos: sin tokio, sin dependencias pesadas. |
 
 ## Traits de plataforma (en `crisol-core`)
