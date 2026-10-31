@@ -6,7 +6,8 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 let words = {};
-let current = null; // { state, summary }, as the app sent it
+let ready = false; // the words are in and the page is translated
+let current = null; // { revision, state, summary }, the newest the app sent
 let section = "services";
 let failure = null; // the last call that failed, until it is dismissed
 
@@ -151,8 +152,16 @@ function renderBanners({ state, summary }) {
   document.getElementById("banners").replaceChildren(...nodes);
 }
 
+// A state from the app, unless an equal or newer one was already drawn: `bootstrap` and the
+// `state` event can arrive in either order.
+function take(payload) {
+  if (current && payload.revision <= current.revision) return;
+  current = { revision: payload.revision, state: payload.state, summary: payload.summary };
+  render();
+}
+
 function render() {
-  if (!current) return;
+  if (!current || !ready) return;
   renderHeader(current);
   renderServices(current);
   renderBanners(current);
@@ -164,12 +173,23 @@ function setExitNotice(visible) {
 }
 
 async function start() {
+  // Listening first: a change between `bootstrap` and `listen` would otherwise not be drawn
+  // until the next one.
+  await listen("state", (event) => take(event.payload));
+  await listen("call_failed", (event) => {
+    failure = event.payload;
+    render();
+  });
+  await listen("exit_notice", () => setExitNotice(true));
+  await listen("exit_notice_dismiss", () => setExitNotice(false));
+
   const boot = await invoke("bootstrap");
   words = boot.words.words;
   document.documentElement.lang = boot.words.language === "spanish" ? "es" : "en";
-  current = { state: boot.state, summary: boot.summary };
   translatePage();
   showSection(section);
+  ready = true;
+  take(boot);
   render();
 
   for (const item of document.querySelectorAll(".nav-item")) {
@@ -180,17 +200,6 @@ async function start() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") setExitNotice(false);
   });
-
-  await listen("state", (event) => {
-    current = event.payload;
-    render();
-  });
-  await listen("call_failed", (event) => {
-    failure = event.payload;
-    render();
-  });
-  await listen("exit_notice", () => setExitNotice(true));
-  await listen("exit_notice_dismiss", () => setExitNotice(false));
 }
 
 start();
