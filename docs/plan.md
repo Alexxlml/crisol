@@ -211,10 +211,16 @@ Reglas de toda la fase:
   - la traducción (inglés y español, según el idioma de Windows);
   - la conexión mediante `LiveView`;
   - un aviso con su arreglo cuando el daemon es de otra versión;
-  - la pantalla vacía de cada sección de la ADR-0026 §3, con la navegación.
+  - la pantalla vacía de cada sección de la ADR-0026 §3, con la navegación;
+  - la identidad visual de la ADR-0027:
+    - estilos solo con `assets/brand/tokens.css`, tema oscuro principal y claro según Windows;
+    - los iconos de la bandeja de `assets/brand/tray/` convertidos a PNG o ICO, con la variante según el tema de la barra de tareas;
+    - el icono de la aplicación sale de `assets/brand/symbol.svg`;
+    - Space Grotesk, Inter y JetBrains Mono empaquetadas, con sus licencias OFL en `licenses/` y `THIRD-PARTY-NOTICES.md`;
+    - los nombres de los estados, de la tabla de la ADR-0027.
 
   **Pregunta para el propietario al empezar:** si la bandeja arranca al iniciar sesión (ADR-0026, «Preguntas abiertas»).
-  - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «Salir» con servicios corriendo (el aviso sale la primera vez y no la segunda; los sitios siguen respondiendo), «Detener todo» (el daemon sigue), «Detener todo y salir» (no queda `crisold`), y el paso de daemon parado a corriendo y al revés.
+  - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «Salir» con servicios corriendo (el aviso sale la primera vez y no la segunda; los sitios siguen respondiendo), «Detener todo» (el daemon sigue), «Detener todo y salir» (no queda `crisold`), el paso de daemon parado a corriendo y al revés, y que los cinco iconos de la bandeja se distinguen a su tamaño real con la barra de tareas oscura y con la clara.
 - **F13.4** Servicios y sitios. Incluye:
   - la lista de servicios con su estado en vivo, start/stop/restart y enable/disable;
   - el indicador de «recargando» entre `reload_started` y su cierre;

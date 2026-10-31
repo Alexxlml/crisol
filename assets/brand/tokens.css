@@ -1,0 +1,170 @@
+/*
+ * Crisol design tokens (ADR-0027).
+ *
+ * Three layers of color that never mix:
+ *   - the vessel: backgrounds, surfaces, text and lines (warm neutrals);
+ *   - the heat: Crisol's own (something is working, the main action, the brand);
+ *   - the metals: each technology's color, only as a small dot next to its name.
+ *
+ * Dark is the main theme; light follows Windows when the user has it. Every text color
+ * here passes 4.5:1 on the surfaces it is meant for (checked in ADR-0027).
+ */
+
+:root {
+  /* Type. The fonts ship with the GUI (SIL OFL); no font is fetched at run time. */
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-ui: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 32px;
+
+  /* Spacing, on a 4 px step. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-14: 56px;
+
+  /* Corners: square-ish, like cast iron. */
+  --radius-sm: 4px; /* state chips */
+  --radius: 6px; /* buttons, fields */
+  --radius-lg: 10px; /* panels, windows */
+
+  --target-min: 44px; /* smallest clickable size */
+
+  /* The heat scale: from cold to working. */
+  --heat-0: #7a2414;
+  --heat-1: #e2482b;
+  --heat-2: #ff8a3d;
+  --heat-3: #ffd166;
+  --heat-4: #fff4d6;
+
+  /* Dark theme (default). */
+  color-scheme: dark;
+  --bg: #141110;
+  --surface: #1e1a17;
+  --surface-raised: #2a2420;
+  --line: #3a322b;
+  --line-soft: #2c2520;
+  --text: #f2e9dc;
+  --text-muted: #a8998a;
+  --accent: #ff8a3d;
+  --on-accent: #1a0f08;
+  --link: #ffb27a;
+  --focus: #ffd166;
+
+  --state-running-bg: #3a2112;
+  --state-running-fg: #ffb27a;
+  --state-busy-bg: #3a2e12; /* starting and stopping */
+  --state-busy-fg: #ffd166;
+  --state-stopped-bg: #2a2420;
+  --state-stopped-fg: #bfb3a6;
+  --state-failed-bg: #3b1517;
+  --state-failed-fg: #ff9aa0;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f4eee3;
+    --surface: #ffffff;
+    --surface-raised: #ede5d8;
+    --line: #e2d8c9;
+    --line-soft: #efe7da;
+    --text: #1e1a17;
+    --text-muted: #6a5c50;
+    --accent: #c2410c;
+    --on-accent: #ffffff;
+    --link: #b4410a;
+    --focus: #c2410c;
+
+    --state-running-bg: #fde3cf;
+    --state-running-fg: #8a3108;
+    --state-busy-bg: #fff1c7;
+    --state-busy-fg: #7a5300;
+    --state-stopped-bg: #e9e1d4;
+    --state-stopped-fg: #5a4e44;
+    --state-failed-bg: #fbe1e2;
+    --state-failed-fg: #a1121d;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4eee3;
+  --surface: #ffffff;
+  --surface-raised: #ede5d8;
+  --line: #e2d8c9;
+  --line-soft: #efe7da;
+  --text: #1e1a17;
+  --text-muted: #6a5c50;
+  --accent: #c2410c;
+  --on-accent: #ffffff;
+  --link: #b4410a;
+  --focus: #c2410c;
+
+  --state-running-bg: #fde3cf;
+  --state-running-fg: #8a3108;
+  --state-busy-bg: #fff1c7;
+  --state-busy-fg: #7a5300;
+  --state-stopped-bg: #e9e1d4;
+  --state-stopped-fg: #5a4e44;
+  --state-failed-bg: #fbe1e2;
+  --state-failed-fg: #a1121d;
+}
+
+/*
+ * The metals: each technology's color, approximate, used only as a dot beside its name.
+ * Never a background, a button or a state. Logos are not used. The dark theme lifts the
+ * darker ones so the dot stays visible (3:1 against the surface).
+ */
+:root {
+  --metal-php: #8d91d0;
+  --metal-node: #6cb35a;
+  --metal-nginx: #1fb45a;
+  --metal-mysql: #3ba3bf;
+  --metal-mariadb: #7f95d1;
+  --metal-postgresql: #6e9bcb;
+  --metal-mongodb: #58b85a;
+  --metal-redis: #ff5a4e;
+  --metal-meilisearch: #ff5caa;
+  --metal-other: #8c8279;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --metal-php: #777bb4;
+    --metal-node: #4e8a3e;
+    --metal-nginx: #009639;
+    --metal-mysql: #00758f;
+    --metal-mariadb: #1f305f;
+    --metal-postgresql: #336791;
+    --metal-mongodb: #3f9142;
+    --metal-redis: #dc382d;
+    --metal-meilisearch: #e0458f;
+    --metal-other: #8c8279;
+  }
+}
+
+:root[data-theme="light"] {
+  --metal-php: #777bb4;
+  --metal-node: #4e8a3e;
+  --metal-nginx: #009639;
+  --metal-mysql: #00758f;
+  --metal-mariadb: #1f305f;
+  --metal-postgresql: #336791;
+  --metal-mongodb: #3f9142;
+  --metal-redis: #dc382d;
+  --metal-meilisearch: #e0458f;
+  --metal-other: #8c8279;
+}
