@@ -254,11 +254,14 @@ fn sddl_of(path: &Path, parts: OBJECT_SECURITY_INFORMATION) -> io::Result<String
 }
 
 /// Trustees that may hold write access to a private folder: `SYSTEM`, the local
-/// administrators, and the creator-owner and owner-rights placeholders (which only ever
-/// resolve to whoever owns the item). The current user is added by the caller.
-const TRUSTED: [&str; 7] = [
+/// administrators (the group and the built-in Administrator account, which SDDL writes as `LA`
+/// instead of its SID: the runner of GitHub Actions is that account), and the creator-owner and
+/// owner-rights placeholders (which only ever resolve to whoever owns the item). The current
+/// user is added by the caller.
+const TRUSTED: [&str; 8] = [
     "SY",
     "BA",
+    "LA",
     "CO",
     "OW",
     "S-1-5-18",
@@ -509,6 +512,20 @@ mod tests {
         ] {
             assert!(!exposes_write(fine, ME), "{fine}");
         }
+    }
+
+    #[test]
+    fn the_built_in_administrator_account_written_as_la_is_an_administrator() {
+        // SDDL writes the local Administrator account (RID 500) as `LA`, not as its SID, so
+        // a user who is that account sees `LA` where their own SID is expected (the runner of
+        // GitHub Actions is that account).
+        let folder = "O:LAG:LAD:P(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+        assert!(!exposes_write(folder, ME));
+        assert!(!exposes_write_to_non_administrators(folder));
+        assert!(!owned_by_other_user(folder, ME));
+        assert!(is_trusted_trustee("LA", ME));
+        // The guest account is not an administrator.
+        assert!(exposes_write("O:LGD:P(A;OICI;FA;;;LG)", ME));
     }
 
     #[test]

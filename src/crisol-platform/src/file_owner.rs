@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn the_trust_rule_is_the_one_used_for_the_home_folder() {
         let me = "S-1-5-21-1-2-3-1001";
-        for trusted in [me, "SY", "BA", "S-1-5-18", "S-1-5-32-544"] {
+        for trusted in [me, "SY", "BA", "LA", "S-1-5-18", "S-1-5-32-544"] {
             assert!(is_trusted_trustee(trusted, me), "{trusted}");
         }
         for stranger in ["S-1-5-21-1-2-3-1002", "BU", "AU", "WD", "S-1-5-32-545", ""] {
