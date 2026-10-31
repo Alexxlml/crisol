@@ -116,6 +116,8 @@ enum Ended {
     Lost,
     /// The daemon did not accept the `hello`.
     Refused(String),
+    /// The view was dropped: nobody reads the state any more.
+    Stopped,
 }
 
 /// Follows the daemon on `link` until the connection ends, keeping `state` up to date and
@@ -128,10 +130,13 @@ enum Ended {
 ///    kept, and the ones numbered after the answer's `seq` are applied on top;
 /// 4. every event after that updates the picture. One numbered up to the last `seq` is already
 ///    in it; a skipped number means events were lost, and the state is asked for again.
+///
+/// `stop` is looked at after each event: once it is set, nothing more is published.
 fn follow(
     link: &mut dyn Link,
     hello: &Call,
     mine: &str,
+    stop: &AtomicBool,
     state: &mut LiveState,
     publish: &mut dyn FnMut(&LiveState),
 ) -> Ended {
@@ -155,6 +160,9 @@ fn follow(
         let Ok(Some(numbered)) = link.next_numbered() else {
             return Ended::Lost;
         };
+        if stop.load(Ordering::Relaxed) {
+            return Ended::Stopped;
+        }
         // Only the daemon's stream is numbered; the progress of a call is not.
         if let (Some(seq), Some(previous)) = (numbered.seq, last) {
             if seq <= previous {
@@ -255,7 +263,8 @@ impl Cell {
 /// The live view: a thread that follows the daemon and a state to read.
 ///
 /// Dropping it tells the thread to stop. The thread may be waiting for an event of the daemon
-/// at that moment, so it ends at the next one (or with the process); it is not waited for.
+/// at that moment, so it ends at the next one (or with the process), without calling
+/// `on_change` again; it is not waited for.
 #[derive(Debug)]
 pub struct LiveView {
     cell: Arc<Cell>,
@@ -337,22 +346,20 @@ fn run(config: &LiveConfig, cell: &Cell, stop: &AtomicBool, on_change: &dyn Fn(&
                     link.as_mut(),
                     &config.hello,
                     &config.version,
+                    stop,
                     &mut state,
                     &mut |state| publish(state),
                 );
-                if let Ended::Refused(message) = ended {
-                    state.connection = Connection::Refused(message);
-                    state.services.clear();
-                    state.warnings.clear();
-                    state.reloading = false;
-                    state.blocked = None;
+                state = match ended {
+                    Ended::Stopped => return,
                     // What answered is not a daemon to follow: only its words are kept.
-                    state.daemon = None;
-                    state.version_warning = None;
-                } else {
+                    Ended::Refused(message) => LiveState {
+                        connection: Connection::Refused(message),
+                        ..LiveState::default()
+                    },
                     // `DaemonLeft` and `Lost` both end with nobody on the other side.
-                    state = LiveState::default();
-                }
+                    Ended::DaemonLeft | Ended::Lost => LiveState::default(),
+                };
             }
             // No pipe: the daemon is not there (yet).
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

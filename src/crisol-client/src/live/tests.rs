@@ -68,9 +68,17 @@ fn run_script(lines: &[String]) -> (Ended, LiveState, Vec<LiveState>, Vec<String
     let mut remote = Remote(Client::new(Cursor::new(script(lines)), Vec::new()));
     let mut state = LiveState::default();
     let mut published = Vec::new();
-    let ended = follow(&mut remote, &hello_call(), "0.1.0", &mut state, &mut |s| {
-        published.push(s.clone());
-    });
+    let stop = AtomicBool::new(false);
+    let ended = follow(
+        &mut remote,
+        &hello_call(),
+        "0.1.0",
+        &stop,
+        &mut state,
+        &mut |s| {
+            published.push(s.clone());
+        },
+    );
     let sent = String::from_utf8(remote.0.writer().clone()).unwrap();
     let methods = sent
         .lines()
@@ -107,6 +115,38 @@ fn the_conversation_is_hello_subscribe_status_and_then_the_events() {
     assert_eq!(published[0].connection, Connection::Connected);
     assert_eq!(names(&published[0]), ["nginx stopped"]);
     assert_eq!(published.len(), 3);
+}
+
+/// A dropped view stops at the next event and publishes nothing more, even if the daemon
+/// keeps talking.
+#[test]
+fn a_stopped_view_publishes_nothing_more() {
+    let mut remote = Remote(Client::new(
+        Cursor::new(script(&[
+            HELLO.to_owned(),
+            SUBSCRIBED.to_owned(),
+            status(&[("nginx", "stopped")], Some(1)),
+            service_event("nginx", "starting", 2),
+            service_event("nginx", "running", 3),
+        ])),
+        Vec::new(),
+    ));
+    let stop = AtomicBool::new(false);
+    let mut published = Vec::new();
+    let ended = follow(
+        &mut remote,
+        &hello_call(),
+        "0.1.0",
+        &stop,
+        &mut LiveState::default(),
+        &mut |s| {
+            published.push(s.clone());
+            stop.store(true, Ordering::Relaxed);
+        },
+    );
+    assert!(matches!(ended, Ended::Stopped));
+    assert_eq!(published.len(), 1);
+    assert_eq!(names(&published[0]), ["nginx stopped"]);
 }
 
 /// An event newer than the picture can arrive before the answer that holds the picture: it is

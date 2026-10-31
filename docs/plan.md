@@ -207,7 +207,7 @@ Reglas de toda la fase:
 - **F13.3** Esqueleto de la GUI con el framework elegido. Va en el crate `crisol-gui` (binario `crisol-gui.exe`), dentro del workspace (si es Tauri, la parte web va en su carpeta y el build lo documenta `docs/publicar.md`). Incluye:
   - la bandeja con el estado general (todo corre, algo falló, parado, sin daemon) y el menú de la ADR-0026 §2: «Iniciar todo» o «Detener todo» según el estado (`start`/`stop`), «Abrir Crisol», «Salir» (solo la GUI) y «Detener todo y salir» (`shutdown`), con el aviso de una sola vez al salir con servicios corriendo;
   - la ventana que se oculta al cerrarse;
-  - la instancia única por usuario, detrás de un trait de `crisol-platform`;
+  - la instancia única por usuario, con `tauri-plugin-single-instance` (ADR-0026, «Framework elegido»);
   - la traducción (inglés y español, según el idioma de Windows);
   - la conexión mediante `LiveView`;
   - un aviso con su arreglo cuando el daemon es de otra versión;
