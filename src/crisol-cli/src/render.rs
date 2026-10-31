@@ -281,12 +281,9 @@ mod tests;
 #[must_use]
 pub fn teardown_question(plan: &crisol_core::teardown::Plan) -> &'static str {
     if plan.deletes_home() {
-        "
-Have you backed up your projects and the databases you need? The folder above is deleted and cannot be recovered.
-Type yes to go on:"
+        "\nHave you backed up your projects and the databases you need? The folder above is deleted and cannot be recovered.\nType yes to go on:"
     } else {
-        "
-Type yes to go on:"
+        "\nType yes to go on:"
     }
 }
 
@@ -360,10 +357,7 @@ pub fn teardown_outcomes(outcomes: &[crisol_core::teardown::Outcome]) -> String 
 pub fn setup_plan(plan: &crisol_core::onboarding::Plan) -> String {
     let mut out = String::new();
     if plan.is_blocked() {
-        out.push_str(
-            "Crisol cannot be set up yet:
-",
-        );
+        out.push_str("Crisol cannot be set up yet:\n");
         for problem in &plan.problems {
             let _ = writeln!(out, "  - {}", problem.message);
             if let Some(fix) = &problem.fix {
@@ -373,15 +367,9 @@ pub fn setup_plan(plan: &crisol_core::onboarding::Plan) -> String {
         return out;
     }
     if plan.is_empty() {
-        out.push_str(
-            "Crisol is set up: there is nothing left to do.
-",
-        );
+        out.push_str("Crisol is set up: there is nothing left to do.\n");
     } else {
-        out.push_str(
-            "Crisol will set up, in this order:
-",
-        );
+        out.push_str("Crisol will set up, in this order:\n");
         for (n, step) in plan.steps.iter().enumerate() {
             let _ = writeln!(
                 out,
@@ -393,16 +381,8 @@ pub fn setup_plan(plan: &crisol_core::onboarding::Plan) -> String {
         }
     }
     for (title, lines) in [
-        (
-            "
-Already in place:",
-            &plan.done,
-        ),
-        (
-            "
-Note:",
-            &plan.notes,
-        ),
+        ("\nAlready in place:", &plan.done),
+        ("\nNote:", &plan.notes),
     ] {
         if !lines.is_empty() {
             let _ = writeln!(out, "{title}");

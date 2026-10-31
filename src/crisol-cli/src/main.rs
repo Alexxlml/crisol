@@ -75,27 +75,15 @@ fn main() -> ExitCode {
         confirm: Box::new(|plan| {
             eprint!("{} ", crisol_cli::render::teardown_question(plan));
             let _ = std::io::stderr().flush();
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer).is_ok()
-                && answer.trim().eq_ignore_ascii_case("yes")
+            ask_yes()
         }),
         confirm_setup: Box::new(|plan| {
-            eprint!(
-                "
-{} ",
-                crisol_cli::render::setup_question(plan)
-            );
+            eprint!("\n{} ", crisol_cli::render::setup_question(plan));
             let _ = std::io::stderr().flush();
             ask_yes()
         }),
         confirm_step: Box::new(|step| {
-            eprint!(
-                "
-{}
-{} (yes/no) ",
-                step.describe(),
-                step.question()
-            );
+            eprint!("\n{}\n{} (yes/no) ", step.describe(), step.question());
             let _ = std::io::stderr().flush();
             ask_yes()
         }),
