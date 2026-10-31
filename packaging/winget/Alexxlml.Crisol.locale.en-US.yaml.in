@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: Alexxlml.Crisol
+PackageVersion: @VERSION@
+PackageLocale: en-US
+Publisher: Alexxlml
+PublisherUrl: https://github.com/Alexxlml
+PublisherSupportUrl: https://github.com/Alexxlml/crisol/issues
+Author: Alexxlml
+PackageName: Crisol
+PackageUrl: https://github.com/Alexxlml/crisol
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/Alexxlml/crisol/blob/main/LICENSE-MIT
+Copyright: Copyright (c) Alexxlml
+ShortDescription: Local web development suite for PHP and Node, written in Rust.
+Description: |-
+  Crisol installs and manages the tools of a local development environment (PHP, Nginx, Node,
+  databases and supporting services) with a command line and a background daemon. After
+  installing, run "crisol setup" once. Everything Crisol changes in Windows can be undone with
+  "crisol uninstall --all".
+Moniker: crisol
+Tags:
+- development
+- local-development
+- php
+- nodejs
+- nginx
+- rust
+ReleaseNotesUrl: https://github.com/Alexxlml/crisol/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
