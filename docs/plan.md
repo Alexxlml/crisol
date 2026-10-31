@@ -193,7 +193,7 @@ Reglas de toda la fase:
     - la ADR-0026 o `docs/arquitectura.md` dicen dónde vive cada cosa.
 - **F13.2** Prototipos de Slint y Tauri 2 y la decisión del framework (ADR-0026 §1).
   - **Dónde:** `prototipos/gui-slint/` y `prototipos/gui-tauri/`, fuera del workspace (que `cargo test --workspace` no los compile). Usan `crisol-client` como dependencia por ruta.
-  - **Qué hacen:** la misma pantalla en los dos. Muestra la lista de servicios en vivo (`LiveView`), con botones de start y stop, y un icono en la bandeja con «abrir», «parar todo» y «salir». Cerrar la ventana la oculta, y una segunda ejecución muestra la ventana existente. Si un framework no puede hacer algo de esto, se dice y se mide lo que cuesta resolverlo (por ejemplo, el crate de bandeja que haría falta con Slint).
+  - **Qué hacen:** la misma pantalla en los dos. Muestra la lista de servicios en vivo (`LiveView`), con botones de start y stop, y un icono en la bandeja con el menú de la ADR-0026 §2 (iniciar/detener todo, abrir, salir, detener todo y salir). Cerrar la ventana la oculta, y una segunda ejecución muestra la ventana existente. Si un framework no puede hacer algo de esto, se dice y se mide lo que cuesta resolverlo (por ejemplo, el crate de bandeja que haría falta con Slint).
   - **Medición:** con `--release`, en este equipo y con los mismos servicios activos. Se miden:
     - la RAM en reposo de todo el árbol de procesos (incluidos los de WebView2), con la ventana abierta y oculta en la bandeja, a los 30 s y a los 5 min;
     - el arranque en frío hasta la primera ventana (media de 5);
@@ -205,7 +205,7 @@ Reglas de toda la fase:
   - **Entrega:** `analisis/gui-prototipos.md`, con la tabla, el método y una recomendación argumentada. **No se elige**: el propietario decide y se anota en la ADR-0026. Los prototipos se borran después de decidir.
   - *Aceptación:* los dos prototipos funcionan contra un `crisold` real con una home de prueba; la tabla está completa y el informe dice cómo repetir cada medida.
 - **F13.3** Esqueleto de la GUI con el framework elegido. Va en el crate `crisol-gui` (binario `crisol-gui.exe`), dentro del workspace (si es Tauri, la parte web va en su carpeta y el build lo documenta `docs/publicar.md`). Incluye:
-  - la bandeja con el estado general (todo corre, algo falló, parado, sin daemon);
+  - la bandeja con el estado general (todo corre, algo falló, parado, sin daemon) y el menú de la ADR-0026 §2: «Iniciar todo» o «Detener todo» según el estado (`start`/`stop`), «Abrir Crisol», «Salir» (solo la GUI) y «Detener todo y salir» (`shutdown`), con el aviso de una sola vez al salir con servicios corriendo;
   - la ventana que se oculta al cerrarse;
   - la instancia única por usuario, detrás de un trait de `crisol-platform`;
   - la traducción (inglés y español, según el idioma de Windows);
@@ -214,7 +214,7 @@ Reglas de toda la fase:
   - la pantalla vacía de cada sección de la ADR-0026 §3, con la navegación.
 
   **Pregunta para el propietario al empezar:** si la bandeja arranca al iniciar sesión (ADR-0026, «Preguntas abiertas»).
-  - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «salir» (el daemon sigue), y el paso de daemon parado a corriendo y al revés.
+  - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «Salir» con servicios corriendo (el aviso sale la primera vez y no la segunda; los sitios siguen respondiendo), «Detener todo» (el daemon sigue), «Detener todo y salir» (no queda `crisold`), y el paso de daemon parado a corriendo y al revés.
 - **F13.4** Servicios y sitios. Incluye:
   - la lista de servicios con su estado en vivo, start/stop/restart y enable/disable;
   - el indicador de «recargando» entre `reload_started` y su cierre;
