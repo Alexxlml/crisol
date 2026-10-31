@@ -204,7 +204,7 @@ Reglas de toda la fase:
   - Antes de agregar cada dependencia, se comprueba su versión actual en crates.io o npm y se justifica en la bitácora.
   - **Entrega:** `analisis/gui-prototipos.md`, con la tabla, el método y una recomendación argumentada. **No se elige**: el propietario decide y se anota en la ADR-0026. Los prototipos se borran después de decidir.
   - *Aceptación:* los dos prototipos funcionan contra un `crisold` real con una home de prueba; la tabla está completa y el informe dice cómo repetir cada medida.
-- **F13.3** Esqueleto de la GUI con el framework elegido. Va en el crate `crisol-gui` (binario `crisol-gui.exe`), dentro del workspace (si es Tauri, la parte web va en su carpeta y el build lo documenta `docs/publicar.md`). Incluye:
+- **F13.3** (implementada el 2026-10-31, a la espera de la revisión y de la verificación manual del propietario; ver la ADR-0026, «El esqueleto») Esqueleto de la GUI con el framework elegido. Va en el crate `crisol-gui` (binario `crisol-gui.exe`), dentro del workspace (si es Tauri, la parte web va en su carpeta y el build lo documenta `docs/publicar.md`). Incluye:
   - la bandeja con el estado general (todo corre, algo falló, parado, sin daemon) y el menú de la ADR-0026 §2: «Iniciar todo» o «Detener todo» según el estado (`start`/`stop`), «Abrir Crisol», «Salir» (solo la GUI) y «Detener todo y salir» (`shutdown`), con el aviso de una sola vez al salir con servicios corriendo;
   - la ventana que se oculta al cerrarse;
   - la instancia única por usuario, con `tauri-plugin-single-instance` (ADR-0026, «Framework elegido»);

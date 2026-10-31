@@ -19,13 +19,18 @@ use crisol_core::trouble::WebTrouble;
 use crisol_protocol::{
     Call, Check, ClientError, Event, HelloInfo, Numbered, Reply, ServiceInfo, StatusInfo,
 };
+use serde::Serialize;
 
 use crate::connect::{client_error, daemon_version_check, hello};
 use crate::context::Context;
 use crate::link::{Connector, Link};
 
 /// Whether there is a daemon on the other side.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// It is serialized as `{"kind":"connected"}` and `{"kind":"refused","message":"..."}`: a page
+/// reads it by `kind`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum Connection {
     /// No daemon is answering (not started, going away, or gone): the view keeps looking.
     #[default]
@@ -39,7 +44,7 @@ pub enum Connection {
 
 /// What the view knows about the daemon. It can be copied and compared, so a screen redraws
 /// when it is not equal to the one it drew.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct LiveState {
     /// Whether there is a daemon.
     pub connection: Connection,

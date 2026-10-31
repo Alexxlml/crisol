@@ -1,0 +1,68 @@
+{
+  "nav.services": "Services",
+  "nav.sites": "Sites",
+  "nav.versions": "Versions",
+  "nav.logs": "Logs",
+  "nav.doctor": "Doctor",
+  "nav.credentials": "Credentials",
+  "nav.setup": "Setup",
+  "nav.label": "Sections",
+
+  "section.services.title": "Services",
+  "section.services.hint": "Start, stop and restart what Crisol runs, with its state live.",
+  "section.sites.title": "Sites",
+  "section.sites.hint": "The sites Crisol serves: park and link folders, secure them, open them in the browser.",
+  "section.versions.title": "Versions",
+  "section.versions.hint": "Install, remove and choose versions of PHP, Node and the databases.",
+  "section.logs.title": "Logs",
+  "section.logs.hint": "Follow the log of each service as it is written.",
+  "section.doctor.title": "Doctor",
+  "section.doctor.hint": "What Crisol finds wrong in this machine, with the fix for what it can fix.",
+  "section.credentials.title": "Credentials",
+  "section.credentials.hint": "The generated passwords of the databases, ready to copy, and a way to reset them.",
+  "section.setup.title": "Setup",
+  "section.setup.hint": "First-run setup of Windows, and removing Crisol from it.",
+  "empty.title": "Not here yet",
+  "empty.body": "This section arrives in a later version of the app. The command line does all of it today.",
+
+  "services.none": "The daemon reports no services yet.",
+  "services.no_daemon": "There are no services to show while the daemon is not running. Press Start all in the tray menu to start it.",
+  "services.heading": "Services in the daemon",
+
+  "state.running": "Running",
+  "state.starting": "Starting",
+  "state.stopping": "Stopping",
+  "state.stopped": "Stopped",
+  "state.failed": "Failed",
+
+  "overall.running": "Running",
+  "overall.starting": "Starting",
+  "overall.stopped": "Stopped",
+  "overall.failed": "Something failed",
+  "overall.no_daemon": "Daemon not running",
+
+  "conn.connected": "crisold {version}",
+  "conn.refused": "The daemon cannot be used",
+
+  "banner.version": "The daemon is of another version",
+  "banner.fix": "To fix it",
+  "banner.reload_error": "The last web configuration was not applied",
+  "banner.blocked": "Crisol is waiting to change the web stack",
+  "banner.call_failed": "That did not work",
+  "banner.dismiss": "Dismiss",
+
+  "tray.start_all": "Start all",
+  "tray.stop_all": "Stop all",
+  "tray.open": "Open Crisol",
+  "tray.quit": "Quit",
+  "tray.stop_quit": "Stop all and quit",
+  "tray.tooltip": "Crisol: {state}",
+
+  "exit.title": "The services keep running",
+  "exit.body": "Quitting closes this window and the tray icon only. Your sites keep answering. To stop them as well, use Stop all and quit in the tray menu. This notice is shown once.",
+  "exit.confirm": "Quit anyway",
+  "exit.cancel": "Cancel",
+
+  "webview2.title": "Crisol needs WebView2",
+  "webview2.body": "Crisol draws its window with Microsoft Edge WebView2, which is not installed on this computer. Install the Evergreen runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and open Crisol again."
+}

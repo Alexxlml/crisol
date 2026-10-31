@@ -15,13 +15,19 @@
 
 pub mod connect;
 mod context;
+mod language;
 mod link;
 mod live;
+mod settings;
+mod summary;
 #[cfg(windows)]
 mod windows;
 
 pub use context::{Context, RemovePrograms};
+pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};
+pub use settings::GuiSettings;
+pub use summary::{metal_of, LeaveAction, Overall, ServiceRow, Summary, Toggle};
 #[cfg(windows)]
 pub use windows::WindowsError;

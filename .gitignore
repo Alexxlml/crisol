@@ -16,3 +16,8 @@ Thumbs.db
 # variables de entorno y secretos locales
 .env
 .env.*
+
+# F13.3: copied from assets/brand/ by crisol-gui/build.rs
+/src/crisol-gui/ui/tokens.css
+/src/crisol-gui/ui/symbol.svg
+/src/crisol-gui/gen/

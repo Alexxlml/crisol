@@ -10,12 +10,14 @@ publish.workspace = true
 crisol-core.workspace = true
 crisol-protocol.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crisol-platform.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true
 
 # The minimal client of the daemon (F12.2, now over `LiveView`); its tests run with the rest.
 [[example]]

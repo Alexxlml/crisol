@@ -1,6 +1,8 @@
 //! crisol-platform: per-OS implementations behind the traits defined in `crisol-core`.
 
 #[cfg(windows)]
+mod appearance;
+#[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
 mod console;
@@ -47,6 +49,8 @@ mod trust_store;
 #[cfg(windows)]
 mod user_path;
 
+#[cfg(windows)]
+pub use appearance::{error_box, taskbar_uses_light_theme, ui_languages, webview2_version};
 #[cfg(windows)]
 pub use autostart::RegistryAutostart;
 #[cfg(windows)]

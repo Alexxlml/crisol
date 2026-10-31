@@ -1,0 +1,32 @@
+[package]
+name = "crisol-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The tray and window of Crisol (ADR-0026): draws what crisol-client says and turns clicks into calls."
+
+[features]
+# What a release build turns on: the page is embedded in the executable instead of loaded from
+# a development server. `cargo build` and `cargo test` go through it too, so the executable is
+# always self-contained.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+crisol-client.workspace = true
+crisol-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2.5.5"
+
+[target.'cfg(windows)'.dependencies]
+crisol-platform.workspace = true
+
+[build-dependencies]
+tauri-build = "2.7.4"
+
+[lints]
+workspace = true

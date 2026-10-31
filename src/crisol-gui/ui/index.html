@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crisol</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <img src="symbol.svg" alt="" width="28" height="28">
+        <span class="brand-name">CRISOL</span>
+      </div>
+      <nav id="nav" data-i18n-label="nav.label">
+        <button type="button" class="nav-item" data-section="services" data-i18n="nav.services"></button>
+        <button type="button" class="nav-item" data-section="sites" data-i18n="nav.sites"></button>
+        <button type="button" class="nav-item" data-section="versions" data-i18n="nav.versions"></button>
+        <button type="button" class="nav-item" data-section="logs" data-i18n="nav.logs"></button>
+        <button type="button" class="nav-item" data-section="doctor" data-i18n="nav.doctor"></button>
+        <button type="button" class="nav-item" data-section="credentials" data-i18n="nav.credentials"></button>
+        <button type="button" class="nav-item" data-section="setup" data-i18n="nav.setup"></button>
+      </nav>
+    </aside>
+
+    <div class="main">
+      <header class="top">
+        <h1 id="title"></h1>
+        <div class="status">
+          <span id="overall" class="chip"></span>
+          <span id="connection" class="connection"></span>
+        </div>
+      </header>
+
+      <div id="banners" class="banners"></div>
+
+      <main id="content">
+        <section id="section-services" class="panel" hidden>
+          <p class="hint" data-i18n="section.services.hint"></p>
+          <h2 class="sr-only" data-i18n="services.heading"></h2>
+          <ul id="services" class="services"></ul>
+          <p id="services-empty" class="empty-line" hidden></p>
+        </section>
+
+        <section id="section-sites" class="panel" hidden>
+          <p class="hint" data-i18n="section.sites.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+        <section id="section-versions" class="panel" hidden>
+          <p class="hint" data-i18n="section.versions.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+        <section id="section-logs" class="panel" hidden>
+          <p class="hint" data-i18n="section.logs.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+        <section id="section-doctor" class="panel" hidden>
+          <p class="hint" data-i18n="section.doctor.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+        <section id="section-credentials" class="panel" hidden>
+          <p class="hint" data-i18n="section.credentials.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+        <section id="section-setup" class="panel" hidden>
+          <p class="hint" data-i18n="section.setup.hint"></p>
+          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="exit-notice" class="modal" role="dialog" aria-modal="true" aria-labelledby="exit-title" hidden>
+    <div class="modal-box">
+      <h2 id="exit-title" data-i18n="exit.title"></h2>
+      <p data-i18n="exit.body"></p>
+      <div class="modal-actions">
+        <button type="button" id="exit-cancel" class="button" data-i18n="exit.cancel"></button>
+        <button type="button" id="exit-confirm" class="button primary" data-i18n="exit.confirm"></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

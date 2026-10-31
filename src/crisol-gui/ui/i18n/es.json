@@ -1,0 +1,68 @@
+{
+  "nav.services": "Servicios",
+  "nav.sites": "Sitios",
+  "nav.versions": "Versiones",
+  "nav.logs": "Registros",
+  "nav.doctor": "Diagnóstico",
+  "nav.credentials": "Credenciales",
+  "nav.setup": "Instalación",
+  "nav.label": "Secciones",
+
+  "section.services.title": "Servicios",
+  "section.services.hint": "Inicia, detén y reinicia lo que Crisol ejecuta, con su estado en vivo.",
+  "section.sites.title": "Sitios",
+  "section.sites.hint": "Los sitios que sirve Crisol: añade carpetas, protégelas con HTTPS y ábrelas en el navegador.",
+  "section.versions.title": "Versiones",
+  "section.versions.hint": "Instala, quita y elige versiones de PHP, Node y las bases de datos.",
+  "section.logs.title": "Registros",
+  "section.logs.hint": "Sigue el registro de cada servicio mientras se escribe.",
+  "section.doctor.title": "Diagnóstico",
+  "section.doctor.hint": "Lo que Crisol encuentra mal en este equipo, con el arreglo de lo que sabe arreglar.",
+  "section.credentials.title": "Credenciales",
+  "section.credentials.hint": "Las contraseñas generadas de las bases de datos, listas para copiar, y una forma de restablecerlas.",
+  "section.setup.title": "Instalación",
+  "section.setup.hint": "La configuración de Windows en el primer arranque, y cómo quitar Crisol de él.",
+  "empty.title": "Todavía no está aquí",
+  "empty.body": "Esta sección llega en una versión posterior de la aplicación. La línea de comandos hace todo esto hoy.",
+
+  "services.none": "El daemon todavía no informa de ningún servicio.",
+  "services.no_daemon": "No hay servicios que mostrar mientras el daemon no corre. Pulsa Iniciar todo en el menú de la bandeja para arrancarlo.",
+  "services.heading": "Servicios del daemon",
+
+  "state.running": "Corriendo",
+  "state.starting": "Arrancando",
+  "state.stopping": "Deteniendo",
+  "state.stopped": "Parado",
+  "state.failed": "Falló",
+
+  "overall.running": "Corriendo",
+  "overall.starting": "Arrancando",
+  "overall.stopped": "Parado",
+  "overall.failed": "Algo falló",
+  "overall.no_daemon": "Sin daemon",
+
+  "conn.connected": "crisold {version}",
+  "conn.refused": "No se puede usar el daemon",
+
+  "banner.version": "El daemon es de otra versión",
+  "banner.fix": "Para arreglarlo",
+  "banner.reload_error": "La última configuración web no se aplicó",
+  "banner.blocked": "Crisol espera para cambiar la pila web",
+  "banner.call_failed": "Eso no funcionó",
+  "banner.dismiss": "Cerrar",
+
+  "tray.start_all": "Iniciar todo",
+  "tray.stop_all": "Detener todo",
+  "tray.open": "Abrir Crisol",
+  "tray.quit": "Salir",
+  "tray.stop_quit": "Detener todo y salir",
+  "tray.tooltip": "Crisol: {state}",
+
+  "exit.title": "Los servicios siguen corriendo",
+  "exit.body": "Salir cierra solo esta ventana y el icono de la bandeja. Tus sitios siguen respondiendo. Para detenerlos también, usa Detener todo y salir en el menú de la bandeja. Este aviso se muestra una sola vez.",
+  "exit.confirm": "Salir de todos modos",
+  "exit.cancel": "Cancelar",
+
+  "webview2.title": "Crisol necesita WebView2",
+  "webview2.body": "Crisol dibuja su ventana con Microsoft Edge WebView2, que no está instalado en este equipo. Instala el runtime Evergreen desde https://developer.microsoft.com/microsoft-edge/webview2/ y abre Crisol otra vez."
+}

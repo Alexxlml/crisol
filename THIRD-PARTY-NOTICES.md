@@ -17,6 +17,16 @@ Aviso que exige la licencia de PHP:
 
 Copyright (c) 1999 - 2024 The PHP Group. All rights reserved.
 
+## Tipografías de la GUI
+
+`crisol-gui.exe` lleva dentro tres familias tipográficas (archivos `.woff2` variables en `src/crisol-gui/ui/fonts/`, tomados de los paquetes `@fontsource-variable/*` 5.3.0). La GUI es una aplicación local y no descarga fuentes al ejecutarse. Las tres se distribuyen bajo la SIL Open Font License 1.1, cuyo texto completo está junto a cada una:
+
+| Fuente | Autores | Licencia |
+|---|---|---|
+| Space Grotesk | The Space Grotesk Project Authors (<https://github.com/floriankarsten/space-grotesk>) | SIL OFL 1.1 ([`licenses/OFL-space-grotesk.txt`](licenses/OFL-space-grotesk.txt)) |
+| Inter | The Inter Project Authors (<https://github.com/rsms/inter>) | SIL OFL 1.1 ([`licenses/OFL-inter.txt`](licenses/OFL-inter.txt)) |
+| JetBrains Mono | The JetBrains Mono Project Authors (<https://github.com/JetBrains/JetBrainsMono>) | SIL OFL 1.1 ([`licenses/OFL-jetbrains-mono.txt`](licenses/OFL-jetbrains-mono.txt)) |
+
 ## Dependencias de Rust
 
 El código de las dependencias no está en este repositorio: Cargo lo descarga al compilar (versiones fijadas en `src/Cargo.lock`). Todas tienen licencias permisivas y compatibles con MIT y Apache-2.0: MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unicode-3.0 y CDLA-Permissive-2.0.

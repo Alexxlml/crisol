@@ -63,6 +63,17 @@ pub fn open(
     }
 }
 
+/// Makes `call` the way a button does: connects (starting the daemon when the call should),
+/// says hello and sends it. The error is the one to show, with its `fix` when it has one.
+pub fn call(
+    context: &Context,
+    call: &Call,
+    notice: &mut dyn FnMut(&str),
+) -> Result<Reply, RpcError> {
+    let mut opened = open(context, call, notice)?;
+    opened.link.call(call, &mut |_| {}).map_err(client_error)
+}
+
 /// This process answering for a daemon that is not there.
 fn local(context: &Context, call: &Call) -> Result<Box<dyn Link>, RpcError> {
     let deps = (context.deps)().map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
