@@ -58,7 +58,7 @@ jobs:
           f="cargo-about-${CARGO_ABOUT_VERSION}-x86_64-pc-windows-msvc.tar.gz"
           curl -fsSL -o "$RUNNER_TEMP/$f" "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/$f"
           echo "$CARGO_ABOUT_SHA256 *$RUNNER_TEMP/$f" | sha256sum -c -
-          # Relative paths: GNU tar takes `D:` in `D:\_temp` for a remote host.
+          # Relative paths: GNU tar takes the drive letter of an absolute path for a remote host.
           (cd "$RUNNER_TEMP" && tar -xzf "$f")
           echo "$(cygpath -w "$RUNNER_TEMP/cargo-about-${CARGO_ABOUT_VERSION}-x86_64-pc-windows-msvc")" >> "$GITHUB_PATH"
 
