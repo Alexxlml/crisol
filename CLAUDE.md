@@ -4,7 +4,7 @@ Este archivo lo lee Claude Code al iniciar. Síguelo en cada sesión.
 
 ## Qué es Crisol
 
-Suite de desarrollo web local (PHP + Node) en Rust. Ahora mismo **solo se construye el backend** (núcleo, daemon y CLI). La GUI viene después y no debe influir en el diseño del núcleo.
+Suite de desarrollo web local (PHP + Node) en Rust. El backend (núcleo, daemon y CLI) está completo y se instala con winget. Ahora se construye la **GUI** (Fase 13, ADR-0026): una carcasa de bandeja y ventana que habla con el daemon y con `crisol-client`, sin lógica propia.
 
 ## Antes de escribir código, en cada sesión
 
@@ -25,6 +25,7 @@ Suite de desarrollo web local (PHP + Node) en Rust. Ahora mismo **solo se constr
 - **No modifiques el PATH, el registro ni el archivo hosts del sistema** en pruebas. Usa directorios temporales y la variable `CRISOL_HOME` apuntando a una carpeta de prueba.
 - **No pidas privilegios de administrador** salvo en las tareas que el plan marca explícitamente como "requiere admin", y siempre como operación aislada y opcional.
 - **Nada de lógica en el CLI.** El CLI solo parsea argumentos y llama al núcleo (directo o por IPC al daemon). Si escribes lógica en `crisol-cli`, muévela a `crisol-core`.
+- **Nada de lógica en la GUI.** La GUI dibuja y traduce clics en llamadas. Lo que decide algo va en `crisol-client` (conexión, vista en vivo, qué acciones se ofrecen) o en `crisol-core`, siempre con pruebas.
 - **Nada específico de Windows en `crisol-core`.** Va en `crisol-platform`, detrás de un trait.
 - **Nunca reescribas la config del usuario sin un comando explícito.** Para editar TOML del usuario usa `toml_edit`, que conserva comentarios y orden.
 - **No agregues dependencias sin justificarlas** en la bitácora de la sesión. Prefiere crates mantenidos y populares. Verifica la versión actual en crates.io antes de agregarla.

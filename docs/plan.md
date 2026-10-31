@@ -170,8 +170,88 @@ Decidido en la ADR-0024: un solo canal, winget (paquete portable dentro de un ZI
 
 - **P.1** 🪟 Firma Authenticode de `crisol.exe`, `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe` en las versiones publicadas, y comprobación de la firma del `crisol-elevate.exe` de origen **antes** del UAC de `crisol system install` (así el aviso de Windows muestra un editor conocido y no «desconocido»). Es el complemento de la comprobación de permisos que ya existe (`crisol_core::programs::require_trusted_program`, revisión de la Fase 8, hallazgo 3) y **no se implementa todavía**: necesita un certificado de firma de código. No se fija un hash del ayudante al compilar (decisión del propietario, 2026-10-16).
 
+## Fase 13 — GUI
+
+**Objetivo:** una GUI de bandeja y ventana encima del daemon, sin lógica propia (ADR-0001 y ADR-0026). La lógica va en `crisol-client` y se prueba sin interfaz. La GUI dibuja y traduce clics en llamadas.
+
+Reglas de toda la fase:
+
+- **Nada de lógica en la GUI.** Si una pantalla necesita decidir algo (qué mostrar, qué falta, qué hacer después), eso va en `crisol-client` o en `crisol-core`, con pruebas.
+- **No se cambia lo que hace el CLI.** `src/crisol-cli/tests/commands.rs` debe pasar sin tocar sus expectativas, salvo los cambios que una tarea diga explícitamente.
+- **Textos de la GUI en inglés y español** desde la primera pantalla, con el mecanismo de traducción del framework. Los mensajes del núcleo se muestran tal cual (ADR-0026 §4).
+- **Cada tarea con pantalla** deja en su bitácora una lista de verificación manual (qué abrir, qué pulsar, qué debe verse) y capturas en `claude/capturas/` (no van al repositorio). Las pruebas automáticas cubren `crisol-client`.
+- Las pruebas a mano se hacen con `CRISOL_HOME` en una carpeta de prueba y con puertos que no choquen con Herd ni con Devaron (`docs/arquitectura.md`).
+
+- **F13.1** Crate `crisol-client`, que usan el CLI y la GUI (ADR-0026 §5). La tarea tiene tres partes:
+  - **Mover sin cambiar conducta:** `Context` y sus tipos, `Link`, `Remote`, `Local`, la conexión con arranque del daemon (`link`, `start_daemon`), el `hello` con la versión del daemon, y el montaje de Windows de `crisol-cli/src/main.rs` como una función (`Context::windows()` o equivalente). El CLI queda con `args`, `render` y el `Session` que imprime.
+  - **Añadir la vista en vivo** (`LiveView` o nombre equivalente). Abre su propia conexión de suscripción, hace `hello` → `subscribe` → `status` y aplica los eventos con la regla de `seq` de la ADR-0025: guarda los que llegan durante `status` y vuelve a pedir el estado si falta un número. Se reconecta cuando el daemon se va (`shutting_down` o la tubería cerrada) y cuando vuelve. Expone un estado que se puede copiar y comparar: servicios, «recargando», `blocked` y si hay conexión o no. Las llamadas van por otra conexión, porque el protocolo atiende una petición a la vez.
+  - **Llevar `examples/watch.rs`** a usar `LiveView`.
+  - *Aceptación:*
+    - las pruebas del CLI pasan sin cambiar sus expectativas;
+    - `LiveView` tiene pruebas con un daemon falso para: un evento más nuevo que la foto antes de la respuesta, un salto de `seq` que vuelve a pedir `status`, `shutting_down` y reconexión, y un daemon de otra versión;
+    - `crisol-cli` no depende de nada que `crisol-client` no exponga;
+    - la ADR-0026 o `docs/arquitectura.md` dicen dónde vive cada cosa.
+- **F13.2** Prototipos de Slint y Tauri 2 y la decisión del framework (ADR-0026 §1).
+  - **Dónde:** `prototipos/gui-slint/` y `prototipos/gui-tauri/`, fuera del workspace (que `cargo test --workspace` no los compile). Usan `crisol-client` como dependencia por ruta.
+  - **Qué hacen:** la misma pantalla en los dos. Muestra la lista de servicios en vivo (`LiveView`), con botones de start y stop, y un icono en la bandeja con «abrir», «parar todo» y «salir». Cerrar la ventana la oculta, y una segunda ejecución muestra la ventana existente. Si un framework no puede hacer algo de esto, se dice y se mide lo que cuesta resolverlo (por ejemplo, el crate de bandeja que haría falta con Slint).
+  - **Medición:** con `--release`, en este equipo y con los mismos servicios activos. Se miden:
+    - la RAM en reposo de todo el árbol de procesos (incluidos los de WebView2), con la ventana abierta y oculta en la bandeja, a los 30 s y a los 5 min;
+    - el arranque en frío hasta la primera ventana (media de 5);
+    - el tamaño de lo que se distribuiría (con el runtime que haga falta);
+    - las líneas de la pantalla;
+    - lo que añade al build y al flujo de publicación (Node y npm, herramientas);
+    - la licencia, comprobada en la web oficial (Slint: GPLv3 o su licencia royalty-free y lo que exige; Tauri: MIT/Apache).
+  - Antes de agregar cada dependencia, se comprueba su versión actual en crates.io o npm y se justifica en la bitácora.
+  - **Entrega:** `analisis/gui-prototipos.md`, con la tabla, el método y una recomendación argumentada. **No se elige**: el propietario decide y se anota en la ADR-0026. Los prototipos se borran después de decidir.
+  - *Aceptación:* los dos prototipos funcionan contra un `crisold` real con una home de prueba; la tabla está completa y el informe dice cómo repetir cada medida.
+- **F13.3** Esqueleto de la GUI con el framework elegido. Va en el crate `crisol-gui` (binario `crisol-gui.exe`), dentro del workspace (si es Tauri, la parte web va en su carpeta y el build lo documenta `docs/publicar.md`). Incluye:
+  - la bandeja con el estado general (todo corre, algo falló, parado, sin daemon);
+  - la ventana que se oculta al cerrarse;
+  - la instancia única por usuario, detrás de un trait de `crisol-platform`;
+  - la traducción (inglés y español, según el idioma de Windows);
+  - la conexión mediante `LiveView`;
+  - un aviso con su arreglo cuando el daemon es de otra versión;
+  - la pantalla vacía de cada sección de la ADR-0026 §3, con la navegación.
+
+  **Pregunta para el propietario al empezar:** si la bandeja arranca al iniciar sesión (ADR-0026, «Preguntas abiertas»).
+  - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «salir» (el daemon sigue), y el paso de daemon parado a corriendo y al revés.
+- **F13.4** Servicios y sitios. Incluye:
+  - la lista de servicios con su estado en vivo, start/stop/restart y enable/disable;
+  - el indicador de «recargando» entre `reload_started` y su cierre;
+  - el aviso de `blocked` con su comando;
+  - la lista de sitios (`sites`) con park, unpark, link, unlink, secure y unsecure, y «abrir en el navegador».
+
+  Elegir carpeta usa el diálogo del sistema. Los errores muestran `message` y `fix` tal cual.
+  - *Aceptación:* lo que decide qué botón se ofrece en cada estado está en `crisol-client`, con pruebas; verificación manual de cada acción contra un `crisold` real.
+- **F13.5** Versiones: lo instalado y lo disponible (`list`), instalar con la barra de progreso (evento `progress`, que llega solo a la conexión que pidió `install`), desinstalar, `use` y los avisos de vulnerabilidad y fin de soporte que ya dan `install` y `list`. `install --from` queda para el CLI en esta versión.
+  - *Aceptación:* progreso visible de principio a fin con una descarga real 🌐; cancelar la ventana durante una instalación no deja nada a medias (lo garantiza el núcleo; se comprueba).
+- **F13.6** Logs y credenciales.
+  - **Logs:** un visor por servicio, con las últimas líneas y el seguimiento con `from`, como `logs -f`, o el evento `log` si ya hay suscripción. Debe aguantar logs grandes sin cargar el archivo entero.
+  - **Credenciales:** las líneas `.env` de cada base, con un botón para copiar y `reset_password` con confirmación (y el aviso de Garnet y Meilisearch si corren).
+  - *Aceptación:* verificación manual; la lógica de seguimiento está en `crisol-client` y tiene pruebas.
+- **F13.7** `doctor` con acciones. Primero se diseña: una ampliación de la ADR-0021 con el campo opcional `action` en `Check`, que es compatible (se añade un campo, sin cambiar la versión del protocolo). Las acciones tienen este alcance:
+  - una llamada del protocolo;
+  - una operación local del núcleo (`trust`, `setup`, `untrust --stale`, `autostart off`);
+  - un enlace.
+
+  Los comandos de administrador ajenos a Crisol (Defender) se muestran para copiar y **no se ejecutan** (ADR-0026 §6). El texto que ve el CLI no cambia. **El diseño lo aprueba el propietario antes de implementarlo.**
+  - *Aceptación:* `docs/protocolo.md` y su prueba lo documentan; cada `Check` con acción tiene una prueba que la comprueba; en la GUI, el botón muestra lo que va a hacer antes de hacerlo.
+- **F13.8** Primer arranque y desinstalación.
+  - **El asistente:** con el `Plan` de `onboarding` muestra los pasos, lo hecho, los problemas y las notas, y pregunta cada paso opcional. Se abre solo cuando el plan no está vacío.
+  - **La pantalla de `uninstall --all`:** con el `Plan` de `teardown`, muestra todo lo que el CLI lista y pide la confirmación, con la pregunta de los respaldos cuando se borra la home. Cierra la GUI al terminar.
+  - Los dos usan `run_if_agreed`, en el proceso de la GUI (no en el daemon), para que los diálogos de Windows y el UAC salgan delante.
+  - *Aceptación:* verificación manual completa en Windows Sandbox: el asistente en una máquina limpia, y la desinstalación que deja el sistema como al inicio (scripts de `src/scripts/sandbox/`, como la ADR-0022).
+- **F13.9** Empaquetado de la GUI (ADR-0024 §6 y ADR-0026 §6). Incluye:
+  - `crisol-gui.exe` en el ZIP (`package.sh`) y en el flujo de publicación (y su build web si es Tauri);
+  - el manifiesto de winget, sin alias de comando para la GUI;
+  - un paso de `setup` que crea el acceso directo en el menú Inicio del usuario (`.lnk`, detrás de un trait de `crisol-platform`), y su contraparte en `uninstall --all`;
+  - `real_exe` y `is_winget_package` revisados para el quinto programa;
+  - `docs/instalacion.md` actualizado.
+  - *Aceptación:* `winget install --manifest` en Windows Sandbox → `crisol setup` crea el acceso directo → la GUI abre desde el menú Inicio → `uninstall --all` lo quita → el sistema queda como al inicio.
+- **Revisión de la Fase 13** (Opus), con el resumen para la revisión en `claude/revisiones/`, como en las fases anteriores. Se puede pedir una revisión intermedia después de F13.3.
+
 ---
 
 ## Fuera de alcance de este plan
 
-GUI, soporte Linux/macOS (solo se garantiza que el diseño lo permita), túneles/compartir sitios, bases de datos remotas, actualizaciones automáticas de Crisol. Se planifican después de la Fase 12.
+Soporte Linux/macOS (solo se garantiza que el diseño lo permita), túneles/compartir sitios, bases de datos remotas, actualizaciones automáticas de Crisol y la traducción de los mensajes del núcleo. Se planifican después de la Fase 13.
