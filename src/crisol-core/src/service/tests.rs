@@ -1341,3 +1341,156 @@ fn a_worker_that_exits_with_zero_right_after_it_started_is_a_crash_not_a_recycle
         rig.state()
     );
 }
+
+// ---- a port of the last run that Windows has not released yet -----------------------------
+
+/// Runs and stops a service with no graceful command; gives the time reached and the pid of
+/// its process. The listener is gone from the fake: each test puts back what it needs.
+fn run_and_stop(rig: &mut Rig) -> (u64, u32) {
+    let now = rig.run(0);
+    let pid = rig.supervisor.spawned()[0].pid;
+    rig.stop(now);
+    rig.tick(now + 150);
+    assert_eq!(rig.state(), ServiceState::Stopped);
+    rig.unlisten(HTTP);
+    (now + 150, pid)
+}
+
+fn no_graceful() -> ServiceSpec {
+    let mut spec = nginx();
+    spec.graceful_stop = None;
+    spec
+}
+
+fn lingering(pid: u32, name: Option<&str>) -> PortOwner {
+    PortOwner {
+        pid,
+        name: name.map(str::to_owned),
+        address: SocketAddr::from((Ipv4Addr::LOCALHOST, HTTP)),
+    }
+}
+
+#[test]
+fn a_restart_waits_for_its_own_port_to_be_released_and_then_starts() {
+    let mut rig = Rig::new(no_graceful());
+    let (now, pid) = run_and_stop(&mut rig);
+    // Still listed with the pid of the process that just went, which has no name any more.
+    rig.ports.occupy(HTTP, lingering(pid, None));
+
+    rig.start(now);
+    assert_eq!(rig.state(), ServiceState::Starting);
+    assert_eq!(
+        rig.supervisor.spawned().len(),
+        1,
+        "nothing launched while it waits"
+    );
+    rig.tick(now + 300);
+    assert_eq!(rig.state(), ServiceState::Starting);
+
+    rig.unlisten(HTTP);
+    rig.tick(now + 600);
+    assert_eq!(
+        rig.supervisor.spawned().len(),
+        2,
+        "launched once the port was free"
+    );
+    rig.listen(HTTP);
+    rig.tick(now + 1200);
+    assert_eq!(rig.state(), ServiceState::Running);
+}
+
+#[test]
+fn a_port_still_held_by_the_last_run_after_the_wait_fails_as_busy() {
+    let mut rig = Rig::new(no_graceful());
+    let (now, pid) = run_and_stop(&mut rig);
+    // Named (the process still exists), but it is the one this service started.
+    rig.ports.occupy(HTTP, lingering(pid, Some("nginx.exe")));
+
+    rig.start(now);
+    rig.tick(now + 2900);
+    assert_eq!(rig.state(), ServiceState::Starting);
+    rig.tick(now + 3000);
+    assert!(
+        matches!(
+            rig.state(),
+            ServiceState::Failed(FailureReason::PortBusy { port: HTTP, .. })
+        ),
+        "{:?}",
+        rig.state()
+    );
+    assert_eq!(rig.supervisor.spawned().len(), 1);
+}
+
+#[test]
+fn a_port_taken_by_another_program_after_a_stop_fails_at_once() {
+    let mut rig = Rig::new(no_graceful());
+    let (now, _) = run_and_stop(&mut rig);
+    rig.ports.occupy(HTTP, lingering(9999, Some("herd.exe")));
+
+    rig.start(now);
+    assert!(
+        matches!(
+            rig.state(),
+            ServiceState::Failed(FailureReason::PortBusy { port: HTTP, .. })
+        ),
+        "{:?}",
+        rig.state()
+    );
+}
+
+#[test]
+fn a_port_held_by_its_last_run_and_another_program_fails_at_once() {
+    let mut rig = Rig::new(no_graceful());
+    let (now, pid) = run_and_stop(&mut rig);
+    rig.ports.occupy(HTTP, lingering(pid, None));
+    rig.ports.occupy(HTTP, lingering(9999, Some("herd.exe")));
+
+    rig.start(now);
+    assert!(
+        matches!(rig.state(), ServiceState::Failed(_)),
+        "{:?}",
+        rig.state()
+    );
+}
+
+#[test]
+fn a_service_that_never_ran_does_not_wait_for_a_nameless_owner() {
+    let mut rig = Rig::new(no_graceful());
+    rig.ports.occupy(HTTP, lingering(1234, None));
+    rig.start(0);
+    assert!(
+        matches!(rig.state(), ServiceState::Failed(_)),
+        "{:?}",
+        rig.state()
+    );
+}
+
+#[test]
+fn stopping_while_waiting_for_the_port_launches_nothing() {
+    let mut rig = Rig::new(no_graceful());
+    let (now, pid) = run_and_stop(&mut rig);
+    rig.ports.occupy(HTTP, lingering(pid, None));
+    rig.start(now);
+
+    rig.stop(now + 100);
+    assert_eq!(rig.state(), ServiceState::Stopped);
+    rig.unlisten(HTTP);
+    rig.tick(now + 400);
+    assert_eq!(rig.state(), ServiceState::Stopped);
+    assert_eq!(rig.supervisor.spawned().len(), 1);
+}
+
+#[test]
+fn a_zero_wait_fails_at_once_as_before() {
+    let mut spec = no_graceful();
+    spec.policy.port_release_wait = Duration::ZERO;
+    let mut rig = Rig::new(spec);
+    let (now, pid) = run_and_stop(&mut rig);
+    rig.ports.occupy(HTTP, lingering(pid, None));
+    rig.start(now);
+    assert!(
+        matches!(rig.state(), ServiceState::Failed(_)),
+        "{:?}",
+        rig.state()
+    );
+}

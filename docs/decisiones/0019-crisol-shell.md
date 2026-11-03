@@ -45,7 +45,9 @@ El perfil de Crisol vuelve a poner sus carpetas primero (por si el del usuario m
 
 ### 4. Qué terminal se abre
 
-La misma desde la que se llama, detectada por el proceso padre (como `crisol env`). `--shell pwsh|powershell|cmd|bash` la fuerza. Si el padre no es una de las cuatro soportadas, se usa pwsh, luego powershell y luego cmd, y se dice cuál se abrió. Git Bash se busca por la instalación de Git (`git.exe` en el `PATH` → `..\bin\bash.exe`), nunca por `git-bash.exe`, que abre otra ventana.
+La misma desde la que se llama, detectada por el proceso padre (como `crisol env`). `--shell pwsh|powershell|cmd|bash` la fuerza. Si el padre no es una de las cuatro soportadas, se usa pwsh, luego powershell y luego cmd, y se dice cuál se abrió.
+
+**Ampliación (2026-11-03, revisión de F13.4):** la terminal elegida en `[shell] terminal` (ADR-0026, «Servicios y sitios») entra **después** de la terminal de origen: el orden es `--shell`, la terminal desde la que se escribió `crisol`, la elegida y la primera instalada. `crisol shell` escrito en Git Bash abre un Git Bash, no otro shell dentro de él. La elegida decide cuando no hay terminal de origen: la GUI (que abre una ventana nueva) o un programa que no es una terminal (el ejecutor de tareas de un editor). Git Bash se busca por la instalación de Git (`git.exe` en el `PATH` → `..\bin\bash.exe`), nunca por `git-bash.exe`, que abre otra ventana.
 
 **Terminales soportadas:** cmd, Windows PowerShell 5.1, PowerShell 7 y Git Bash. Otra cualquiera (nushell, fish, WSL) recibe un error que lo dice y propone `--shell`.
 

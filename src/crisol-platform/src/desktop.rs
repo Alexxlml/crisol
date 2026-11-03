@@ -61,7 +61,7 @@ mod real {
     use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::UI::Shell::{
         FileOpenDialog, IFileOpenDialog, ShellExecuteW, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
@@ -110,16 +110,25 @@ mod real {
                 ));
             }
             let (verb, url) = (wide("open"), wide(url));
-            // SAFETY: both texts are NUL-terminated and outlive the call.
+            // SAFETY: COM is initialized on this thread for the length of the call, as
+            // `ShellExecuteW` asks (it may hand the address to a shell extension); both texts are
+            // NUL-terminated and outlive the call.
             let result = unsafe {
-                ShellExecuteW(
+                // `S_FALSE` (already initialized) is balanced too; a different mode is not ours.
+                let initialized =
+                    CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+                let result = ShellExecuteW(
                     None,
                     PCWSTR(verb.as_ptr()),
                     PCWSTR(url.as_ptr()),
                     PCWSTR::null(),
                     PCWSTR::null(),
                     SW_SHOWNORMAL,
-                )
+                );
+                if initialized {
+                    CoUninitialize();
+                }
+                result
             };
             // Values above 32 mean it worked (the old `HINSTANCE` convention).
             if result.0 as usize > 32 {
@@ -128,6 +137,7 @@ mod real {
                 Err(io::Error::other("Windows could not open the browser"))
             }
         }
+
         fn pick_folder(&self, owner: Option<isize>) -> io::Result<Option<PathBuf>> {
             pick(owner).map_err(io::Error::other)
         }

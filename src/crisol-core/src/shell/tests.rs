@@ -324,31 +324,36 @@ fn the_clients_of_the_installed_databases_go_after_the_shims_the_enabled_first()
 }
 
 #[test]
-fn the_terminal_the_user_chose_beats_the_parent_but_not_what_was_asked() {
+fn the_terminal_it_was_typed_in_beats_the_chosen_one_and_what_was_asked_beats_both() {
     let all = |t: Terminal| Some(PathBuf::from(format!(r"C:\{}.exe", t.name())));
     let bash = Some(r"C:\Program Files\Git\usr\bin\bash.exe");
+    // Typed in Git Bash: a Git Bash, not a pwsh inside it.
     let (t, _, note) = choose_terminal(None, Some(Terminal::Pwsh), bash, &all).unwrap();
-    assert_eq!((t, note), (Terminal::Pwsh, None));
+    assert_eq!((t, note), (Terminal::Bash, None));
     let (t, _, _) = choose_terminal(Some(Terminal::Cmd), Some(Terminal::Pwsh), bash, &all).unwrap();
     assert_eq!(t, Terminal::Cmd);
+    // Not started from a terminal (the GUI, an editor): the chosen one.
+    let (t, _, note) = choose_terminal(None, Some(Terminal::Pwsh), None, &all).unwrap();
+    assert_eq!((t, note), (Terminal::Pwsh, None));
+    let (t, _, note) = choose_terminal(None, Some(Terminal::Cmd), Some("Code.exe"), &all).unwrap();
+    assert_eq!((t, note), (Terminal::Cmd, None));
 }
 
 #[test]
 fn a_chosen_terminal_that_is_gone_is_said_and_the_automatic_one_opens() {
     let no_pwsh = |t: Terminal| (t != Terminal::Pwsh).then(|| PathBuf::from(r"C:\t.exe"));
-    // From a terminal: that one opens.
+    // From a terminal: that one opens, and the choice is not even looked at.
     let (t, _, note) =
         choose_terminal(None, Some(Terminal::Pwsh), Some("cmd.exe"), &no_pwsh).unwrap();
-    assert_eq!(t, Terminal::Cmd);
-    let note = note.unwrap();
-    assert!(
-        note.contains("pwsh") && note.contains("opening cmd"),
-        "{note}"
-    );
-    // From nowhere: the first installed.
+    assert_eq!((t, note), (Terminal::Cmd, None));
+    // From nowhere: the first installed, and why.
     let (t, _, note) = choose_terminal(None, Some(Terminal::Pwsh), None, &no_pwsh).unwrap();
     assert_eq!(t, Terminal::WindowsPowerShell);
-    assert!(note.unwrap().contains("pwsh"));
+    let note = note.unwrap();
+    assert!(
+        note.contains("pwsh") && note.contains("opening powershell"),
+        "{note}"
+    );
 }
 
 #[test]

@@ -19,6 +19,11 @@
 //!
 //! - **A busy port is never freed by force.** Before starting, every declared port is
 //!   checked; if one is taken or reserved the service fails with the owner's pid and name.
+//! - **Its own port is waited for.** Windows can keep listing a listener for a moment after
+//!   its process is gone (a restart is a stop followed at once by a start). If every owner of
+//!   a busy port is a process of this service's last run, or one Windows cannot name (it has
+//!   exited), the service stays `Starting` and checks again on each tick for up to
+//!   `port_release_wait`; then it fails as above. A port held by another program fails at once.
 //! - **Healthy means ready**, not merely started: the ports listen, or a probe command exits
 //!   with 0. A process that dies before that is a startup failure and is **not** retried
 //!   (it is almost always a configuration error); the watchdog only covers a service that
@@ -74,6 +79,9 @@ pub struct LifecyclePolicy {
     /// recycled, it failed to run; the exit counts as a crash. Without this a worker that
     /// always exits at once would be relaunched forever without being counted.
     pub min_recycle_uptime: Duration,
+    /// How long a start waits for a port still listed as held by this service's last run
+    /// (or by a process that has exited) to be released. Zero fails at once.
+    pub port_release_wait: Duration,
 }
 
 impl Default for LifecyclePolicy {
@@ -88,6 +96,7 @@ impl Default for LifecyclePolicy {
             max_crashes: 3,
             crash_window: Duration::from_secs(60),
             min_recycle_uptime: Duration::from_millis(250),
+            port_release_wait: Duration::from_secs(3),
         }
     }
 }
@@ -444,6 +453,11 @@ pub struct Service {
     stopping: Option<Stopping>,
     /// Pool only: the last [`ServiceEvent::Degraded`] has not been followed by a recovery.
     degraded: bool,
+    /// The pids of the last run, from its end until the next run starts: a busy port they
+    /// still hold is waited for.
+    released: Vec<u32>,
+    /// `Starting` without a run: a port of the last run is not released yet. Until when.
+    port_wait: Option<Instant>,
     events: Vec<ServiceEvent>,
 }
 
@@ -485,6 +499,8 @@ impl Service {
             crashes: VecDeque::new(),
             stopping: None,
             degraded: false,
+            released: Vec::new(),
+            port_wait: None,
             events: Vec::new(),
         }
     }
@@ -538,6 +554,7 @@ impl Service {
     pub fn abort(&mut self) {
         self.teardown();
         self.restart_at = None;
+        self.port_wait = None;
         self.set_state(ServiceState::Stopped);
     }
 
@@ -555,8 +572,37 @@ impl Service {
     // ---- start ----------------------------------------------------------------------
 
     fn launch(&mut self, now: Instant) {
-        if let Err(reason) = self.try_launch(now) {
-            self.fail(reason);
+        match self.try_launch(now) {
+            Ok(()) => {}
+            Err(reason) if self.may_be_released_soon(&reason) => {
+                self.port_wait = Some(now + self.spec.policy.port_release_wait);
+                self.set_state(ServiceState::Starting);
+            }
+            Err(reason) => self.fail(reason),
+        }
+    }
+
+    /// Whether `reason` is a port that only the last run of this service still holds: every
+    /// owner is one of its pids or a process Windows cannot name (it has exited), or the port
+    /// is held without a listener to show.
+    fn may_be_released_soon(&self, reason: &FailureReason) -> bool {
+        let FailureReason::PortBusy { owners, .. } = reason else {
+            return false;
+        };
+        !self.spec.policy.port_release_wait.is_zero()
+            && !self.released.is_empty()
+            && owners
+                .iter()
+                .all(|o| o.name.is_none() || self.released.contains(&o.pid))
+    }
+
+    /// `Starting` while a port of the last run is released: tries again, and fails with the
+    /// busy port once the wait is over or someone else holds it.
+    fn tick_port_wait(&mut self, now: Instant, until: Instant) {
+        match self.try_launch(now) {
+            Ok(()) => self.port_wait = None,
+            Err(reason) if now < until && self.may_be_released_soon(&reason) => {}
+            Err(reason) => self.fail(reason),
         }
     }
 
@@ -595,6 +641,7 @@ impl Service {
         });
         self.started = Some(now);
         self.next_probe = Some(now + self.spec.policy.probe_interval);
+        self.released.clear();
         self.set_state(ServiceState::Starting);
         Ok(())
     }
@@ -615,6 +662,10 @@ impl Service {
     }
 
     fn tick_starting(&mut self, now: Instant) {
+        if let Some(until) = self.port_wait {
+            self.tick_port_wait(now, until);
+            return;
+        }
         if let Some(at) = self.restart_at {
             if now >= at {
                 self.restart_at = None;
@@ -924,6 +975,7 @@ impl Service {
 
     fn begin_stop(&mut self, now: Instant) {
         self.restart_at = None;
+        self.port_wait = None;
         self.cleanup_probe();
         if self.run.is_none() {
             // Waiting for a restart: nothing is running.
@@ -1049,6 +1101,12 @@ impl Service {
             }
         }
         if let Some(run) = self.run.take() {
+            // Before the group is closed: the supervisor forgets its processes with it.
+            self.released = run
+                .processes
+                .iter()
+                .filter_map(|process| self.supervisor.pid(*process).ok())
+                .collect();
             let _ = self.supervisor.kill_group(run.group);
             let _ = self.supervisor.close_group(run.group);
         }
@@ -1058,6 +1116,7 @@ impl Service {
     fn fail(&mut self, reason: FailureReason) {
         self.teardown();
         self.restart_at = None;
+        self.port_wait = None;
         self.set_state(ServiceState::Failed(reason));
     }
 

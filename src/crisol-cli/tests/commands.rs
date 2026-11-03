@@ -1364,10 +1364,9 @@ fn shell_opens_the_terminal_it_was_called_from_with_crisol_first_and_gives_back_
 }
 
 #[test]
-fn shell_opens_the_terminal_the_user_chose_in_the_configuration_unless_one_is_asked() {
+fn shell_opens_the_terminal_it_was_typed_in_and_the_chosen_one_only_from_elsewhere() {
     let mut env = Env::new(&[]);
     env.ok(&["shims", "install"]);
-    env.parent_program = Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_owned());
     let config = fs::read_to_string(env.paths.config_file()).unwrap();
     fs::write(
         env.paths.config_file(),
@@ -1375,11 +1374,17 @@ fn shell_opens_the_terminal_the_user_chose_in_the_configuration_unless_one_is_as
     )
     .unwrap();
 
-    // The chosen one wins over the terminal this was typed in...
+    // The terminal this was typed in wins over the chosen one: no cmd inside a pwsh...
+    env.parent_program = Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_owned());
+    assert_eq!(env.run(&["shell"]).0, 5);
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.program, std::path::Path::new(r"C:\fake\pwsh.exe"));
+    assert_eq!(launch.cwd, None, "`crisol shell` opens where it is called");
+    // ...the chosen one is for a program that is not a terminal (an editor's task runner)...
+    env.parent_program = Some(r"C:\Program Files\Microsoft VS Code\Code.exe".to_owned());
     assert_eq!(env.run(&["shell"]).0, 5);
     let launch = env.terminals.lock().unwrap().pop().unwrap();
     assert_eq!(launch.program, std::path::Path::new(r"C:\fake\cmd.exe"));
-    assert_eq!(launch.cwd, None, "`crisol shell` opens where it is called");
     // ...and `--shell` wins over it.
     assert_eq!(env.run(&["shell", "--shell", "bash"]).0, 5);
     let launch = env.terminals.lock().unwrap().pop().unwrap();

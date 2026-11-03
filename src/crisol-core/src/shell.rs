@@ -190,9 +190,13 @@ pub fn shims_installed(paths: &CrisolPaths) -> bool {
         .all(|c| dir.join(shim_file_name(c)).is_file())
 }
 
-/// The terminal to open: the one asked for, else the one the user chose in `[shell] terminal`
-/// (`preferred`), else the one `crisol` was started from, else the first of
+/// The terminal to open: the one asked for, else the one `crisol` was started from (`parent`),
+/// else the one the user chose in `[shell] terminal` (`preferred`), else the first of
 /// [`Terminal::FALLBACK`] that is installed. `find` says where a terminal's program is.
+///
+/// The terminal it was typed in wins over the chosen one: `crisol shell` typed in Git Bash
+/// gives a Git Bash, not another shell inside it. The choice is for a program that was not
+/// started from a terminal, such as the GUI (which passes no `parent`).
 ///
 /// The note, if any, says why another one was opened. A `preferred` terminal that is no longer
 /// installed is not an error: it is said, and the automatic choice goes on (nothing is
@@ -207,6 +211,10 @@ pub fn choose_terminal(
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
         return Ok((terminal, program, None));
     }
+    if let Some(terminal) = parent.and_then(Terminal::from_program) {
+        let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
+        return Ok((terminal, program, None));
+    }
     let mut lost = None;
     if let Some(terminal) = preferred {
         match find(terminal) {
@@ -218,11 +226,6 @@ pub fn choose_terminal(
                 ));
             }
         }
-    }
-    if let Some(terminal) = parent.and_then(Terminal::from_program) {
-        let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
-        let note = lost.map(|lost| format!("{lost}; opening {}", terminal.name()));
-        return Ok((terminal, program, note));
     }
     let (terminal, program) = Terminal::FALLBACK
         .into_iter()
