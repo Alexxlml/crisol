@@ -77,6 +77,15 @@ impl Terminal {
         }
     }
 
+    /// Every terminal, in the order a list shows them.
+    pub const ALL: [Self; 4] = [Self::Pwsh, Self::WindowsPowerShell, Self::Cmd, Self::Bash];
+
+    /// The terminal a name is, as [`name`](Self::name) writes it (`[shell] terminal`).
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.name() == name)
+    }
+
     /// How it is called in messages and in `--shell`.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -181,27 +190,69 @@ pub fn shims_installed(paths: &CrisolPaths) -> bool {
         .all(|c| dir.join(shim_file_name(c)).is_file())
 }
 
-/// The terminal to open: the one asked for, else the one `crisol` was started from, else the
-/// first of [`Terminal::FALLBACK`] that is installed. `find` says where a terminal's program is.
-/// The note, if any, says why another one was opened.
+/// The terminal to open: the one asked for, else the one the user chose in `[shell] terminal`
+/// (`preferred`), else the one `crisol` was started from, else the first of
+/// [`Terminal::FALLBACK`] that is installed. `find` says where a terminal's program is.
+///
+/// The note, if any, says why another one was opened. A `preferred` terminal that is no longer
+/// installed is not an error: it is said, and the automatic choice goes on (nothing is
+/// rewritten).
 pub fn choose_terminal(
     asked: Option<Terminal>,
+    preferred: Option<Terminal>,
     parent: Option<&str>,
     find: &dyn Fn(Terminal) -> Option<PathBuf>,
 ) -> Result<(Terminal, PathBuf, Option<String>), ShellError> {
-    if let Some(terminal) = asked.or_else(|| parent.and_then(Terminal::from_program)) {
+    if let Some(terminal) = asked {
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
         return Ok((terminal, program, None));
+    }
+    let mut lost = None;
+    if let Some(terminal) = preferred {
+        match find(terminal) {
+            Some(program) => return Ok((terminal, program, None)),
+            None => {
+                lost = Some(format!(
+                    "{} (`[shell] terminal` in crisol.toml) was not found on this computer",
+                    terminal.name()
+                ));
+            }
+        }
+    }
+    if let Some(terminal) = parent.and_then(Terminal::from_program) {
+        let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
+        let note = lost.map(|lost| format!("{lost}; opening {}", terminal.name()));
+        return Ok((terminal, program, note));
     }
     let (terminal, program) = Terminal::FALLBACK
         .into_iter()
         .find_map(|t| find(t).map(|p| (t, p)))
         .ok_or(ShellError::NoTerminal)?;
-    let note = format!(
-        "opening {}: the program that started crisol is not one of the terminals it supports (cmd, PowerShell, Git Bash); `--shell` chooses one",
-        terminal.name()
-    );
+    let note = match lost {
+        Some(lost) => format!("{lost}; opening {}", terminal.name()),
+        None => format!(
+            "opening {}: the program that started crisol is not one of the terminals it supports (cmd, PowerShell, Git Bash); `--shell` chooses one",
+            terminal.name()
+        ),
+    };
     Ok((terminal, program, Some(note)))
+}
+
+/// Writes the terminal the user chose to `[shell] terminal` of `crisol.toml`, or takes the key
+/// out for `None` (automatic). Only a person's explicit choice calls this; it goes through
+/// `toml_edit`, so comments and order stay. Whether the file changed is returned.
+pub fn save_terminal_preference(
+    paths: &CrisolPaths,
+    terminal: Option<Terminal>,
+) -> Result<bool, crate::edit::EditError> {
+    let mut editor = crate::edit::TomlEditor::open_config(paths)?;
+    match terminal {
+        Some(terminal) => editor.set(&["shell", "terminal"], terminal.name())?,
+        None => {
+            editor.remove(&["shell", "terminal"])?;
+        }
+    }
+    editor.save()
 }
 
 /// What the platform starts.
@@ -215,6 +266,8 @@ pub struct ShellLaunch {
     pub set: Vec<(OsString, OsString)>,
     /// Variables to take out.
     pub remove: Vec<OsString>,
+    /// The folder the terminal opens in; `None` keeps the one of the process that starts it.
+    pub cwd: Option<PathBuf>,
 }
 
 /// Everything [`plan_shell`] needs.
@@ -232,6 +285,8 @@ pub struct ShellInput<'a> {
     pub front: &'a [PathBuf],
     /// The environment of `crisol` now.
     pub env: &'a [(OsString, OsString)],
+    /// The folder the terminal opens in (`None`: where the process that starts it is).
+    pub cwd: Option<&'a Path>,
 }
 
 /// Plans the terminal and writes its profile (cmd and Git Bash read it from `etc/shell/`;
@@ -244,6 +299,7 @@ pub fn plan_shell(input: &ShellInput<'_>) -> Result<ShellLaunch, ShellError> {
         clean,
         front,
         env,
+        cwd,
     } = *input;
     let var = |name: &str| {
         env.iter()
@@ -325,6 +381,7 @@ pub fn plan_shell(input: &ShellInput<'_>) -> Result<ShellLaunch, ShellError> {
         args,
         set,
         remove,
+        cwd: cwd.map(Path::to_path_buf),
     })
 }
 

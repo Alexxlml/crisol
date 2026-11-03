@@ -19,7 +19,9 @@ mod language;
 mod link;
 mod live;
 mod settings;
+mod sites;
 mod summary;
+mod terminal;
 #[cfg(windows)]
 mod windows;
 
@@ -28,6 +30,16 @@ pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};
 pub use settings::GuiSettings;
-pub use summary::{metal_of, LeaveAction, Overall, ServiceRow, Summary, Toggle};
+pub use sites::{
+    fetch_sites, open_site, parked_rows, site_actions, site_url, sites_view, suggested_site_name,
+    Act, ParkedRow, SiteAction, SiteRow, SitesView,
+};
+pub use summary::{
+    enabled_in, metal_of, row_actions, LeaveAction, Overall, RowAction, ServiceRow, Summary, Toggle,
+};
+pub use terminal::{
+    choose_terminal, clean_env, launch_terminal, open_terminal, projects_folder, start_folder,
+    terminal_options, Opened, Place, TerminalOption, TerminalOptions,
+};
 #[cfg(windows)]
 pub use windows::WindowsError;

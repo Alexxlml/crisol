@@ -8,7 +8,8 @@ use crisol_core::programs::{is_winget_package, winget_package_folders};
 use crisol_core::trust::TrustStore;
 use crisol_platform::{
     connect_to_daemon, default_deps, pipe_name_for_user, resolve_paths, spawn_daemon,
-    RegistryAutostart, RegistryUserPath, WindowsPrivateDirs, WindowsSetup, WindowsTrustStore,
+    RegistryAutostart, RegistryUserPath, WindowsDesktop, WindowsPrivateDirs, WindowsSetup,
+    WindowsTrustStore,
 };
 
 use crate::context::Context;
@@ -100,6 +101,7 @@ impl Context {
                 )),
             }),
             daemon_wait: Duration::from_secs(15),
+            desktop: Arc::new(WindowsDesktop),
         })
     }
 }

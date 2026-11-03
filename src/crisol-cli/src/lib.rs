@@ -21,7 +21,7 @@ use crisol_core::autostart::{AutostartChange, AutostartState};
 use crisol_core::config::Config;
 use crisol_core::onboarding;
 use crisol_core::programs::program_error;
-use crisol_core::shell::{self, ShellLaunch, Terminal};
+use crisol_core::shell::{self, Terminal};
 use crisol_core::shimsetup::{self, Shell, ShimsError};
 use crisol_core::teardown;
 use crisol_core::trust::{
@@ -40,11 +40,6 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: the arguments are wrong (the same as `clap` uses).
 pub const EXIT_USAGE: u8 = 2;
-
-/// Where a terminal's program is, given the program that started `crisol`.
-pub type FindTerminal = Box<dyn Fn(Terminal, Option<&str>) -> Option<PathBuf>>;
-/// Starts a terminal and gives its exit code.
-pub type RunTerminal = Box<dyn Fn(&ShellLaunch) -> std::io::Result<i32>>;
 
 /// Reads a variable of the environment of the process.
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String>>;
@@ -71,10 +66,6 @@ pub struct Context {
     pub parent_program: Option<String>,
     /// All the variables of the environment of this process, for `crisol shell`.
     pub env_vars: Box<dyn Fn() -> Vec<(OsString, OsString)>>,
-    /// Where a terminal's program is (given the program that started this one).
-    pub find_terminal: FindTerminal,
-    /// Starts a terminal in this window, waits and gives its exit code.
-    pub run_terminal: RunTerminal,
     /// Asks before something that cannot be undone (`uninstall --all`).
     pub confirm: Confirm,
     /// Asks before `setup` changes anything.
@@ -412,17 +403,20 @@ impl Session<'_> {
             TerminalArg::Cmd => Terminal::Cmd,
             TerminalArg::Bash => Terminal::Bash,
         });
-        let parent = self.context.parent_program.as_deref();
-        let find = |t: Terminal| (self.context.find_terminal)(t, parent);
-        let (terminal, program, note) = match shell::choose_terminal(asked, parent, &find) {
-            Ok(chosen) => chosen,
-            Err(error) => return self.shell_error(&error),
-        };
         let config = match Config::load_from(&self.context.client.paths) {
             Ok(loaded) => loaded.config,
             Err(error) => {
                 return self.fail(&RpcError::new(ErrorCode::InvalidParams, error.to_string()))
             }
+        };
+        let parent = self.context.parent_program.as_deref();
+        let desktop = std::sync::Arc::clone(&self.context.client.desktop);
+        let find = |t: Terminal| desktop.find_terminal(t, parent);
+        // What was typed, then `[shell] terminal`, then the terminal this was typed in.
+        let chosen = shell::choose_terminal(asked, config.preferred_terminal(), parent, &find);
+        let (terminal, program, note) = match chosen {
+            Ok(chosen) => chosen,
+            Err(error) => return self.shell_error(&error),
         };
         let front = shell::front_folders(&self.context.client.paths, &config);
         let env = (self.context.env_vars)();
@@ -433,6 +427,7 @@ impl Session<'_> {
             clean,
             front: &front,
             env: &env,
+            cwd: None,
         }) {
             Ok(launch) => launch,
             Err(error) => return self.shell_error(&error),
@@ -440,7 +435,7 @@ impl Session<'_> {
         if let Some(note) = note {
             let _ = writeln!(self.err, "crisol: {note}");
         }
-        match (self.context.run_terminal)(&launch) {
+        match desktop.run_terminal(&launch) {
             Ok(code) => u8::try_from(code).unwrap_or(EXIT_FAILED),
             Err(error) => self.fail(&RpcError::new(
                 ErrorCode::Io,

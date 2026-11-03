@@ -1,0 +1,270 @@
+//! The terminal of Crisol, opened from a window (ADR-0026 §3.4, F13.4).
+//!
+//! It is what `crisol shell` does (ADR-0019), in a window of its own: the GUI has no console to
+//! hand over. Which terminal, where it opens and what it carries is decided here; the GUI only
+//! draws the list and sends the click.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use crisol_core::config::Config;
+use crisol_core::shell::{self, ShellError, Terminal};
+use crisol_core::CrisolPaths;
+use crisol_platform::Desktop;
+use crisol_protocol::{Call, ErrorCode, Reply, RpcError};
+use serde::Serialize;
+
+use crate::connect;
+use crate::context::Context;
+
+/// One terminal of the list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TerminalOption {
+    /// How `crisol.toml` writes it (`pwsh`, `powershell`, `cmd`, `bash`).
+    pub name: &'static str,
+    /// What the list shows. These are product names, so they are not translated.
+    pub label: &'static str,
+    /// Whether this computer has it.
+    pub found: bool,
+}
+
+/// The terminals of this computer and the one the user chose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TerminalOptions {
+    /// Every terminal Crisol can open, the ones this computer has marked.
+    pub options: Vec<TerminalOption>,
+    /// The one in `[shell] terminal`, if the user chose one.
+    pub chosen: Option<&'static str>,
+    /// The one a click on "open terminal" will open: the chosen one if it is there, else the
+    /// first of the automatic order. `None` when this computer has none.
+    pub effective: Option<&'static str>,
+    /// Why `effective` is not the chosen one, as the core says it.
+    pub warning: Option<String>,
+}
+
+/// What a terminal is called in a list.
+fn label_of(terminal: Terminal) -> &'static str {
+    match terminal {
+        Terminal::Pwsh => "PowerShell 7",
+        Terminal::WindowsPowerShell => "Windows PowerShell 5.1",
+        Terminal::Cmd => "Command Prompt (cmd)",
+        Terminal::Bash => "Git Bash",
+    }
+}
+
+/// The list of terminals for the settings: what this computer has, and what the user chose.
+///
+/// Windows Terminal is not a choice of its own: it hosts these shells, and a console window the
+/// system opens goes to it when the user made it the default terminal of Windows.
+#[must_use]
+pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptions {
+    let find = |t: Terminal| desktop.find_terminal(t, None);
+    let chosen = config.preferred_terminal();
+    let (effective, warning) = match shell::choose_terminal(None, chosen, None, &find) {
+        Ok((terminal, _, note)) => (Some(terminal.name()), note.filter(|_| chosen.is_some())),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    TerminalOptions {
+        options: Terminal::ALL
+            .into_iter()
+            .map(|terminal| TerminalOption {
+                name: terminal.name(),
+                label: label_of(terminal),
+                found: find(terminal).is_some(),
+            })
+            .collect(),
+        chosen: chosen.map(Terminal::name),
+        effective,
+        warning,
+    }
+}
+
+/// Saves the terminal the user chose (`None`: automatic) in `[shell] terminal` of
+/// `crisol.toml`, keeping its comments and order. It is the only thing here that writes, and
+/// only because a person picked it. `name` is what [`TerminalOption::name`] says.
+pub fn choose_terminal(paths: &CrisolPaths, name: Option<&str>) -> Result<(), RpcError> {
+    let terminal = match name {
+        Some(name) => Some(Terminal::from_name(name).ok_or_else(|| {
+            RpcError::new(
+                ErrorCode::InvalidParams,
+                format!("`{name}` is not a terminal; use pwsh, powershell, cmd or bash"),
+            )
+        })?),
+        None => None,
+    };
+    shell::save_terminal_preference(paths, terminal)
+        .map(drop)
+        .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))
+}
+
+/// Where the terminal opens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(tag = "where", content = "site", rename_all = "snake_case")]
+pub enum Place {
+    /// In the folder of a project: the site's name.
+    Site(String),
+    /// Where the projects are (the general button).
+    Projects,
+}
+
+/// The folder of the projects: the first parked folder, else `www` in the home. The one that
+/// does not exist is skipped, and the home is the last resort, so a terminal always opens.
+#[must_use]
+pub fn projects_folder(paths: &CrisolPaths, config: &Config) -> PathBuf {
+    config
+        .parked_dirs(paths)
+        .into_iter()
+        .chain([paths.home().join("www")])
+        .find(|dir| dir.is_dir())
+        .unwrap_or_else(|| paths.home().to_path_buf())
+}
+
+/// The folder a terminal opens in. `sites` is `(name, root)` of every site.
+///
+/// A site that is not there (it was unlinked meanwhile) is an error and not a silent fallback:
+/// the click was about that project.
+pub fn start_folder(
+    place: &Place,
+    sites: &[(String, PathBuf)],
+    paths: &CrisolPaths,
+    config: &Config,
+) -> Result<PathBuf, RpcError> {
+    match place {
+        Place::Projects => Ok(projects_folder(paths, config)),
+        Place::Site(name) => {
+            let root = sites
+                .iter()
+                .find(|(site, _)| site == name)
+                .map(|(_, root)| root)
+                .ok_or_else(|| {
+                    RpcError::new(
+                        ErrorCode::NotFound,
+                        format!("there is no site called `{name}`; `crisol sites` lists them"),
+                    )
+                })?;
+            if root.is_dir() {
+                Ok(root.clone())
+            } else {
+                Err(RpcError::new(
+                    ErrorCode::NotFound,
+                    format!(
+                        "the folder of `{name}` ({}) is not there any more",
+                        root.display()
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+/// The environment the terminal is built from: the one of this process, without the mark of a
+/// `crisol shell` (this is a new window, not a terminal inside another).
+#[must_use]
+pub fn clean_env(
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(shell::INSIDE))
+        .collect()
+}
+
+/// What opening a terminal did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Opened {
+    /// The terminal that opened.
+    pub terminal: &'static str,
+    /// The folder it opened in.
+    pub folder: PathBuf,
+    /// Why it is not the one the user chose, when that is so.
+    pub note: Option<String>,
+}
+
+fn shell_error(error: &ShellError) -> RpcError {
+    let code = match error {
+        ShellError::AlreadyInside => ErrorCode::Conflict,
+        ShellError::NoShims | ShellError::NotFound(_) | ShellError::NoTerminal => {
+            ErrorCode::NotAvailable
+        }
+        ShellError::Unusable(_) => ErrorCode::InvalidParams,
+        ShellError::Io(_) => ErrorCode::Io,
+    };
+    let mut rpc = RpcError::new(code, error.to_string());
+    if matches!(error, ShellError::NoShims) {
+        rpc.fix = Some("crisol shims install".to_owned());
+    }
+    rpc
+}
+
+/// The sites as `(name, root)`, from the daemon (or from the files when there is none).
+fn site_roots(context: &Context) -> Result<Vec<(String, PathBuf)>, RpcError> {
+    match connect::call(context, &Call::Sites, &mut |_| {})? {
+        Reply::Sites { sites, .. } => Ok(sites
+            .into_iter()
+            .map(|site| (site.name, PathBuf::from(site.root)))
+            .collect()),
+        other => Err(RpcError::new(
+            ErrorCode::Internal,
+            format!("unexpected answer to `sites`: {other:?}"),
+        )),
+    }
+}
+
+/// Opens a terminal of Crisol in a new window: the shims in front, the variables of other
+/// suites out, the clients of the databases at hand and the user's profile respected, with the
+/// terminal the user chose (or the automatic one) and the folder of `place`.
+///
+/// `env` is the environment to build it from ([`clean_env`] of this process's).
+pub fn open_terminal(
+    context: &Context,
+    env: &[(OsString, OsString)],
+    place: &Place,
+) -> Result<Opened, RpcError> {
+    let sites = match place {
+        Place::Site(_) => site_roots(context)?,
+        Place::Projects => Vec::new(),
+    };
+    launch_terminal(&*context.desktop, &context.paths, env, place, &sites)
+}
+
+/// [`open_terminal`] once the sites are known: `sites` is `(name, root)` of each.
+pub fn launch_terminal(
+    desktop: &dyn Desktop,
+    paths: &CrisolPaths,
+    env: &[(OsString, OsString)],
+    place: &Place,
+    sites: &[(String, PathBuf)],
+) -> Result<Opened, RpcError> {
+    let config = Config::load_from(paths)
+        .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?
+        .config;
+    let folder = start_folder(place, sites, paths, &config)?;
+    let find = |t: Terminal| desktop.find_terminal(t, None);
+    let (terminal, program, note) =
+        shell::choose_terminal(None, config.preferred_terminal(), None, &find)
+            .map_err(|e| shell_error(&e))?;
+    let front = shell::front_folders(paths, &config);
+    let launch = shell::plan_shell(&shell::ShellInput {
+        paths,
+        terminal,
+        program: &program,
+        clean: false,
+        front: &front,
+        env,
+        cwd: Some(&folder),
+    })
+    .map_err(|e| shell_error(&e))?;
+    desktop.spawn_terminal(&launch).map_err(|e| {
+        RpcError::new(
+            ErrorCode::Io,
+            format!("cannot start {}: {e}", program.display()),
+        )
+    })?;
+    Ok(Opened {
+        terminal: terminal.name(),
+        folder,
+        note: note.filter(|_| config.preferred_terminal().is_some()),
+    })
+}
+
+#[cfg(test)]
+mod tests;

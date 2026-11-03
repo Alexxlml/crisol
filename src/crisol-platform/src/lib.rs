@@ -10,6 +10,7 @@ mod console;
 mod db_admin;
 #[cfg(windows)]
 mod defender;
+mod desktop;
 #[cfg(windows)]
 mod diagnose;
 #[cfg(windows)]
@@ -59,6 +60,9 @@ pub use console::survive_ctrl_c;
 pub use db_admin::WindowsDbAdmin;
 #[cfg(windows)]
 pub use defender::DefenderExclusions;
+#[cfg(windows)]
+pub use desktop::WindowsDesktop;
+pub use desktop::{is_web_address, Desktop};
 #[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]

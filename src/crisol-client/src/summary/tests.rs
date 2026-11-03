@@ -167,7 +167,14 @@ fn the_summary_json() {
             "toggle": "stop_all",
             "daemon_version": "0.1.0",
             "refusal": null,
-            "rows": [{"name": "nginx", "state": "running", "detail": null, "metal": "nginx"}],
+            "rows": [{
+                "name": "nginx",
+                "state": "running",
+                "detail": null,
+                "metal": "nginx",
+                "enabled": null,
+                "actions": ["stop", "restart"],
+            }],
         })
     );
     let none = serde_json::to_value(LiveState::default().summary()).expect("json");
@@ -254,4 +261,90 @@ fn the_rows_keep_the_order_and_the_words_of_the_daemon() {
     assert_eq!(rows[0].metal, "php");
     assert_eq!(rows[1].name, "nginx");
     assert_eq!(rows[1].detail, None);
+}
+
+// ---- the buttons of a row (F13.4) ---------------------------------------------------------------
+
+#[test]
+fn a_row_offers_what_makes_sense_in_its_state() {
+    use RowAction::{Restart, Start, Stop};
+    assert_eq!(row_actions("running", None), [Stop, Restart]);
+    assert_eq!(row_actions("stopped", None), [Start]);
+    // A failed one is tried again with the same button.
+    assert_eq!(row_actions("failed", None), [Start]);
+    // While it changes there is nothing to press, and a state from a newer daemon is the same.
+    assert_eq!(row_actions("starting", None), []);
+    assert_eq!(row_actions("stopping", None), []);
+    assert_eq!(row_actions("paused", None), []);
+}
+
+#[test]
+fn a_data_service_also_offers_the_opposite_of_its_switch() {
+    use RowAction::{Disable, Enable, Restart, Start, Stop};
+    assert_eq!(row_actions("stopped", Some(false)), [Start, Enable]);
+    assert_eq!(row_actions("stopped", Some(true)), [Start, Disable]);
+    assert_eq!(row_actions("running", Some(true)), [Stop, Restart, Disable]);
+    // The switch can be flipped even while it changes state.
+    assert_eq!(row_actions("starting", Some(true)), [Disable]);
+}
+
+#[test]
+fn each_button_makes_the_call_the_cli_command_makes() {
+    let service = Some("mysql".to_owned());
+    assert_eq!(
+        RowAction::Start.call("mysql"),
+        Call::Start {
+            service: service.clone()
+        }
+    );
+    assert_eq!(
+        RowAction::Stop.call("mysql"),
+        Call::Stop {
+            service: service.clone()
+        }
+    );
+    assert_eq!(RowAction::Restart.call("mysql"), Call::Restart { service });
+    assert_eq!(
+        RowAction::Enable.call("mysql"),
+        Call::Enable {
+            service: "mysql".to_owned()
+        }
+    );
+    assert_eq!(
+        RowAction::Disable.call("mysql"),
+        Call::Disable {
+            service: "mysql".to_owned()
+        }
+    );
+}
+
+#[test]
+fn the_page_names_the_buttons_in_snake_case() {
+    let action: RowAction = serde_json::from_str("\"restart\"").expect("an action");
+    assert_eq!(action, RowAction::Restart);
+    assert!(serde_json::from_str::<RowAction>("\"reboot\"").is_err());
+}
+
+#[test]
+fn only_the_data_services_have_a_switch_and_it_follows_crisol_toml() {
+    let config = Config::parse("[services.mysql]\nenabled = true\n")
+        .expect("valid")
+        .config;
+    let enabled = enabled_in(&config);
+    assert_eq!(enabled("mysql"), Some(true));
+    assert_eq!(enabled("redis"), Some(false));
+    assert_eq!(enabled("nginx"), None);
+    assert_eq!(enabled("php-8.4.26"), None);
+
+    let summary = connected(&[("mysql", "stopped"), ("nginx", "running")]).summary_for(&enabled);
+    assert_eq!(summary.rows[0].enabled, Some(true));
+    assert_eq!(
+        summary.rows[0].actions,
+        [RowAction::Start, RowAction::Disable]
+    );
+    assert_eq!(summary.rows[1].enabled, None);
+    // Without the configuration nobody claims to know.
+    let plain = connected(&[("mysql", "stopped")]).summary();
+    assert_eq!(plain.rows[0].enabled, None);
+    assert_eq!(plain.rows[0].actions, [RowAction::Start]);
 }

@@ -1,6 +1,7 @@
 //! Everything a program that talks to Crisol touches besides its own interface.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crisol_core::autostart::Autostart;
@@ -9,6 +10,7 @@ use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use crisol_core::setup::SystemSetup;
 use crisol_core::trust::TrustStore;
 use crisol_core::userpath::UserPath;
+use crisol_platform::Desktop;
 
 use crate::link::Connector;
 
@@ -53,9 +55,11 @@ pub struct Context {
     /// Deletes them once this program has ended.
     pub remove_programs: RemovePrograms,
     /// Judges who can write to the programs before they are registered or launched.
-    pub dirs: std::sync::Arc<dyn PrivateDirs>,
+    pub dirs: Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.
     pub daemon_wait: Duration,
+    /// The desktop of the user: terminals, the browser, the folder dialog.
+    pub desktop: Arc<dyn Desktop>,
 }
 
 impl std::fmt::Debug for Context {

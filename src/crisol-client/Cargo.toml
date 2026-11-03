@@ -8,13 +8,11 @@ publish.workspace = true
 
 [dependencies]
 crisol-core.workspace = true
+crisol-platform.workspace = true
 crisol-protocol.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-crisol-platform.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -50,14 +50,23 @@ fn git_bash() -> Option<PathBuf> {
     })
 }
 
-/// Starts the terminal in this window and waits for it. Gives its exit code.
-pub fn run_terminal(launch: &ShellLaunch) -> io::Result<i32> {
+/// The process a launch describes, not started yet.
+pub(crate) fn command_of(launch: &ShellLaunch) -> Command {
     let mut command = Command::new(&launch.program);
     command.args(&launch.args);
     for name in &launch.remove {
         command.env_remove(name);
     }
     command.envs(launch.set.iter().map(|(n, v)| (n, v)));
+    if let Some(cwd) = &launch.cwd {
+        command.current_dir(cwd);
+    }
+    command
+}
+
+/// Starts the terminal in this window and waits for it. Gives its exit code.
+pub fn run_terminal(launch: &ShellLaunch) -> io::Result<i32> {
+    let mut command = command_of(launch);
     // Ctrl+C in the terminal reaches `crisol` too, which must stay to wait for it.
     crate::survive_ctrl_c()?;
     let status = command.status()?;
@@ -109,7 +118,26 @@ mod tests {
             .collect(),
             set: vec![("CRISOL_SHELL_TEST".into(), "yes".into())],
             remove: vec!["CRISOL_SHELL_NEVER_SET".into()],
+            cwd: None,
         };
         assert_eq!(run_terminal(&launch).unwrap(), 7);
+    }
+
+    #[test]
+    fn the_folder_of_the_launch_is_where_the_terminal_starts() {
+        let folder = std::env::temp_dir();
+        let mut launch = ShellLaunch {
+            program: find_terminal(Terminal::Cmd, None).unwrap(),
+            args: Vec::new(),
+            set: Vec::new(),
+            remove: Vec::new(),
+            cwd: Some(folder.clone()),
+        };
+        assert_eq!(
+            command_of(&launch).get_current_dir(),
+            Some(folder.as_path())
+        );
+        launch.cwd = None;
+        assert_eq!(command_of(&launch).get_current_dir(), None);
     }
 }

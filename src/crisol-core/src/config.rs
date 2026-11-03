@@ -34,6 +34,17 @@ pub struct Config {
     pub php: PhpConfig,
     /// Every other service.
     pub services: Services,
+    /// The terminal `crisol shell` and the GUI open.
+    pub shell: ShellConfig,
+}
+
+/// The `[shell]` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ShellConfig {
+    /// The terminal the user prefers: `pwsh`, `powershell`, `cmd` or `bash`. `None` means the
+    /// automatic choice (the one `crisol shell` was started from, else the first installed).
+    pub terminal: Option<String>,
 }
 
 /// Global default versions. `None` means "the highest installed version".
@@ -386,8 +397,26 @@ impl Config {
             .collect()
     }
 
+    /// The terminal the user chose in `[shell] terminal`, when there is one (a name that is
+    /// not a terminal is refused when the file is loaded).
+    #[must_use]
+    pub fn preferred_terminal(&self) -> Option<crate::shell::Terminal> {
+        self.shell
+            .terminal
+            .as_deref()
+            .and_then(crate::shell::Terminal::from_name)
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         validate_tld(&self.sites.tld)?;
+        if let Some(name) = &self.shell.terminal {
+            if crate::shell::Terminal::from_name(name).is_none() {
+                return Err(invalid(
+                    "shell.terminal",
+                    "use one of pwsh, powershell, cmd or bash",
+                ));
+            }
+        }
         for (field, version) in self.pinned_versions() {
             VersionReq::parse(version).map_err(|_| invalid(field, "not a valid version"))?;
         }

@@ -47,6 +47,7 @@ fn plan(
         clean,
         front: &front,
         env: vars,
+        cwd: None,
     })
 }
 
@@ -95,25 +96,30 @@ fn the_variables_of_other_tools_are_taken_out_in_any_case() {
 #[test]
 fn the_terminal_is_the_asked_one_then_the_parent_then_the_first_installed() {
     let all = |t: Terminal| Some(PathBuf::from(format!(r"C:\{}.exe", t.name())));
-    let (t, _, note) = choose_terminal(Some(Terminal::Cmd), Some("pwsh.exe"), &all).unwrap();
+    let (t, _, note) = choose_terminal(Some(Terminal::Cmd), None, Some("pwsh.exe"), &all).unwrap();
     assert_eq!((t, note), (Terminal::Cmd, None));
-    let (t, _, note) =
-        choose_terminal(None, Some(r"C:\Program Files\Git\usr\bin\bash.exe"), &all).unwrap();
+    let (t, _, note) = choose_terminal(
+        None,
+        None,
+        Some(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        &all,
+    )
+    .unwrap();
     assert_eq!((t, note), (Terminal::Bash, None));
-    let (t, _, _) = choose_terminal(None, Some("powershell.exe"), &all).unwrap();
+    let (t, _, _) = choose_terminal(None, None, Some("powershell.exe"), &all).unwrap();
     assert_eq!(t, Terminal::WindowsPowerShell);
 
     // Started from an editor: the first one installed, and it says so.
     let no_pwsh = |t: Terminal| (t != Terminal::Pwsh).then(|| PathBuf::from(r"C:\t.exe"));
-    let (t, _, note) = choose_terminal(None, Some("Code.exe"), &no_pwsh).unwrap();
+    let (t, _, note) = choose_terminal(None, None, Some("Code.exe"), &no_pwsh).unwrap();
     assert_eq!(t, Terminal::WindowsPowerShell);
     assert!(note.unwrap().contains("--shell"));
 
     // The one asked for (or the one it came from) must exist: no silent swap.
-    let error = choose_terminal(Some(Terminal::Pwsh), None, &no_pwsh).unwrap_err();
+    let error = choose_terminal(Some(Terminal::Pwsh), None, None, &no_pwsh).unwrap_err();
     assert!(matches!(error, ShellError::NotFound("pwsh")), "{error}");
     assert!(matches!(
-        choose_terminal(None, None, &|_| None).unwrap_err(),
+        choose_terminal(None, None, None, &|_| None).unwrap_err(),
         ShellError::NoTerminal
     ));
 }
@@ -315,4 +321,105 @@ fn the_clients_of_the_installed_databases_go_after_the_shims_the_enabled_first()
             "bin/redis/5.0.14.1"
         ]
     );
+}
+
+#[test]
+fn the_terminal_the_user_chose_beats_the_parent_but_not_what_was_asked() {
+    let all = |t: Terminal| Some(PathBuf::from(format!(r"C:\{}.exe", t.name())));
+    let bash = Some(r"C:\Program Files\Git\usr\bin\bash.exe");
+    let (t, _, note) = choose_terminal(None, Some(Terminal::Pwsh), bash, &all).unwrap();
+    assert_eq!((t, note), (Terminal::Pwsh, None));
+    let (t, _, _) = choose_terminal(Some(Terminal::Cmd), Some(Terminal::Pwsh), bash, &all).unwrap();
+    assert_eq!(t, Terminal::Cmd);
+}
+
+#[test]
+fn a_chosen_terminal_that_is_gone_is_said_and_the_automatic_one_opens() {
+    let no_pwsh = |t: Terminal| (t != Terminal::Pwsh).then(|| PathBuf::from(r"C:\t.exe"));
+    // From a terminal: that one opens.
+    let (t, _, note) =
+        choose_terminal(None, Some(Terminal::Pwsh), Some("cmd.exe"), &no_pwsh).unwrap();
+    assert_eq!(t, Terminal::Cmd);
+    let note = note.unwrap();
+    assert!(
+        note.contains("pwsh") && note.contains("opening cmd"),
+        "{note}"
+    );
+    // From nowhere: the first installed.
+    let (t, _, note) = choose_terminal(None, Some(Terminal::Pwsh), None, &no_pwsh).unwrap();
+    assert_eq!(t, Terminal::WindowsPowerShell);
+    assert!(note.unwrap().contains("pwsh"));
+}
+
+#[test]
+fn terminals_are_known_by_the_name_the_configuration_writes() {
+    for terminal in Terminal::ALL {
+        assert_eq!(Terminal::from_name(terminal.name()), Some(terminal));
+    }
+    assert_eq!(Terminal::from_name("wt"), None);
+    assert_eq!(Terminal::from_name("PWSH"), None);
+}
+
+#[test]
+fn the_preference_is_written_with_the_comments_kept_and_can_be_taken_out() {
+    let (_tmp, paths) = home();
+    let original = "# my settings\n[sites]\ntld = \"test\" # keep me\n";
+    fs::write(paths.config_file(), original).unwrap();
+
+    assert!(save_terminal_preference(&paths, Some(Terminal::Bash)).unwrap());
+    let text = fs::read_to_string(paths.config_file()).unwrap();
+    assert!(text.starts_with(original), "{text}");
+    assert!(
+        text.contains("[shell]") && text.contains("terminal = \"bash\""),
+        "{text}"
+    );
+    let config = Config::load_from(&paths).unwrap().config;
+    assert_eq!(config.preferred_terminal(), Some(Terminal::Bash));
+
+    // The same choice again changes nothing.
+    assert!(!save_terminal_preference(&paths, Some(Terminal::Bash)).unwrap());
+    // Automatic takes the key out and leaves the rest.
+    assert!(save_terminal_preference(&paths, None).unwrap());
+    let text = fs::read_to_string(paths.config_file()).unwrap();
+    assert!(!text.contains("terminal"), "{text}");
+    assert!(text.contains("# keep me"));
+    assert_eq!(
+        Config::load_from(&paths)
+            .unwrap()
+            .config
+            .preferred_terminal(),
+        None
+    );
+}
+
+#[test]
+fn a_name_that_is_not_a_terminal_is_refused_when_the_file_is_loaded() {
+    let error = Config::parse("[shell]\nterminal = \"wt\"\n").unwrap_err();
+    assert!(error.to_string().contains("shell.terminal"), "{error}");
+    assert_eq!(
+        Config::parse("[shell]\nterminal = \"cmd\"\n")
+            .unwrap()
+            .config
+            .preferred_terminal(),
+        Some(Terminal::Cmd)
+    );
+}
+
+#[test]
+fn the_folder_to_open_in_goes_to_the_launch() {
+    let (_tmp, paths) = home();
+    let front = vec![paths.shims_dir()];
+    let folder = Path::new(r"D:\Proyectos\tienda");
+    let launch = plan_shell(&ShellInput {
+        paths: &paths,
+        terminal: Terminal::Pwsh,
+        program: Path::new(r"C:\x\pwsh.exe"),
+        clean: false,
+        front: &front,
+        env: &[],
+        cwd: Some(folder),
+    })
+    .unwrap();
+    assert_eq!(launch.cwd.as_deref(), Some(folder));
+    assert_eq!(plan(&paths, Terminal::Pwsh, false, &[]).unwrap().cwd, None);
 }

@@ -215,6 +215,40 @@ struct Env {
     driver: Option<JoinHandle<()>>,
 }
 
+/// The desktop of the tests: every terminal is "installed" at a made-up place, and starting one
+/// only records it.
+struct FakeDesktop(Arc<Mutex<Vec<crisol_core::shell::ShellLaunch>>>);
+
+impl crisol_platform::Desktop for FakeDesktop {
+    fn find_terminal(
+        &self,
+        terminal: crisol_core::shell::Terminal,
+        _parent: Option<&str>,
+    ) -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from(format!(
+            r"C:\fake\{}.exe",
+            terminal.name()
+        )))
+    }
+
+    fn run_terminal(&self, launch: &crisol_core::shell::ShellLaunch) -> std::io::Result<i32> {
+        self.0.lock().unwrap().push(launch.clone());
+        Ok(5)
+    }
+
+    fn spawn_terminal(&self, _launch: &crisol_core::shell::ShellLaunch) -> std::io::Result<()> {
+        unreachable!("the command line waits for its terminal")
+    }
+
+    fn open_url(&self, _url: &str) -> std::io::Result<()> {
+        unreachable!()
+    }
+
+    fn pick_folder(&self, _owner: Option<isize>) -> std::io::Result<Option<std::path::PathBuf>> {
+        unreachable!()
+    }
+}
+
 impl Env {
     fn new(builds: &[(&str, &str)]) -> Self {
         let tmp = TempDir::new().unwrap();
@@ -338,6 +372,7 @@ impl Env {
             },
             dirs: self.dirs.clone(),
             daemon_wait: Duration::from_secs(10),
+            desktop: Arc::new(FakeDesktop(Arc::clone(&self.terminals))),
         };
         Context {
             client,
@@ -350,20 +385,6 @@ impl Env {
                     ("PHPRC".into(), r"C:\laragon\bin\php".into()),
                 ]
             }),
-            // Every terminal is "installed" at a made-up place.
-            find_terminal: Box::new(|terminal, _| {
-                Some(std::path::PathBuf::from(format!(
-                    r"C:\fake\{}.exe",
-                    terminal.name()
-                )))
-            }),
-            run_terminal: {
-                let terminals = Arc::clone(&self.terminals);
-                Box::new(move |launch| {
-                    terminals.lock().unwrap().push(launch.clone());
-                    Ok(5)
-                })
-            },
             confirm: {
                 let confirm = Arc::clone(&self.confirm);
                 let plans = Arc::clone(&self.confirmed_plans);
@@ -1340,6 +1361,29 @@ fn shell_opens_the_terminal_it_was_called_from_with_crisol_first_and_gives_back_
     assert_eq!(env.run(&["shell", "--shell", "cmd", "--clean"]).0, 5);
     let launch = env.terminals.lock().unwrap().pop().unwrap();
     assert_eq!(launch.args[0], "/d");
+}
+
+#[test]
+fn shell_opens_the_terminal_the_user_chose_in_the_configuration_unless_one_is_asked() {
+    let mut env = Env::new(&[]);
+    env.ok(&["shims", "install"]);
+    env.parent_program = Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_owned());
+    let config = fs::read_to_string(env.paths.config_file()).unwrap();
+    fs::write(
+        env.paths.config_file(),
+        format!("{config}\n[shell]\nterminal = \"cmd\"\n"),
+    )
+    .unwrap();
+
+    // The chosen one wins over the terminal this was typed in...
+    assert_eq!(env.run(&["shell"]).0, 5);
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.program, std::path::Path::new(r"C:\fake\cmd.exe"));
+    assert_eq!(launch.cwd, None, "`crisol shell` opens where it is called");
+    // ...and `--shell` wins over it.
+    assert_eq!(env.run(&["shell", "--shell", "bash"]).0, 5);
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.program, std::path::Path::new(r"C:\fake\bash.exe"));
 }
 
 // ---- trust and untrust ---------------------------------------------------------------------
