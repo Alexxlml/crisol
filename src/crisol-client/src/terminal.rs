@@ -79,6 +79,14 @@ pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptio
     }
 }
 
+/// [`terminal_options`] for the configuration of this context's home.
+pub fn current_terminal_options(context: &Context) -> Result<TerminalOptions, RpcError> {
+    let config = Config::load_from(&context.paths)
+        .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?
+        .config;
+    Ok(terminal_options(&*context.desktop, &config))
+}
+
 /// Saves the terminal the user chose (`None`: automatic) in `[shell] terminal` of
 /// `crisol.toml`, keeping its comments and order. It is the only thing here that writes, and
 /// only because a person picked it. `name` is what [`TerminalOption::name`] says.

@@ -149,10 +149,29 @@ mod tests {
             "doctor",
             "credentials",
             "setup",
+            "settings",
         ] {
             used.insert(format!("nav.{section}"));
             used.insert(format!("section.{section}.title"));
             used.insert(format!("section.{section}.hint"));
+        }
+        // The buttons are named from what the app offers (`row.actions`, `site.actions`).
+        for action in [
+            "start",
+            "stop",
+            "restart",
+            "enable",
+            "disable",
+            "start_all",
+            "stop_all",
+            "secure",
+            "unsecure",
+            "unlink",
+        ] {
+            used.insert(format!("action.{action}"));
+        }
+        for kind in ["parked", "linked"] {
+            used.insert(format!("sites.kind.{kind}"));
         }
         // Chosen at run time from what the daemon says.
         for state in ["running", "starting", "stopping", "stopped", "failed"] {

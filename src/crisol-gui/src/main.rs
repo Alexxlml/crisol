@@ -16,9 +16,11 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use crisol_client::{
-    connect, Context, GuiSettings, Language, LeaveAction, LiveConfig, LiveState, LiveView, Summary,
+    clean_env, connect, current_terminal_options, fetch_sites, open_site as open_in_browser,
+    suggested_site_name, Act, Context, GuiSettings, Language, LeaveAction, LiveConfig, LiveState,
+    LiveView, Opened, Place, SitesView, Summary, TerminalOptions,
 };
-use crisol_protocol::{Call, RpcError};
+use crisol_protocol::{Call, Reply, RpcError};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
@@ -96,7 +98,12 @@ fn take_picture(app: &AppHandle) -> Option<(MutexGuard<'static, u64>, Payload)> 
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *published += 1;
     let state = view.state();
-    let summary = state.summary();
+    // The rows know which data services are switched on from `crisol.toml`; with no home to
+    // read (a test) they simply have no switch.
+    let summary = match crisol_platform::resolve_paths() {
+        Ok(paths) => state.summary_at(&paths),
+        Err(_) => state.summary(),
+    };
     if let Some(tray) = app.try_state::<Tray>() {
         tray.show(&summary);
     }
@@ -114,6 +121,14 @@ fn on_state(_changed: &LiveState) {
     let Some(app) = APP.get() else {
         return;
     };
+    if let Some((_published, now)) = take_picture(app) {
+        let _ = app.emit("state", now);
+    }
+}
+
+/// Draws the state again without waiting for an event: for what changes without one (the
+/// switch of a service lives in `crisol.toml`).
+fn publish(app: &AppHandle) {
     if let Some((_published, now)) = take_picture(app) {
         let _ = app.emit("state", now);
     }
@@ -187,6 +202,126 @@ fn on_entry(app: &AppHandle, entry: &str) {
     }
 }
 
+/// What a call that worked says, for the page to show.
+#[derive(Debug, Serialize)]
+struct Done {
+    message: String,
+    warnings: Vec<String>,
+}
+
+/// The folder a person picked, with the site name its folder suggests.
+#[derive(Debug, Serialize)]
+struct Picked {
+    path: String,
+    name: String,
+}
+
+fn failure(message: impl Into<String>) -> Failure {
+    Failure {
+        message: message.into(),
+        fix: None,
+    }
+}
+
+/// Runs `work` on a thread that may block: a call can start the daemon, and a dialog waits for
+/// a person.
+async fn blocking<T, F>(work: F) -> Result<T, Failure>
+where
+    T: Send + 'static,
+    F: FnOnce(&Context) -> Result<T, Failure> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = Context::windows(CLIENT, VERSION).map_err(|e| failure(e.to_string()))?;
+        work(&context)
+    })
+    .await
+    .map_err(|e| failure(e.to_string()))?
+}
+
+/// A click of the services or sites screens: the call it stands for, as the command line
+/// would make it. When it worked, the state is published again: a switch (`enable`) changes
+/// `crisol.toml`, and no event tells anybody.
+#[tauri::command]
+async fn act(app: AppHandle, act: Act) -> Result<Done, Failure> {
+    let call = act.call();
+    let done =
+        blocking(move |context| connect::call(context, &call, &mut |_| {}).map_err(Failure::from))
+            .await?;
+    publish(&app);
+    Ok(match done {
+        Reply::Done(info) => Done {
+            message: info.message,
+            warnings: info.warnings,
+        },
+        // `start` answers with the status; what it has to say (a database that could not start)
+        // is a warning, as the command line prints it.
+        Reply::Status(info) => Done {
+            message: String::new(),
+            warnings: info.warnings,
+        },
+        _ => Done {
+            message: String::new(),
+            warnings: Vec::new(),
+        },
+    })
+}
+
+#[tauri::command]
+async fn sites() -> Result<SitesView, Failure> {
+    blocking(|context| fetch_sites(context).map_err(Failure::from)).await
+}
+
+#[tauri::command]
+async fn open_site(name: String) -> Result<(), Failure> {
+    blocking(move |context| open_in_browser(context, &name).map_err(Failure::from)).await
+}
+
+/// The dialog of the system to choose a folder. `None` when it is cancelled.
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Option<Picked>, Failure> {
+    let owner = app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .map(|handle| handle.0 as isize);
+    blocking(move |context| {
+        let picked = context
+            .desktop
+            .pick_folder(owner)
+            .map_err(|e| failure(format!("cannot show the folder dialog: {e}")))?;
+        Ok(picked.map(|path| Picked {
+            name: suggested_site_name(&path),
+            path: path.display().to_string(),
+        }))
+    })
+    .await
+}
+
+/// A terminal of Crisol in a window of its own, in the folder of a project or where the
+/// projects are.
+#[tauri::command]
+async fn open_terminal(place: Place) -> Result<Opened, Failure> {
+    blocking(move |context| {
+        let env = clean_env(std::env::vars_os());
+        crisol_client::open_terminal(context, &env, &place).map_err(Failure::from)
+    })
+    .await
+}
+
+/// The terminals this computer has and the one chosen.
+#[tauri::command]
+async fn terminal_options() -> Result<TerminalOptions, Failure> {
+    blocking(|context| current_terminal_options(context).map_err(Failure::from)).await
+}
+
+/// The person's choice of terminal (`None`: automatic), written to `crisol.toml`.
+#[tauri::command]
+async fn choose_terminal(name: Option<String>) -> Result<(), Failure> {
+    blocking(move |context| {
+        crisol_client::choose_terminal(&context.paths, name.as_deref()).map_err(Failure::from)
+    })
+    .await
+}
+
 // Tauri hands its arguments to a command by value.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -232,7 +367,17 @@ fn main() {
             show_main(app);
         }))
         .manage(words.clone())
-        .invoke_handler(tauri::generate_handler![bootstrap, quit_confirmed])
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            quit_confirmed,
+            act,
+            sites,
+            open_site,
+            pick_folder,
+            open_terminal,
+            terminal_options,
+            choose_terminal
+        ])
         .on_window_event(|window, event| {
             // Closing hides the window: the program lives in the tray.
             if let WindowEvent::CloseRequested { api, .. } = event {

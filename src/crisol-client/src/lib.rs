@@ -35,11 +35,13 @@ pub use sites::{
     Act, ParkedRow, SiteAction, SiteRow, SitesView,
 };
 pub use summary::{
-    enabled_in, metal_of, row_actions, LeaveAction, Overall, RowAction, ServiceRow, Summary, Toggle,
+    enabled_in, is_data_service, metal_of, row_actions, LeaveAction, Overall, RowAction,
+    ServiceRow, Summary, Toggle,
 };
 pub use terminal::{
-    choose_terminal, clean_env, launch_terminal, open_terminal, projects_folder, start_folder,
-    terminal_options, Opened, Place, TerminalOption, TerminalOptions,
+    choose_terminal, clean_env, current_terminal_options, launch_terminal, open_terminal,
+    projects_folder, start_folder, terminal_options, Opened, Place, TerminalOption,
+    TerminalOptions,
 };
 #[cfg(windows)]
 pub use windows::WindowsError;

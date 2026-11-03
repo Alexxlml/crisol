@@ -173,7 +173,8 @@ fn the_summary_json() {
                 "detail": null,
                 "metal": "nginx",
                 "enabled": null,
-                "actions": ["stop", "restart"],
+                "web_stack": true,
+                "actions": [],
             }],
         })
     );
@@ -268,24 +269,27 @@ fn the_rows_keep_the_order_and_the_words_of_the_daemon() {
 #[test]
 fn a_row_offers_what_makes_sense_in_its_state() {
     use RowAction::{Restart, Start, Stop};
-    assert_eq!(row_actions("running", None), [Stop, Restart]);
-    assert_eq!(row_actions("stopped", None), [Start]);
+    assert_eq!(row_actions("running", true, None), [Stop, Restart]);
+    assert_eq!(row_actions("stopped", true, None), [Start]);
     // A failed one is tried again with the same button.
-    assert_eq!(row_actions("failed", None), [Start]);
+    assert_eq!(row_actions("failed", true, None), [Start]);
     // While it changes there is nothing to press, and a state from a newer daemon is the same.
-    assert_eq!(row_actions("starting", None), []);
-    assert_eq!(row_actions("stopping", None), []);
-    assert_eq!(row_actions("paused", None), []);
+    assert_eq!(row_actions("starting", true, None), []);
+    assert_eq!(row_actions("stopping", true, None), []);
+    assert_eq!(row_actions("paused", true, None), []);
 }
 
 #[test]
 fn a_data_service_also_offers_the_opposite_of_its_switch() {
     use RowAction::{Disable, Enable, Restart, Start, Stop};
-    assert_eq!(row_actions("stopped", Some(false)), [Start, Enable]);
-    assert_eq!(row_actions("stopped", Some(true)), [Start, Disable]);
-    assert_eq!(row_actions("running", Some(true)), [Stop, Restart, Disable]);
+    assert_eq!(row_actions("stopped", true, Some(false)), [Start, Enable]);
+    assert_eq!(row_actions("stopped", true, Some(true)), [Start, Disable]);
+    assert_eq!(
+        row_actions("running", true, Some(true)),
+        [Stop, Restart, Disable]
+    );
     // The switch can be flipped even while it changes state.
-    assert_eq!(row_actions("starting", Some(true)), [Disable]);
+    assert_eq!(row_actions("starting", true, Some(true)), [Disable]);
 }
 
 #[test]
@@ -347,4 +351,44 @@ fn only_the_data_services_have_a_switch_and_it_follows_crisol_toml() {
     let plain = connected(&[("mysql", "stopped")]).summary();
     assert_eq!(plain.rows[0].enabled, None);
     assert_eq!(plain.rows[0].actions, [RowAction::Start]);
+}
+
+#[test]
+fn nginx_and_php_have_no_buttons_of_their_own_because_the_web_stack_goes_as_one() {
+    // The core answers `restart nginx` with "part of the web stack"; the window must not offer it.
+    for (service, state) in [
+        ("nginx", "running"),
+        ("nginx", "stopped"),
+        ("php-8.4.26", "failed"),
+    ] {
+        assert_eq!(
+            row_actions(state, is_data_service(service), None),
+            [],
+            "{service}"
+        );
+    }
+    let summary = connected(&[
+        ("nginx", "running"),
+        ("php-8.4.26", "running"),
+        ("redis", "stopped"),
+    ])
+    .summary();
+    let web: Vec<_> = summary.rows.iter().map(|r| r.web_stack).collect();
+    assert_eq!(web, [true, true, false]);
+    assert!(summary.rows[0].actions.is_empty() && summary.rows[1].actions.is_empty());
+    assert_eq!(summary.rows[2].actions, [RowAction::Start]);
+    for kind in [
+        "mysql",
+        "mariadb",
+        "postgresql",
+        "mongodb",
+        "mailpit",
+        "meilisearch",
+        "redis",
+        "garnet",
+        "memcached",
+    ] {
+        assert!(is_data_service(kind), "{kind}");
+    }
+    assert!(!is_data_service("nginx") && !is_data_service("php-8.4"));
 }

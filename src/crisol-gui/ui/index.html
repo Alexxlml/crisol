@@ -23,6 +23,7 @@
         <button type="button" class="nav-item" data-section="doctor" data-i18n="nav.doctor"></button>
         <button type="button" class="nav-item" data-section="credentials" data-i18n="nav.credentials"></button>
         <button type="button" class="nav-item" data-section="setup" data-i18n="nav.setup"></button>
+        <button type="button" class="nav-item" data-section="settings" data-i18n="nav.settings"></button>
       </nav>
     </aside>
 
@@ -30,6 +31,7 @@
       <header class="top">
         <h1 id="title"></h1>
         <div class="status">
+          <span id="reloading" class="chip busy" hidden></span>
           <span id="overall" class="chip"></span>
           <span id="connection" class="connection"></span>
         </div>
@@ -40,6 +42,10 @@
       <main id="content">
         <section id="section-services" class="panel" hidden>
           <p class="hint" data-i18n="section.services.hint"></p>
+          <div class="toolbar">
+            <button type="button" id="toggle-all" class="button primary"></button>
+            <button type="button" id="terminal-general" class="button" data-i18n="action.terminal_projects"></button>
+          </div>
           <h2 class="sr-only" data-i18n="services.heading"></h2>
           <ul id="services" class="services"></ul>
           <p id="services-empty" class="empty-line" hidden></p>
@@ -47,7 +53,17 @@
 
         <section id="section-sites" class="panel" hidden>
           <p class="hint" data-i18n="section.sites.hint"></p>
-          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+          <div class="toolbar">
+            <button type="button" id="link-folder" class="button primary" data-i18n="action.link_folder"></button>
+            <button type="button" id="park-folder" class="button" data-i18n="action.park_folder"></button>
+            <button type="button" id="terminal-general-sites" class="button" data-i18n="action.terminal_projects"></button>
+          </div>
+          <h2 data-i18n="sites.parked_heading"></h2>
+          <p class="hint small" data-i18n="sites.parked_hint"></p>
+          <ul id="parked" class="rows"></ul>
+          <h2 data-i18n="sites.heading"></h2>
+          <ul id="sites-list" class="rows"></ul>
+          <p id="sites-empty" class="empty-line" hidden></p>
         </section>
         <section id="section-versions" class="panel" hidden>
           <p class="hint" data-i18n="section.versions.hint"></p>
@@ -69,8 +85,38 @@
           <p class="hint" data-i18n="section.setup.hint"></p>
           <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
         </section>
+        <section id="section-settings" class="panel" hidden>
+          <p class="hint" data-i18n="section.settings.hint"></p>
+          <h2 data-i18n="settings.terminal_heading"></h2>
+          <p class="hint small" data-i18n="settings.terminal_hint"></p>
+          <label class="field">
+            <span data-i18n="settings.terminal_label"></span>
+            <select id="terminal-select"></select>
+          </label>
+          <p id="terminal-effective" class="hint small"></p>
+          <p id="terminal-warning" class="hint small warn" hidden></p>
+        </section>
       </main>
     </div>
+  </div>
+
+  <div id="link-dialog" class="modal" role="dialog" aria-modal="true" aria-labelledby="link-title" hidden>
+    <form id="link-form" class="modal-box">
+      <h2 id="link-title" data-i18n="link.title"></h2>
+      <p id="link-path" class="mono path"></p>
+      <label class="field">
+        <span data-i18n="link.name"></span>
+        <span class="name-field">
+          <input id="link-name" type="text" autocomplete="off" spellcheck="false" maxlength="63" required>
+          <span id="link-suffix" class="mono"></span>
+        </span>
+      </label>
+      <p class="hint small" data-i18n="link.hint"></p>
+      <div class="modal-actions">
+        <button type="button" id="link-cancel" class="button" data-i18n="exit.cancel"></button>
+        <button type="submit" id="link-confirm" class="button primary" data-i18n="link.confirm"></button>
+      </div>
+    </form>
   </div>
 
   <div id="exit-notice" class="modal" role="dialog" aria-modal="true" aria-labelledby="exit-title" hidden>

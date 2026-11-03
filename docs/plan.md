@@ -221,7 +221,7 @@ Reglas de toda la fase:
 
   **Pregunta para el propietario al empezar:** si la bandeja arranca al iniciar sesión (ADR-0026, «Preguntas abiertas»).
   - *Aceptación:* `check.sh` pasa con el crate nuevo; si el framework lo permite, `check.sh` compila la GUI. Verificación manual: abrir, cerrar a la bandeja, volver a abrir, segunda instancia, «Salir» con servicios corriendo (el aviso sale la primera vez y no la segunda; los sitios siguen respondiendo), «Detener todo» (el daemon sigue), «Detener todo y salir» (no queda `crisold`), el paso de daemon parado a corriendo y al revés, y que los cinco iconos de la bandeja se distinguen a su tamaño real con la barra de tareas oscura y con la clara.
-- **F13.4** Servicios y sitios. Incluye:
+- **F13.4** (implementada el 2026-11-03, a la espera de la revisión y de la verificación manual del propietario; ver la ADR-0026, «Servicios y sitios») Servicios y sitios. Incluye:
   - la lista de servicios con su estado en vivo, start/stop/restart y enable/disable;
   - el indicador de «recargando» entre `reload_started` y su cierre;
   - el aviso de `blocked` con su comando;

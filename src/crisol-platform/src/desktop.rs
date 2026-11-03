@@ -166,6 +166,46 @@ mod real {
     }
 }
 
+#[cfg(all(test, windows))]
+mod real_tests {
+    use std::ffi::OsString;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// Opens a real console window (it flashes): run with `--ignored`.
+    #[test]
+    #[ignore = "opens a console window"]
+    fn a_terminal_opens_in_its_own_window_in_the_folder_and_is_not_waited_for() {
+        let folder = tempfile::tempdir().unwrap();
+        let proof = folder.path().join("where.txt");
+        let cmd = crate::find_terminal(Terminal::Cmd, None).unwrap();
+        let launch = ShellLaunch {
+            program: cmd,
+            // The terminal writes where it is, waits a while and ends.
+            args: ["/d", "/c", "cd > where.txt & ping -n 3 127.0.0.1 > nul"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            set: Vec::new(),
+            remove: Vec::new(),
+            cwd: Some(folder.path().to_path_buf()),
+        };
+        let started = Instant::now();
+        WindowsDesktop.spawn_terminal(&launch).unwrap();
+        // It did not wait for the two seconds of the ping.
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !proof.is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let written = std::fs::read_to_string(&proof).unwrap();
+        let wanted = std::fs::canonicalize(folder.path()).unwrap();
+        let wanted = wanted.to_string_lossy().replace(r"\\?\", "");
+        assert_eq!(written.trim(), wanted);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

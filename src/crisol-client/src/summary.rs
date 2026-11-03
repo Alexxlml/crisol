@@ -6,6 +6,7 @@
 
 use crisol_core::config::Config;
 use crisol_core::dbservice::DbKind;
+use crisol_core::CrisolPaths;
 use crisol_protocol::Call;
 use serde::{Deserialize, Serialize};
 
@@ -100,15 +101,26 @@ impl RowAction {
     }
 }
 
+/// Whether a service is one of the data services (MySQL, Redis, Mailpit…), which are started
+/// and stopped one by one. Nginx and the PHP pools are the web stack, which starts and stops as
+/// one: the core refuses a single one of them, so no row offers it.
+#[must_use]
+pub fn is_data_service(service: &str) -> bool {
+    DbKind::from_service(service).is_some()
+}
+
 /// Which buttons a service offers in a state.
 ///
-/// - Running: stop and restart. Stopped or failed: start (a failed one is tried again).
-/// - While it is changing there is nothing to press: the answer is coming.
+/// - A data service (`data_service`): running, stop and restart; stopped or failed, start (a
+///   failed one is tried again); while it is changing there is nothing to press, the answer is
+///   coming. A member of the web stack has none of these: *Start all* and *Stop all* are its
+///   buttons.
 /// - `enabled` is only known for the data services (`crisol.toml`'s `enabled`); for them the
-///   row also offers the opposite of what it is. Web servers and PHP have no such switch.
+///   row also offers the opposite of what it is. It can be flipped in any state.
 #[must_use]
-pub fn row_actions(state: &str, enabled: Option<bool>) -> Vec<RowAction> {
+pub fn row_actions(state: &str, data_service: bool, enabled: Option<bool>) -> Vec<RowAction> {
     let mut actions = match state {
+        _ if !data_service => Vec::new(),
         "running" => vec![RowAction::Stop, RowAction::Restart],
         "stopped" | "failed" => vec![RowAction::Start],
         // `starting`, `stopping`, and anything a newer daemon may say.
@@ -137,6 +149,8 @@ pub struct ServiceRow {
     /// Whether `crisol start` brings it up (`enabled` in `crisol.toml`); `None` for the ones
     /// that have no such switch (Nginx, PHP).
     pub enabled: Option<bool>,
+    /// Nginx or a PHP pool: part of the web stack, which starts and stops as one.
+    pub web_stack: bool,
     /// The buttons it offers now.
     pub actions: Vec<RowAction>,
 }
@@ -243,16 +257,28 @@ impl LiveState {
                 .iter()
                 .map(|service| {
                     let enabled = enabled(&service.name);
+                    let data_service = is_data_service(&service.name);
                     ServiceRow {
                         name: service.name.clone(),
                         state: service.state.clone(),
                         detail: service.detail.clone(),
                         metal: metal_of(&service.name),
                         enabled,
-                        actions: row_actions(&service.state, enabled),
+                        web_stack: !data_service,
+                        actions: row_actions(&service.state, data_service, enabled),
                     }
                 })
                 .collect(),
+        }
+    }
+
+    /// [`summary_for`](Self::summary_for) with the switches read from the `crisol.toml` of
+    /// `paths`. A configuration that cannot be read leaves them out: the rows are still shown.
+    #[must_use]
+    pub fn summary_at(&self, paths: &CrisolPaths) -> Summary {
+        match Config::load_from(paths) {
+            Ok(loaded) => self.summary_for(&enabled_in(&loaded.config)),
+            Err(_) => self.summary(),
         }
     }
 

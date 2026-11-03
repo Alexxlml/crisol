@@ -10,6 +10,12 @@ let ready = false; // the words are in and the page is translated
 let current = null; // { revision, state, summary }, the newest the app sent
 let section = "services";
 let failure = null; // the last call that failed, until it is dismissed
+let notice = null; // what the last call that worked said: { message, warnings }
+let pending = new Set(); // the clicks in flight, so that none is made twice
+let sitesView = null; // the last answer of `sites`
+let terminalOptions = null; // the last answer of `terminal_options`
+let wasReloading = false;
+let picked = null; // the folder waiting for a name in the link dialog
 
 // The dictionary key of what the daemon says; a state this page does not know shows as itself.
 const STATE_KEYS = {
@@ -82,6 +88,140 @@ function showSection(name) {
     else item.removeAttribute("aria-current");
   }
   document.getElementById("title").textContent = t("section." + name + ".title");
+  // What a section draws is asked when it is opened; the app owns the truth.
+  if (name === "sites") refreshSites();
+  if (name === "settings") refreshTerminalOptions();
+}
+
+// ---- calls ------------------------------------------------------------------------------
+
+// The app answers a failed call with `{ message, fix }`, the words of the core.
+function asFailure(error) {
+  if (error && typeof error === "object" && "message" in error) return error;
+  return { message: String(error), fix: null };
+}
+
+// Runs `work`, shows what went wrong as it comes, and draws again. `key` stops the same click
+// from being made twice while it is in flight.
+async function run(key, work) {
+  if (pending.has(key)) return undefined;
+  pending.add(key);
+  render();
+  try {
+    const result = await work();
+    failure = null;
+    return result;
+  } catch (error) {
+    failure = asFailure(error);
+    notice = null;
+    return undefined;
+  } finally {
+    pending.delete(key);
+    render();
+  }
+}
+
+const SITE_ACTS = ["site", "link", "park", "unpark"];
+
+// A click of the services or sites screens. The app turns it into the call the command line
+// would make.
+async function perform(act) {
+  const done = await run(JSON.stringify(act), async () => {
+    notice = null;
+    const done = await invoke("act", { act });
+    notice = done.message || (done.warnings && done.warnings.length) ? done : null;
+    if (SITE_ACTS.includes(act.do)) await loadSites();
+    return done;
+  });
+  return done;
+}
+
+async function loadSites() {
+  sitesView = await invoke("sites");
+}
+
+function refreshSites() {
+  return run("sites", loadSites);
+}
+
+function refreshTerminalOptions() {
+  return run("terminal_options", async () => {
+    terminalOptions = await invoke("terminal_options");
+  });
+}
+
+async function openTerminal(place) {
+  await run("terminal:" + JSON.stringify(place), async () => {
+    notice = null;
+    const opened = await invoke("open_terminal", { place });
+    notice = {
+      message: t("terminal.opened", { terminal: opened.terminal, folder: opened.folder }),
+      warnings: opened.note ? [opened.note] : [],
+    };
+  });
+}
+
+function openSite(name) {
+  return run("open:" + name, () => invoke("open_site", { name }));
+}
+
+async function chooseFolder() {
+  return run("pick_folder", () => invoke("pick_folder"));
+}
+
+async function pickAndPark() {
+  const folder = await chooseFolder();
+  if (folder) await perform({ do: "park", path: folder.path });
+}
+
+async function pickAndLink() {
+  const folder = await chooseFolder();
+  if (!folder) return;
+  picked = folder;
+  document.getElementById("link-path").textContent = folder.path;
+  document.getElementById("link-name").value = folder.name;
+  document.getElementById("link-suffix").textContent = "." + (sitesView ? sitesView.tld : "test");
+  setLinkDialog(true);
+}
+
+function setLinkDialog(visible) {
+  document.getElementById("link-dialog").hidden = !visible;
+  if (visible) {
+    const field = document.getElementById("link-name");
+    field.focus();
+    field.select();
+  } else {
+    picked = null;
+  }
+}
+
+function submitLink(event) {
+  event.preventDefault();
+  if (!picked) return;
+  const name = document.getElementById("link-name").value.trim();
+  const path = picked.path;
+  setLinkDialog(false);
+  // The core has the last word on the name, and its answer is shown as it comes.
+  perform({ do: "link", name, path });
+}
+
+// ---- pieces -----------------------------------------------------------------------------
+
+// A button that makes `onClick`, disabled while the same click is in flight.
+function button(label, onClick, key, className) {
+  const node = el("button", "button small" + (className ? " " + className : ""), label);
+  node.type = "button";
+  node.disabled = !!key && pending.has(key);
+  node.addEventListener("click", onClick);
+  return node;
+}
+
+function actButton(label, act, className) {
+  return button(label, () => perform(act), JSON.stringify(act), className);
+}
+
+function tag(text, className) {
+  return el("span", "tag" + (className ? " " + className : ""), text);
 }
 
 function renderHeader({ state, summary }) {
@@ -105,7 +245,19 @@ function renderServices({ state, summary }) {
     ...summary.rows.map((row) => {
       const item = el("li", "service");
       item.append(el("span", "dot " + row.metal), el("span", "name", row.name));
-      item.append(chip(row.state, t(STATE_KEYS[row.state] || row.state)));
+      const side = el("span", "side-by-side");
+      // A data service that `Start all` leaves out says so; the button beside it changes it.
+      if (row.enabled === false) side.append(tag(t("service.left_out")));
+      // Nginx and PHP go together: their buttons are Start all and Stop all.
+      if (row.web_stack) side.append(tag(t("service.web_stack")));
+      side.append(chip(row.state, t(STATE_KEYS[row.state] || row.state)));
+      item.append(side);
+      // The buttons are the app's decision (`row.actions`): this page only names them.
+      const actions = el("span", "actions");
+      for (const action of row.actions) {
+        actions.append(actButton(t("action." + action), { do: "service", action, name: row.name }));
+      }
+      item.append(actions);
       // What the daemon says about a failure is shown as it comes.
       if (row.detail) item.append(el("span", "detail", row.detail));
       return item;
@@ -114,6 +266,106 @@ function renderServices({ state, summary }) {
   const connected = state.connection.kind === "connected";
   empty.hidden = summary.rows.length > 0;
   empty.textContent = connected ? t("services.none") : t("services.no_daemon");
+
+  const toggle = document.getElementById("toggle-all");
+  const act = { do: "all", toggle: summary.toggle };
+  toggle.textContent = t("action." + summary.toggle);
+  toggle.disabled = pending.has(JSON.stringify(act));
+  toggle.onclick = () => perform(act);
+}
+
+function renderReloading({ state }) {
+  const node = document.getElementById("reloading");
+  node.hidden = !state.reloading;
+  if (state.reloading) {
+    const fresh = chip("starting", t("reloading"));
+    node.replaceChildren(...fresh.childNodes);
+  }
+}
+
+function renderSites() {
+  const parked = document.getElementById("parked");
+  const list = document.getElementById("sites-list");
+  const empty = document.getElementById("sites-empty");
+  if (!sitesView) {
+    parked.replaceChildren();
+    list.replaceChildren();
+    empty.hidden = false;
+    empty.textContent = t("sites.loading");
+    return;
+  }
+  parked.replaceChildren(
+    ...sitesView.parked.map((folder) => {
+      const item = el("li", "row");
+      item.append(el("span", "grow mono path", folder.path));
+      if (!folder.exists) item.append(tag(t("sites.missing"), "warn"));
+      if (folder.removable) {
+        item.append(actButton(t("action.unpark"), { do: "unpark", entry: folder.entry }));
+      }
+      return item;
+    })
+  );
+  list.replaceChildren(
+    ...sitesView.sites.map((site) => {
+      const item = el("li", "row site");
+      const head = el("span", "grow");
+      head.append(el("strong", null, site.domain));
+      head.append(el("span", "path mono", site.docroot));
+      item.append(head);
+      item.append(tag(t("sites.kind." + site.kind)));
+      if (site.secure) item.append(tag("HTTPS", "secure"));
+      const actions = el("span", "actions");
+      actions.append(button(t("action.open"), () => openSite(site.name), "open:" + site.name));
+      actions.append(
+        button(
+          t("action.terminal_here"),
+          () => openTerminal({ where: "site", site: site.name }),
+          "terminal:" + JSON.stringify({ where: "site", site: site.name })
+        )
+      );
+      for (const action of site.actions) {
+        actions.append(actButton(t("action." + action), { do: "site", action, name: site.name }));
+      }
+      item.append(actions);
+      return item;
+    })
+  );
+  empty.hidden = sitesView.sites.length > 0;
+  empty.textContent = t("sites.none");
+  // What the daemon left out is shown as it said it.
+  for (const warning of sitesView.warnings) {
+    const item = el("li", "row");
+    item.append(tag(t("sites.warning"), "warn"), el("span", "grow detail", warning));
+    list.append(item);
+  }
+}
+
+function renderSettings() {
+  const select = document.getElementById("terminal-select");
+  const effective = document.getElementById("terminal-effective");
+  const warning = document.getElementById("terminal-warning");
+  if (!terminalOptions) {
+    select.replaceChildren();
+    effective.textContent = "";
+    warning.hidden = true;
+    return;
+  }
+  const options = [new Option(t("settings.terminal_auto"), "")];
+  for (const option of terminalOptions.options) {
+    const label = option.found ? option.label : option.label + " (" + t("settings.not_found") + ")";
+    const entry = new Option(label, option.name);
+    // A terminal that is gone cannot be chosen, but the one chosen stays listed.
+    entry.disabled = !option.found && option.name !== terminalOptions.chosen;
+    options.push(entry);
+  }
+  select.replaceChildren(...options);
+  select.value = terminalOptions.chosen || "";
+  const open = terminalOptions.options.find((o) => o.name === terminalOptions.effective);
+  effective.textContent = open
+    ? t("settings.terminal_opens", { terminal: open.label })
+    : t("settings.terminal_none");
+  warning.hidden = !terminalOptions.warning;
+  warning.textContent = terminalOptions.warning || "";
 }
 
 function banner(kind, title, text, fix) {
@@ -154,6 +406,19 @@ function renderBanners({ state, summary }) {
     node.append(close);
     nodes.push(node);
   }
+  if (notice) {
+    // What the core said about what it did; anything it warned about comes with it.
+    const node = banner("ok", notice.message || t("banner.done"));
+    for (const warning of notice.warnings || []) node.append(el("span", "banner-text", warning));
+    const close = el("button", "button small", t("banner.dismiss"));
+    close.type = "button";
+    close.addEventListener("click", () => {
+      notice = null;
+      render();
+    });
+    node.append(close);
+    nodes.push(node);
+  }
   document.getElementById("banners").replaceChildren(...nodes);
 }
 
@@ -162,13 +427,19 @@ function renderBanners({ state, summary }) {
 function take(payload) {
   if (current && payload.revision <= current.revision) return;
   current = { revision: payload.revision, state: payload.state, summary: payload.summary };
+  // When the daemon finishes applying the web configuration the sites may have changed.
+  if (wasReloading && !current.state.reloading && section === "sites") refreshSites();
+  wasReloading = current.state.reloading;
   render();
 }
 
 function render() {
   if (!current || !ready) return;
   renderHeader(current);
+  renderReloading(current);
   renderServices(current);
+  renderSites();
+  renderSettings();
   renderBanners(current);
 }
 
@@ -203,7 +474,29 @@ async function start() {
   document.getElementById("exit-cancel").addEventListener("click", () => setExitNotice(false));
   document.getElementById("exit-confirm").addEventListener("click", () => invoke("quit_confirmed"));
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setExitNotice(false);
+    if (event.key === "Escape") {
+      setExitNotice(false);
+      setLinkDialog(false);
+    }
+  });
+
+  // The terminal of Crisol: in the folder of a project, or where the projects are.
+  for (const id of ["terminal-general", "terminal-general-sites"]) {
+    document.getElementById(id).addEventListener("click", () => openTerminal({ where: "projects" }));
+  }
+  document.getElementById("link-folder").addEventListener("click", pickAndLink);
+  document.getElementById("park-folder").addEventListener("click", pickAndPark);
+  document.getElementById("link-form").addEventListener("submit", submitLink);
+  document.getElementById("link-cancel").addEventListener("click", () => setLinkDialog(false));
+  document.getElementById("terminal-select").addEventListener("change", async (event) => {
+    const name = event.target.value || null;
+    await run("choose_terminal", () => invoke("choose_terminal", { name }));
+    // Drawn again from what the app wrote, not from what was clicked; a failure of the save
+    // stays on screen.
+    const kept = failure;
+    await refreshTerminalOptions();
+    failure = kept;
+    render();
   });
 }
 
