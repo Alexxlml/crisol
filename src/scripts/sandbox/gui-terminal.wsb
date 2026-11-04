@@ -1,0 +1,26 @@
+<!--
+  Windows Sandbox for the terminal of Crisol opened from the GUI (F13.4, ADR-0026): a computer
+  with no PHP, Node or npm of its own, where `php -v`, `node -v` and `npm -v` must answer with
+  what Crisol installed.
+  No double hyphen may appear inside this comment: XML refuses it.
+  With network: Crisol downloads PHP and Node inside the sandbox. Build the release programs
+  first (cargo build, release profile, in src, including crisol-gui). At logon the programs are
+  copied to a folder only this user can write: Crisol refuses programs that other accounts
+  could replace, and the mapped folder is not such a folder. Everything is thrown away when the
+  window is closed.
+-->
+<Configuration>
+  <Networking>Enable</Networking>
+  <vGPU>Disable</vGPU>
+  <MemoryInMB>4096</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\inkis\dev\Crisol\src\target\release</HostFolder>
+      <SandboxFolder>C:\sandbox\bin</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -Command "$b = Join-Path $env:USERPROFILE 'crisol-bin'; New-Item -ItemType Directory -Force $b | Out-Null; foreach ($n in 'crisol.exe','crisold.exe','crisol-shim.exe','crisol-elevate.exe','crisol-gui.exe') { Copy-Item (Join-Path 'C:\sandbox\bin' $n) $b -Force }"</Command>
+  </LogonCommand>
+</Configuration>
