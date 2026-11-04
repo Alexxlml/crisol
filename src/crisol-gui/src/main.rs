@@ -346,8 +346,10 @@ fn quit_confirmed(app: AppHandle) {
 fn main() {
     let words = Dictionary::of(Language::from_preferences(crisol_platform::ui_languages()));
 
-    // Without WebView2 there is no window to say anything in.
-    if crisol_platform::webview2_version().is_none() {
+    // Without WebView2 there is no window to say anything in. Asked the way Tauri asks
+    // (the WebView2 loader), not through the registry: in Windows Sandbox the runtime can be
+    // registered and still not be available, and then Tauri would show its own English box.
+    if tauri::webview_version().is_err() {
         crisol_platform::error_box(&words.get("webview2.title"), &words.get("webview2.body"));
         std::process::exit(1);
     }

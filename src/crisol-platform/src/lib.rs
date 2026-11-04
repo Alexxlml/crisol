@@ -51,7 +51,7 @@ mod trust_store;
 mod user_path;
 
 #[cfg(windows)]
-pub use appearance::{error_box, taskbar_uses_light_theme, ui_languages, webview2_version};
+pub use appearance::{error_box, taskbar_uses_light_theme, ui_languages};
 #[cfg(windows)]
 pub use autostart::RegistryAutostart;
 #[cfg(windows)]

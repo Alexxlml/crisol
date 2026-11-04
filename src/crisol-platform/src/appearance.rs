@@ -1,29 +1,19 @@
 //! What a window program asks Windows about itself: whether the taskbar is light (to pick the
-//! variant of a tray icon, ADR-0027), whether `WebView2` is installed (ADR-0026), which languages
-//! the user prefers, and a message box for when there is no window yet. Nothing is written.
+//! variant of a tray icon, ADR-0027), which languages the user prefers, and a message box for when there is no window yet. Nothing is written.
 
 use std::io;
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
 use windows::Win32::System::Registry::{
-    RegQueryValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, REG_DWORD,
-    REG_VALUE_TYPE,
+    RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, REG_DWORD, REG_VALUE_TYPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-use crate::user_path::{check, open, read_value, wide};
+use crate::user_path::{check, open, wide};
 
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 const TASKBAR_VALUE: &str = "SystemUsesLightTheme";
-
-/// The `WebView2` runtime registers itself under this client id, per machine (32-bit view) or
-/// per user.
-const WEBVIEW2_MACHINE: &str =
-    r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-const WEBVIEW2_USER: &str =
-    r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-const WEBVIEW2_VERSION: &str = "pv";
 
 /// Reads a `DWORD`. `Ok(None)` if the key or the value is missing.
 fn read_dword(root: HKEY, subkey: &str, name: &str) -> io::Result<Option<u32>> {
@@ -61,27 +51,6 @@ pub fn taskbar_uses_light_theme() -> bool {
         read_dword(HKEY_CURRENT_USER, PERSONALIZE, TASKBAR_VALUE),
         Ok(Some(value)) if value != 0
     )
-}
-
-/// The version of a registered `WebView2` runtime, as the registry wrote it: `None` when it
-/// is missing, empty or the placeholder `0.0.0.0` an uninstalled one leaves.
-fn usable_version(raw: Option<&str>) -> Option<String> {
-    let version = raw?.trim();
-    (!version.is_empty() && version != "0.0.0.0").then(|| version.to_owned())
-}
-
-/// The version of the `WebView2` runtime installed on this machine or for this user, if any.
-#[must_use]
-pub fn webview2_version() -> Option<String> {
-    [
-        (HKEY_LOCAL_MACHINE, WEBVIEW2_MACHINE),
-        (HKEY_CURRENT_USER, WEBVIEW2_USER),
-    ]
-    .into_iter()
-    .find_map(|(root, subkey)| {
-        let value = read_value(root, subkey, WEBVIEW2_VERSION).ok().flatten()?;
-        usable_version(Some(value.text.as_str()))
-    })
 }
 
 /// The languages the user prefers for Windows itself, most wanted first (`es-MX`, `en-US`).
@@ -141,18 +110,6 @@ pub fn error_box(title: &str, text: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_runtime_that_is_not_there_is_not_a_version() {
-        assert_eq!(usable_version(None), None);
-        assert_eq!(usable_version(Some("")), None);
-        assert_eq!(usable_version(Some("  ")), None);
-        assert_eq!(usable_version(Some("0.0.0.0")), None);
-        assert_eq!(
-            usable_version(Some("130.0.2849.80")).as_deref(),
-            Some("130.0.2849.80")
-        );
-    }
-
     /// The real registry is only read. Whatever this machine has, asking must not fail.
     #[test]
     fn a_multistring_is_cut_at_its_nuls() {
@@ -165,7 +122,6 @@ mod tests {
     #[test]
     fn asking_this_machine_gives_an_answer() {
         let _ = taskbar_uses_light_theme();
-        let _ = webview2_version();
         let _ = ui_languages();
     }
 
