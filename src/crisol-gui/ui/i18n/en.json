@@ -74,6 +74,7 @@
   "settings.terminal_label": "Open Crisol terminals with",
   "settings.terminal_auto": "Automatic",
   "settings.not_found": "not found",
+  "settings.not_recognized": "not recognized",
   "settings.terminal_opens": "Opens: {terminal}",
   "settings.terminal_none": "No terminal was found on this computer.",
   "banner.done": "Done",

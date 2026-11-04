@@ -357,6 +357,27 @@ fn a_chosen_terminal_that_is_gone_is_said_and_the_automatic_one_opens() {
 }
 
 #[test]
+fn a_name_that_is_not_a_terminal_is_said_unless_one_was_asked() {
+    let all = |t: Terminal| Some(PathBuf::from(format!(r"C:\{}.exe", t.name())));
+    let typo = Preference::Unknown("wt");
+    // From a terminal: that one opens, and the mistake in the file is still said.
+    let (t, _, note) = choose_terminal(None, typo, Some("cmd.exe"), &all).unwrap();
+    assert_eq!(t, Terminal::Cmd);
+    let note = note.unwrap();
+    assert!(
+        note.contains("\"wt\"") && note.contains("opening cmd"),
+        "{note}"
+    );
+    // From nowhere: the first installed, and the same words.
+    let (t, _, note) = choose_terminal(None, typo, None, &all).unwrap();
+    assert_eq!(t, Terminal::Pwsh);
+    assert!(note.unwrap().contains("\"wt\""));
+    // `--shell` is what was asked: nothing to say.
+    let (t, _, note) = choose_terminal(Some(Terminal::Bash), typo, None, &all).unwrap();
+    assert_eq!((t, note), (Terminal::Bash, None));
+}
+
+#[test]
 fn terminals_are_known_by_the_name_the_configuration_writes() {
     for terminal in Terminal::ALL {
         assert_eq!(Terminal::from_name(terminal.name()), Some(terminal));
@@ -398,9 +419,25 @@ fn the_preference_is_written_with_the_comments_kept_and_can_be_taken_out() {
 }
 
 #[test]
-fn a_name_that_is_not_a_terminal_is_refused_when_the_file_is_loaded() {
-    let error = Config::parse("[shell]\nterminal = \"wt\"\n").unwrap_err();
-    assert!(error.to_string().contains("shell.terminal"), "{error}");
+fn a_name_that_is_not_a_terminal_loads_with_a_warning_and_the_automatic_choice() {
+    // A preference of the terminal does not stop the services: the file loads (ADR-0026).
+    let loaded = Config::parse("[shell]\nterminal = \"wt\"\n").unwrap();
+    assert_eq!(
+        loaded.warnings,
+        vec![crate::config::ConfigWarning::UnknownTerminal(
+            "wt".to_owned()
+        )]
+    );
+    let text = loaded.warnings[0].to_string();
+    assert!(
+        text.contains("shell.terminal") && text.contains("\"wt\""),
+        "{text}"
+    );
+    assert_eq!(loaded.config.preferred_terminal(), None);
+    assert_eq!(
+        loaded.config.terminal_preference(),
+        Preference::Unknown("wt")
+    );
     assert_eq!(
         Config::parse("[shell]\nterminal = \"cmd\"\n")
             .unwrap()

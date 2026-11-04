@@ -358,8 +358,16 @@ function renderSettings() {
     entry.disabled = !option.found && option.name !== terminalOptions.chosen;
     options.push(entry);
   }
+  // A name crisol.toml has and Crisol does not know: shown as it is, so that choosing
+  // «automatic» (or another one) is a change that takes it out.
+  const UNKNOWN = "(unknown)";
+  if (terminalOptions.unknown) {
+    const entry = new Option(terminalOptions.unknown + " (" + t("settings.not_recognized") + ")", UNKNOWN);
+    entry.disabled = true;
+    options.push(entry);
+  }
   select.replaceChildren(...options);
-  select.value = terminalOptions.chosen || "";
+  select.value = terminalOptions.unknown ? UNKNOWN : terminalOptions.chosen || "";
   const open = terminalOptions.options.find((o) => o.name === terminalOptions.effective);
   effective.textContent = open
     ? t("settings.terminal_opens", { terminal: open.label })

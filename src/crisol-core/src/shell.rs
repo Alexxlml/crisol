@@ -190,6 +190,32 @@ pub fn shims_installed(paths: &CrisolPaths) -> bool {
         .all(|c| dir.join(shim_file_name(c)).is_file())
 }
 
+/// What `[shell] terminal` says ([`crate::config::Config::terminal_preference`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preference<'a> {
+    /// No key: the automatic choice.
+    Automatic,
+    /// A terminal Crisol knows.
+    Terminal(Terminal),
+    /// A name Crisol does not know (a typo, or a terminal of a newer version). The automatic
+    /// choice is used and the mistake is said; the file still loads.
+    Unknown(&'a str),
+}
+
+impl From<Option<Terminal>> for Preference<'_> {
+    fn from(terminal: Option<Terminal>) -> Self {
+        terminal.map_or(Self::Automatic, Self::Terminal)
+    }
+}
+
+/// Why a name in `[shell] terminal` is not used.
+#[must_use]
+pub fn unknown_terminal(name: &str) -> String {
+    format!(
+        "`shell.terminal = \"{name}\"` in crisol.toml is not a terminal Crisol knows (pwsh, powershell, cmd, bash); it is ignored"
+    )
+}
+
 /// The terminal to open: the one asked for, else the one `crisol` was started from (`parent`),
 /// else the one the user chose in `[shell] terminal` (`preferred`), else the first of
 /// [`Terminal::FALLBACK`] that is installed. `find` says where a terminal's program is.
@@ -200,23 +226,31 @@ pub fn shims_installed(paths: &CrisolPaths) -> bool {
 ///
 /// The note, if any, says why another one was opened. A `preferred` terminal that is no longer
 /// installed is not an error: it is said, and the automatic choice goes on (nothing is
-/// rewritten).
-pub fn choose_terminal(
+/// rewritten). Neither is a name Crisol does not know ([`Preference::Unknown`], a typo in
+/// `crisol.toml`): it is said whenever the choice is not `--shell`, also when the terminal it
+/// was typed in wins, because the file has a mistake to fix.
+pub fn choose_terminal<'a>(
     asked: Option<Terminal>,
-    preferred: Option<Terminal>,
+    preferred: impl Into<Preference<'a>>,
     parent: Option<&str>,
     find: &dyn Fn(Terminal) -> Option<PathBuf>,
 ) -> Result<(Terminal, PathBuf, Option<String>), ShellError> {
+    let preferred = preferred.into();
     if let Some(terminal) = asked {
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
         return Ok((terminal, program, None));
     }
+    let typo = match preferred {
+        Preference::Unknown(name) => Some(unknown_terminal(name)),
+        Preference::Automatic | Preference::Terminal(_) => None,
+    };
     if let Some(terminal) = parent.and_then(Terminal::from_program) {
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
-        return Ok((terminal, program, None));
+        let note = typo.map(|typo| format!("{typo}; opening {}", terminal.name()));
+        return Ok((terminal, program, note));
     }
-    let mut lost = None;
-    if let Some(terminal) = preferred {
+    let mut lost = typo;
+    if let Preference::Terminal(terminal) = preferred {
         match find(terminal) {
             Some(program) => return Ok((terminal, program, None)),
             None => {

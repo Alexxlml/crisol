@@ -266,6 +266,35 @@ fn a_chosen_terminal_that_is_gone_still_opens_one_and_says_so() {
 }
 
 #[test]
+fn a_name_that_is_not_a_terminal_is_shown_as_automatic_with_the_mistake() {
+    let desktop = FakeDesktop::with(&[Terminal::Cmd]);
+    let options = terminal_options(&desktop, &config("[shell]\nterminal = \"wt\"\n"));
+    assert_eq!(options.chosen, None);
+    assert_eq!(options.unknown.as_deref(), Some("wt"));
+    assert_eq!(options.effective, Some("cmd"));
+    let warning = options.warning.unwrap();
+    assert!(
+        warning.contains("\"wt\"") && warning.contains("opening cmd"),
+        "{warning}"
+    );
+}
+
+#[test]
+fn a_name_that_is_not_a_terminal_still_opens_one_and_says_so() {
+    let (_tmp, paths) = home();
+    fs::write(paths.config_file(), "[shell]\nterminal = \"wt\"\n").unwrap();
+    let desktop = FakeDesktop::with(&[Terminal::Cmd]);
+    let opened = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap();
+    assert_eq!(opened.terminal, "cmd");
+    assert!(opened.note.unwrap().contains("\"wt\""));
+    assert_eq!(
+        fs::read_to_string(paths.config_file()).unwrap(),
+        "[shell]\nterminal = \"wt\"\n",
+        "nothing was rewritten"
+    );
+}
+
+#[test]
 fn without_shims_nothing_opens_and_the_fix_is_offered() {
     let (_tmp, paths) = home();
     fs::remove_dir_all(paths.shims_dir()).unwrap();

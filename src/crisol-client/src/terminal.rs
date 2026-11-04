@@ -35,6 +35,9 @@ pub struct TerminalOptions {
     pub options: Vec<TerminalOption>,
     /// The one in `[shell] terminal`, if the user chose one.
     pub chosen: Option<&'static str>,
+    /// What `[shell] terminal` says when it is no terminal Crisol knows (a typo): the list shows
+    /// it so that choosing "automatic" takes it out.
+    pub unknown: Option<String>,
     /// The one a click on "open terminal" will open: the chosen one if it is there, else the
     /// first of the automatic order. `None` when this computer has none.
     pub effective: Option<&'static str>,
@@ -60,8 +63,13 @@ fn label_of(terminal: Terminal) -> &'static str {
 pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptions {
     let find = |t: Terminal| desktop.find_terminal(t, None);
     let chosen = config.preferred_terminal();
-    let (effective, warning) = match shell::choose_terminal(None, chosen, None, &find) {
-        Ok((terminal, _, note)) => (Some(terminal.name()), note.filter(|_| chosen.is_some())),
+    // A name Crisol does not know shows as "automatic", with the warning that says so.
+    let preference = config.terminal_preference();
+    let (effective, warning) = match shell::choose_terminal(None, preference, None, &find) {
+        Ok((terminal, _, note)) => (
+            Some(terminal.name()),
+            note.filter(|_| preference != shell::Preference::Automatic),
+        ),
         Err(error) => (None, Some(error.to_string())),
     };
     TerminalOptions {
@@ -74,6 +82,10 @@ pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptio
             })
             .collect(),
         chosen: chosen.map(Terminal::name),
+        unknown: match preference {
+            shell::Preference::Unknown(name) => Some(name.to_owned()),
+            shell::Preference::Automatic | shell::Preference::Terminal(_) => None,
+        },
         effective,
         warning,
     }
@@ -247,9 +259,9 @@ pub fn launch_terminal(
         .config;
     let folder = start_folder(place, sites, paths, &config)?;
     let find = |t: Terminal| desktop.find_terminal(t, None);
+    let preference = config.terminal_preference();
     let (terminal, program, note) =
-        shell::choose_terminal(None, config.preferred_terminal(), None, &find)
-            .map_err(|e| shell_error(&e))?;
+        shell::choose_terminal(None, preference, None, &find).map_err(|e| shell_error(&e))?;
     let front = shell::front_folders(paths, &config);
     let launch = shell::plan_shell(&shell::ShellInput {
         paths,
@@ -270,7 +282,9 @@ pub fn launch_terminal(
     Ok(Opened {
         terminal: terminal.name(),
         folder,
-        note: note.filter(|_| config.preferred_terminal().is_some()),
+        // With no choice the automatic one is no news; with one (or a name it does not know),
+        // why it is not that one is.
+        note: note.filter(|_| preference != shell::Preference::Automatic),
     })
 }
 

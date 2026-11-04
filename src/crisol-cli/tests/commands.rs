@@ -1391,6 +1391,37 @@ fn shell_opens_the_terminal_it_was_typed_in_and_the_chosen_one_only_from_elsewhe
     assert_eq!(launch.program, std::path::Path::new(r"C:\fake\bash.exe"));
 }
 
+#[test]
+fn a_terminal_name_crisol_does_not_know_is_a_warning_and_not_a_broken_configuration() {
+    let mut env = Env::new(&[]);
+    env.ok(&["shims", "install"]);
+    let config = fs::read_to_string(env.paths.config_file()).unwrap();
+    fs::write(
+        env.paths.config_file(),
+        format!("{config}\n[shell]\nterminal = \"wt\"\n"),
+    )
+    .unwrap();
+
+    // The terminal still opens, and the mistake is said.
+    env.parent_program = Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_owned());
+    let (code, out, err) = env.run(&["shell"]);
+    assert_eq!(code, 5, "{err}");
+    assert!(
+        format!("{out}{err}").contains("\"wt\""),
+        "out: {out}\nerr: {err}"
+    );
+    let launch = env.terminals.lock().unwrap().pop().unwrap();
+    assert_eq!(launch.program, std::path::Path::new(r"C:\fake\pwsh.exe"));
+
+    // The rest of Crisol reads the file; doctor names the key.
+    env.ok(&["sites"]);
+    let (_, doctor, _) = env.run(&["doctor"]);
+    assert!(
+        doctor.contains("shell.terminal") && doctor.contains("\"wt\""),
+        "{doctor}"
+    );
+}
+
 // ---- trust and untrust ---------------------------------------------------------------------
 
 #[test]

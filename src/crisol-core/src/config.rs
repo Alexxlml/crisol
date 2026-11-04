@@ -277,6 +277,10 @@ pub enum ConfigWarning {
         /// Second service.
         second: String,
     },
+    /// `shell.terminal` names no terminal Crisol knows. It is a preference of the terminal, not
+    /// of the services, so it does not stop the file from loading (ADR-0026): the automatic
+    /// choice is used and this says why.
+    UnknownTerminal(String),
 }
 
 impl ConfigWarning {
@@ -286,7 +290,7 @@ impl ConfigWarning {
         match self {
             Self::PortConflict { services, .. } => services.iter().any(|s| s == service),
             Self::ExclusiveServices { first, second } => first == service || second == service,
-            Self::UnknownField(_) | Self::PublicTld(_) => false,
+            Self::UnknownField(_) | Self::PublicTld(_) | Self::UnknownTerminal(_) => false,
         }
     }
 }
@@ -314,6 +318,7 @@ impl fmt::Display for ConfigWarning {
                     "`{first}` and `{second}` are alternatives; enable only one of them"
                 )
             }
+            Self::UnknownTerminal(name) => write!(f, "{}", crate::shell::unknown_terminal(name)),
         }
     }
 }
@@ -397,8 +402,7 @@ impl Config {
             .collect()
     }
 
-    /// The terminal the user chose in `[shell] terminal`, when there is one (a name that is
-    /// not a terminal is refused when the file is loaded).
+    /// The terminal the user chose in `[shell] terminal`, when it is one Crisol knows.
     #[must_use]
     pub fn preferred_terminal(&self) -> Option<crate::shell::Terminal> {
         self.shell
@@ -407,16 +411,21 @@ impl Config {
             .and_then(crate::shell::Terminal::from_name)
     }
 
+    /// What `[shell] terminal` says, including a name Crisol does not know (it is a warning,
+    /// not an error: [`ConfigWarning::UnknownTerminal`]).
+    #[must_use]
+    pub fn terminal_preference(&self) -> crate::shell::Preference<'_> {
+        match self.shell.terminal.as_deref() {
+            None => crate::shell::Preference::Automatic,
+            Some(name) => crate::shell::Terminal::from_name(name).map_or(
+                crate::shell::Preference::Unknown(name),
+                crate::shell::Preference::Terminal,
+            ),
+        }
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         validate_tld(&self.sites.tld)?;
-        if let Some(name) = &self.shell.terminal {
-            if crate::shell::Terminal::from_name(name).is_none() {
-                return Err(invalid(
-                    "shell.terminal",
-                    "use one of pwsh, powershell, cmd or bash",
-                ));
-            }
-        }
         for (field, version) in self.pinned_versions() {
             VersionReq::parse(version).map_err(|_| invalid(field, "not a valid version"))?;
         }
@@ -559,6 +568,9 @@ impl Config {
         let mut warnings = Vec::new();
         if !crate::ca::is_special_use(&self.sites.tld) {
             warnings.push(ConfigWarning::PublicTld(self.sites.tld.clone()));
+        }
+        if let crate::shell::Preference::Unknown(name) = self.terminal_preference() {
+            warnings.push(ConfigWarning::UnknownTerminal(name.to_owned()));
         }
         let s = &self.services;
         for (first, second, both) in [

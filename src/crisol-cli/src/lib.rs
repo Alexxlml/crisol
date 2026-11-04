@@ -413,7 +413,7 @@ impl Session<'_> {
         let desktop = std::sync::Arc::clone(&self.context.client.desktop);
         let find = |t: Terminal| desktop.find_terminal(t, parent);
         // What was typed, then the terminal this was typed in, then `[shell] terminal`.
-        let chosen = shell::choose_terminal(asked, config.preferred_terminal(), parent, &find);
+        let chosen = shell::choose_terminal(asked, config.terminal_preference(), parent, &find);
         let (terminal, program, note) = match chosen {
             Ok(chosen) => chosen,
             Err(error) => return self.shell_error(&error),
