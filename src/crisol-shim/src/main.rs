@@ -280,7 +280,13 @@ fn run_child(process: &mut Process, program: &Path) -> Result<i32, String> {
         .status()
         .map_err(|e| format!("cannot run `{}`: {e}", program.display()))?;
     // A program ended by a signal has no code; 1 is the conventional "it failed".
-    Ok(status.code().unwrap_or(FAILURE))
+    let code = status.code().unwrap_or(FAILURE);
+    // When Windows refused to load the program it prints nothing (PHP without the Visual C++
+    // runtime, ADR-0023): say why. The exit code is passed on unchanged.
+    if let Some(why) = crisol_platform::explain_exit(code) {
+        report(&format!("`{}` could not start: {why}", program.display()));
+    }
+    Ok(code)
 }
 
 /// Brings the shims of the global programs up to date. It never changes the exit code of npm.

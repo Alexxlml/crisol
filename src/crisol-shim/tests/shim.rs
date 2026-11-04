@@ -175,7 +175,34 @@ fn the_exit_code_of_the_real_program_is_the_exit_code_of_the_shim() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(code), "exit code {code}");
+        assert!(stderr(&output).is_empty(), "exit code {code}");
     }
+}
+
+/// PHP without the Visual C++ runtime ends with `STATUS_DLL_NOT_FOUND` and prints nothing
+/// (ADR-0023). The shim says why, and still passes the code on.
+#[test]
+fn a_program_windows_could_not_load_is_explained_and_its_code_kept() {
+    let rig = Rig::new();
+    rig.install("php", "8.4.27", &exe_name("php"));
+    let php = rig.shim("php");
+    #[allow(clippy::cast_possible_wrap)]
+    let dll_not_found = 0xC000_0135_u32 as i32;
+
+    let output = rig
+        .command(&php)
+        .env("ECHO_EXIT", dll_not_found.to_string())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(dll_not_found));
+    let said = stderr(&output);
+    assert!(said.starts_with("crisol: `"), "{said}");
+    assert!(
+        said.contains("could not start: Windows could not find a DLL"),
+        "{said}"
+    );
+    assert!(said.contains("(code 0xC0000135)"), "{said}");
 }
 
 #[test]

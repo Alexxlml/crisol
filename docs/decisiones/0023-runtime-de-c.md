@@ -30,3 +30,4 @@ Además, PHP, MySQL y PostgreSQL importan el runtime (`vcruntime140.dll`; MySQL 
 - Los `.exe` de Crisol casi no crecieron (`crisol.exe` mide unos 7 MB).
 - En cada `start`, la comprobación lee las cabeceras de los `.exe` de la instalación (unos pocos KB por archivo, también con el runtime instalado) para compararlas con su versión. Solo se salta la lectura cuando hay DLL sin versión registrada.
 - La instalación de PHP o de una base no se niega; el aviso llega al arrancar. `doctor` sigue avisando antes.
+- **Los shims también lo explican** (2026-11-03, prueba en Windows Sandbox de F13.4). `php -v` en la terminal de Crisol sin el runtime no imprimía nada. Ahora, si el programa sale con un código del cargador de Windows (`0xC0000135` y similares), el shim escribe en stderr qué pasó y, si falta, el enlace del runtime, con el mismo texto que `doctor` (`crisol_platform::explain_exit`). El código de salida no cambia.

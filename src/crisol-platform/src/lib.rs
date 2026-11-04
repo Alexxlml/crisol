@@ -64,6 +64,8 @@ pub use defender::DefenderExclusions;
 pub use desktop::WindowsDesktop;
 pub use desktop::{is_web_address, Desktop};
 #[cfg(windows)]
+pub use diagnose::explain_exit;
+#[cfg(windows)]
 pub use file_owner::WindowsFileOwners;
 #[cfg(windows)]
 pub use helper_install::{
