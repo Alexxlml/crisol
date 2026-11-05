@@ -346,7 +346,20 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
 
     // 5. the global default
     if let Some(request) = defaults.user {
-        return by_request(&request, Source::GlobalDefault, warnings);
+        // A default that is no longer installed (its version was removed) is not an error, as
+        // a pin in a project is: nobody asked for it there. The shims go on with the next best
+        // choice, the recommended line and then the highest version, and say so. Nothing is
+        // rewritten: `crisol.toml` is the user's.
+        match by_request(&request, Source::GlobalDefault, warnings.clone()) {
+            Err(ResolveError::NotInstalled { .. }) if !installed.is_empty() => {
+                warnings.push(format!(
+                    "the default {} {request} in crisol.toml is not installed; using the next best choice (`crisol use {} <version>` changes it)",
+                    tool.service(),
+                    tool.service(),
+                ));
+            }
+            other => return other,
+        }
     }
 
     // 6. nothing asked for a version
@@ -383,11 +396,15 @@ impl Defaults {
             Tool::Node => config.config.defaults.node,
         };
         let recommended = ctx.catalog.recommended(tool.service()).map(str::to_owned);
-        let installed = user.as_deref().or(recommended.as_deref()).and_then(|line| {
-            resolve_installed(ctx.paths, tool.service(), line)
-                .ok()
-                .flatten()
-        });
+        // A user default that is not installed stands for the recommended line.
+        let installed = [user.as_deref(), recommended.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|line| {
+                resolve_installed(ctx.paths, tool.service(), line)
+                    .ok()
+                    .flatten()
+            });
         Ok(Self {
             user,
             recommended,

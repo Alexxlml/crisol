@@ -599,6 +599,56 @@ php = \"8.5\"
 }
 
 #[test]
+fn a_default_that_was_removed_gives_way_to_the_recommended_line_and_says_so() {
+    let mut world = World::new(&["8.3.35", "8.4.26", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    world.config("[defaults]\nphp = \"7.4\"\n");
+    let resolution = world.php().expect("falls back");
+    assert_eq!(resolution.resolved.version.version.to_string(), "8.4.26");
+    assert_eq!(resolution.resolved.source, Source::CatalogRecommendation);
+    assert!(
+        resolution
+            .warnings
+            .iter()
+            .any(|w| w.contains("php 7.4") && w.contains("not installed")),
+        "{:?}",
+        resolution.warnings
+    );
+}
+
+#[test]
+fn a_default_that_was_removed_with_no_recommended_installed_gives_the_highest() {
+    let mut world = World::new(&["8.3.35", "8.5.11"], &[]);
+    world.catalog(RECOMMEND_84);
+    world.config("[defaults]\nphp = \"7.4\"\n");
+    let resolution = world.php().expect("falls back");
+    assert_eq!(resolution.resolved.version.version.to_string(), "8.5.11");
+    assert_eq!(resolution.resolved.source, Source::HighestInstalled);
+    assert_eq!(resolution.warnings.len(), 1, "{:?}", resolution.warnings);
+}
+
+#[test]
+fn a_default_that_was_removed_with_nothing_else_installed_is_still_an_error() {
+    let mut world = World::new(&[], &[]);
+    world.catalog(RECOMMEND_84);
+    // Nothing was installed, so the home does not exist yet.
+    fs::create_dir_all(world.paths.home()).unwrap();
+    world.config("[defaults]\nphp = \"7.4\"\n");
+    assert!(world.php().is_err());
+}
+
+#[test]
+fn a_pin_in_a_project_that_is_not_installed_is_still_an_error() {
+    let mut world = World::new(&["8.4.26"], &[]);
+    world.catalog(RECOMMEND_84);
+    write(&world.app, ".php-version", "7.4\n");
+    assert!(matches!(
+        world.php(),
+        Err(ResolveError::NotInstalled { .. })
+    ));
+}
+
+#[test]
 fn an_open_constraint_gets_the_default_when_it_satisfies_it() {
     let mut world = World::new(&["7.4.33", "8.4.26", "8.5.11"], &[]);
     world.catalog(&format!("{RECOMMEND_84}{}", eol_entry("php", "7.4.33")));

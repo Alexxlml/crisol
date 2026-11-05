@@ -497,15 +497,18 @@ function renderVersions() {
       const list = el("ul", "rows");
       for (const row of group.rows) {
         const item = el("li", "row");
-        item.append(el("span", "grow mono", row.version));
-        if (row.default) item.append(tag(t("versions.default"), "secure"));
-        if (row.installed && !row.default) item.append(tag(t("versions.installed")));
-        if (row.recommended) item.append(tag(t("versions.recommended")));
-        if (row.end_of_life) item.append(tag(t("versions.end_of_life"), "warn"));
+        item.append(el("span", "version-name mono", row.version));
+        // The marks wrap among themselves, so the buttons stay on the first line of the row.
+        const marks = el("span", "tags");
+        if (row.default) marks.append(tag(t("versions.default"), "secure"));
+        if (row.installed && !row.default) marks.append(tag(t("versions.installed")));
+        if (row.recommended) marks.append(tag(t("versions.recommended")));
+        if (row.end_of_life) marks.append(tag(t("versions.end_of_life"), "warn"));
         if (row.advisories.length) {
-          item.append(tag(t("versions.vulnerable", { ids: row.advisories.join(", ") }), "warn"));
+          marks.append(tag(t("versions.vulnerable", { ids: row.advisories.join(", ") }), "warn"));
         }
-        if (row.unverified) item.append(tag(t("versions.unverified"), "warn"));
+        if (row.unverified) marks.append(tag(t("versions.unverified"), "warn"));
+        item.append(marks);
         const installing = pending.has(
           JSON.stringify({ do: "install", service: row.service, version: row.version })
         );

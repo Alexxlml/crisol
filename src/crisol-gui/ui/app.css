@@ -237,3 +237,5 @@ button { font: inherit; color: inherit; }
 .button.danger { border-color: var(--heat-1); color: var(--heat-1); }
 .progress { display: inline-flex; align-items: center; gap: var(--space-3); min-width: 220px; }
 .progress progress { flex: 1; height: 8px; accent-color: var(--accent); }
+.version-name { flex: none; min-width: 7ch; }
+.row .tags { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
