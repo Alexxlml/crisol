@@ -22,6 +22,7 @@ mod settings;
 mod sites;
 mod summary;
 mod terminal;
+mod versions;
 #[cfg(windows)]
 mod windows;
 
@@ -42,6 +43,10 @@ pub use terminal::{
     choose_terminal, clean_env, current_terminal_options, launch_terminal, open_terminal,
     projects_folder, start_folder, terminal_options, Opened, Place, TerminalOption,
     TerminalOptions,
+};
+pub use versions::{
+    fetch_versions, run_version_act, tool_of, version_actions, versions_view, Progress,
+    ProgressGate, ServiceVersions, VersionAct, VersionAction, VersionRow, VersionsView,
 };
 #[cfg(windows)]
 pub use windows::WindowsError;

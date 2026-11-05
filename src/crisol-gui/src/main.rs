@@ -16,9 +16,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use crisol_client::{
-    clean_env, connect, current_terminal_options, fetch_sites, open_site as open_in_browser,
-    suggested_site_name, Act, Context, GuiSettings, Language, LeaveAction, LiveConfig, LiveState,
-    LiveView, Opened, Place, SitesView, Summary, TerminalOptions,
+    clean_env, connect, current_terminal_options, fetch_sites, fetch_versions,
+    open_site as open_in_browser, run_version_act, suggested_site_name, Act, Context, GuiSettings,
+    Language, LeaveAction, LiveConfig, LiveState, LiveView, Opened, Place, SitesView, Summary,
+    TerminalOptions, VersionAct, VersionsView,
 };
 use crisol_protocol::{Call, Reply, RpcError};
 use serde::Serialize;
@@ -271,6 +272,31 @@ async fn sites() -> Result<SitesView, Failure> {
     blocking(|context| fetch_sites(context).map_err(Failure::from)).await
 }
 
+/// What is installed and what could be, with the buttons of each row.
+#[tauri::command]
+async fn versions() -> Result<VersionsView, Failure> {
+    blocking(|context| fetch_versions(context).map_err(Failure::from)).await
+}
+
+/// A click of the versions screen. An installation tells the page how far it is (the
+/// `install_progress` event) while the daemon downloads; the answer is the daemon's own
+/// (`installed`, `removed` or `used`), for the page to word. The daemon finishes an installation
+/// whatever becomes of this window.
+#[tauri::command]
+async fn version_act(app: AppHandle, act: VersionAct) -> Result<Reply, Failure> {
+    let progress_to = app.clone();
+    let reply = blocking(move |context| {
+        run_version_act(context, &act, &mut |progress| {
+            let _ = progress_to.emit("install_progress", progress);
+        })
+        .map_err(Failure::from)
+    })
+    .await?;
+    // `use` writes `crisol.toml`, and no event tells anybody.
+    publish(&app);
+    Ok(reply)
+}
+
 #[tauri::command]
 async fn open_site(name: String) -> Result<(), Failure> {
     blocking(move |context| open_in_browser(context, &name).map_err(Failure::from)).await
@@ -374,6 +400,8 @@ fn main() {
             quit_confirmed,
             act,
             sites,
+            versions,
+            version_act,
             open_site,
             pick_folder,
             open_terminal,

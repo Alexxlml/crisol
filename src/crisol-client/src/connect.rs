@@ -7,7 +7,7 @@ use crisol_core::daemon::Daemon;
 use crisol_core::engine::Engine;
 use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_protocol::{
-    Call, Check, CheckStatus, ClientError, ErrorCode, Reply, RpcError, PROTOCOL_VERSION,
+    Call, Check, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
 };
 
 use crate::context::Context;
@@ -70,8 +70,19 @@ pub fn call(
     call: &Call,
     notice: &mut dyn FnMut(&str),
 ) -> Result<Reply, RpcError> {
+    call_with_events(context, call, notice, &mut |_| {})
+}
+
+/// Like [`call`], giving `on_event` the events the daemon sends to this call alone (the progress
+/// of an installation).
+pub fn call_with_events(
+    context: &Context,
+    call: &Call,
+    notice: &mut dyn FnMut(&str),
+    on_event: &mut dyn FnMut(Event),
+) -> Result<Reply, RpcError> {
     let mut opened = open(context, call, notice)?;
-    opened.link.call(call, &mut |_| {}).map_err(client_error)
+    opened.link.call(call, on_event).map_err(client_error)
 }
 
 /// This process answering for a daemon that is not there.

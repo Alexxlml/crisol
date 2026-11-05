@@ -16,6 +16,9 @@ let sitesView = null; // the last answer of `sites`
 let terminalOptions = null; // the last answer of `terminal_options`
 let wasReloading = false;
 let picked = null; // the folder waiting for a name in the link dialog
+let versionsView = null; // the last answer of `versions`
+let installProgress = {}; // how far each installation in flight is, by what it installs
+let confirming = null; // the version whose removal waits for a second click
 
 // The dictionary key of what the daemon says; a state this page does not know shows as itself.
 const STATE_KEYS = {
@@ -90,6 +93,7 @@ function showSection(name) {
   document.getElementById("title").textContent = t("section." + name + ".title");
   // What a section draws is asked when it is opened; the app owns the truth.
   if (name === "sites") refreshSites();
+  if (name === "versions") refreshVersions();
   if (name === "settings") refreshTerminalOptions();
 }
 
@@ -142,6 +146,82 @@ async function loadSites() {
 
 function refreshSites() {
   return run("sites", loadSites);
+}
+
+async function loadVersions() {
+  versionsView = await invoke("versions");
+}
+
+function refreshVersions() {
+  return run("versions", loadVersions);
+}
+
+// 12 345 678 → "11.8 MB". Only how a number is drawn.
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return (unit === 0 ? String(value) : value.toFixed(1)) + " " + units[unit];
+}
+
+// What the daemon answered to a click of the versions screen, in the words of this page; what the
+// core says about a version (its vulnerabilities) comes as it said it.
+function versionNotice(reply) {
+  if (reply.type === "installed") {
+    const name = reply.service + " " + reply.version;
+    const warnings = [];
+    if (reply.unverified) warnings.push(t("versions.warn_unverified", { name }));
+    if (reply.end_of_life) warnings.push(t("versions.warn_end_of_life", { name }));
+    for (const advisory of reply.advisories || []) {
+      const remedy = advisory.fixed_in
+        ? t("versions.fixed_in", { version: advisory.fixed_in })
+        : t("versions.no_fix");
+      // The summary is the core's sentence, with or without its full stop.
+      const summary = advisory.summary.replace(/[.\s]+$/, "");
+      warnings.push(
+        t("versions.warn_advisory", { name, id: advisory.id, summary }) + ". " + remedy
+      );
+    }
+    return {
+      message: reply.already
+        ? t("versions.done_already", { name })
+        : t("versions.done_installed", { name, size: formatBytes(reply.downloaded) }),
+      warnings,
+    };
+  }
+  if (reply.type === "removed") {
+    return {
+      message: t("versions.done_removed", { name: reply.service + " " + reply.version }),
+      warnings: [],
+    };
+  }
+  if (reply.type === "used") {
+    return {
+      // `selects` already names the tool (`php 7.4.33`).
+      message: t("versions.done_used", { name: reply.selects }),
+      warnings: reply.warnings || [],
+    };
+  }
+  return null;
+}
+
+// A click of the versions screen. The app turns it into the call the command line would make.
+async function performVersion(act) {
+  confirming = null;
+  const what = act.service + " " + act.version;
+  await run(JSON.stringify(act), async () => {
+    notice = null;
+    try {
+      notice = versionNotice(await invoke("version_act", { act }));
+    } finally {
+      delete installProgress[what];
+    }
+    await loadVersions();
+  });
 }
 
 function refreshTerminalOptions() {
@@ -340,6 +420,104 @@ function renderSites() {
   }
 }
 
+// The bar of an installation in flight: how many bytes of how many, or only the bytes when the
+// server did not say the total.
+function progressBox(row) {
+  const what = row.service + " " + row.version;
+  const progress = installProgress[what];
+  const box = el("span", "progress");
+  if (!progress) {
+    box.append(el("span", "detail", t("versions.waiting")));
+    return box;
+  }
+  const bar = el("progress");
+  bar.setAttribute("aria-label", t("versions.progress_label", { name: what }));
+  bar.max = 100;
+  if (progress.percent !== null) bar.value = progress.percent;
+  box.append(bar);
+  box.append(
+    el(
+      "span",
+      "detail",
+      progress.total
+        ? t("versions.progress", { done: formatBytes(progress.done), total: formatBytes(progress.total) })
+        : t("versions.progress_unknown", { done: formatBytes(progress.done) })
+    )
+  );
+  return box;
+}
+
+function versionButtons(row) {
+  const actions = el("span", "actions");
+  const key = row.service + " " + row.version;
+  for (const action of row.actions) {
+    const act = { do: action, service: row.service, version: row.version };
+    if (action === "uninstall") {
+      // Removing deletes the files of that version: it takes a second click.
+      if (confirming === key) {
+        actions.append(
+          button(t("action.confirm_remove", { version: row.version }), () => performVersion(act), JSON.stringify(act), "danger"),
+          button(t("action.keep"), () => {
+            confirming = null;
+            render();
+          })
+        );
+      } else {
+        actions.append(
+          button(t("action.uninstall"), () => {
+            confirming = key;
+            render();
+          })
+        );
+      }
+    } else {
+      actions.append(button(t("action." + action), () => performVersion(act), JSON.stringify(act)));
+    }
+  }
+  return actions;
+}
+
+function renderVersions() {
+  const box = document.getElementById("versions");
+  const empty = document.getElementById("versions-empty");
+  if (!versionsView) {
+    box.replaceChildren();
+    empty.hidden = false;
+    empty.textContent = t("versions.loading");
+    return;
+  }
+  empty.hidden = versionsView.services.length > 0;
+  empty.textContent = t("versions.none");
+  box.replaceChildren(
+    ...versionsView.services.map((group) => {
+      const section = el("div", "version-group");
+      const title = el("h2", "version-title");
+      title.append(el("span", "dot " + group.service), el("span", null, group.service));
+      section.append(title);
+      const list = el("ul", "rows");
+      for (const row of group.rows) {
+        const item = el("li", "row");
+        item.append(el("span", "grow mono", row.version));
+        if (row.default) item.append(tag(t("versions.default"), "secure"));
+        if (row.installed && !row.default) item.append(tag(t("versions.installed")));
+        if (row.recommended) item.append(tag(t("versions.recommended")));
+        if (row.end_of_life) item.append(tag(t("versions.end_of_life"), "warn"));
+        if (row.advisories.length) {
+          item.append(tag(t("versions.vulnerable", { ids: row.advisories.join(", ") }), "warn"));
+        }
+        if (row.unverified) item.append(tag(t("versions.unverified"), "warn"));
+        const installing = pending.has(
+          JSON.stringify({ do: "install", service: row.service, version: row.version })
+        );
+        item.append(installing ? progressBox(row) : versionButtons(row));
+        list.append(item);
+      }
+      section.append(list);
+      return section;
+    })
+  );
+}
+
 function renderSettings() {
   const select = document.getElementById("terminal-select");
   const effective = document.getElementById("terminal-effective");
@@ -447,6 +625,7 @@ function render() {
   renderReloading(current);
   renderServices(current);
   renderSites();
+  renderVersions();
   renderSettings();
   renderBanners(current);
 }
@@ -463,6 +642,10 @@ async function start() {
   await listen("call_failed", (event) => {
     failure = event.payload;
     render();
+  });
+  await listen("install_progress", (event) => {
+    installProgress[event.payload.what] = event.payload;
+    if (section === "versions") render();
   });
   await listen("exit_notice", () => setExitNotice(true));
   await listen("exit_notice_dismiss", () => setExitNotice(false));

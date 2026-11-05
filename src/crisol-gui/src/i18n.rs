@@ -167,6 +167,9 @@ mod tests {
             "secure",
             "unsecure",
             "unlink",
+            "install",
+            "uninstall",
+            "use",
         ] {
             used.insert(format!("action.{action}"));
         }
