@@ -42,8 +42,8 @@ impl Style {
     }
 
     /// Decides from the facts about an output that is a terminal already: formatting needs
-    /// that it takes escape codes (`ansi_ok`), no `NO_COLOR` (any value, as the convention
-    /// says), no `TERM=dumb` and no `--plain`.
+    /// that it takes escape codes (`ansi_ok`), no `NO_COLOR` (the caller counts only a
+    /// value that is not empty, as the convention says), no `TERM=dumb` and no `--plain`.
     #[must_use]
     pub fn detect(
         ansi_ok: bool,
@@ -575,9 +575,15 @@ pub fn error_styled(error: &RpcError, style: &Style) -> String {
 
 /// What to write over the line of a download that is shown in place: `None` when there is
 /// nothing new (same percentage as before, or an event of another kind). It starts with the
-/// code that erases the line, so the caller writes it as it is, without a newline.
+/// code that erases the line, so the caller writes it as it is, without a newline. The text is
+/// cut to `width` characters: a line that wrapped could not be erased, and each redraw would
+/// leave a new line behind.
 #[must_use]
-pub fn progress_in_place(event: &Event, last_percent: &mut Option<u64>) -> Option<String> {
+pub fn progress_in_place(
+    event: &Event,
+    last_percent: &mut Option<u64>,
+    width: usize,
+) -> Option<String> {
     let Event::Progress {
         what,
         done,
@@ -615,6 +621,7 @@ pub fn progress_in_place(event: &Event, last_percent: &mut Option<u64>) -> Optio
             format!("{doing}...")
         }
     };
+    let text: String = text.chars().take(width.max(1)).collect();
     Some(format!("\r\x1b[2K{text}"))
 }
 

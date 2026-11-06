@@ -14,9 +14,13 @@ fn style_of(stream: crisol_platform::Stream, is_terminal: bool) -> Style {
     let width = crisol_platform::console_width(stream)
         .or_else(|| std::env::var("COLUMNS").ok()?.trim().parse().ok())
         .unwrap_or(80);
+    // One column short of the window: the classic console wraps as soon as a line fills the
+    // last column, and the newline after it would then leave an empty line under each row.
+    let width = width.saturating_sub(1);
     Style::detect(
         crisol_platform::enable_ansi(stream),
-        std::env::var_os("NO_COLOR").is_some(),
+        // The convention (no-color.org) counts only a value that is not empty.
+        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
         std::env::var("TERM").ok().as_deref(),
         false,
         width,

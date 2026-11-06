@@ -904,6 +904,7 @@ impl Session<'_> {
         let mut last = None;
         let json = self.json;
         let in_place = self.err_style.formatted;
+        let err_width = self.err_style.width;
         let mut drawn = false;
         let err = &mut *self.err;
         let outcome = link.call(call, &mut |event| {
@@ -912,7 +913,7 @@ impl Session<'_> {
             }
             if in_place {
                 // One line that is drawn again over itself (ADR-0028).
-                if let Some(line) = render::progress_in_place(&event, &mut last) {
+                if let Some(line) = render::progress_in_place(&event, &mut last, err_width) {
                     drawn = true;
                     let _ = write!(err, "{line}");
                     let _ = err.flush();

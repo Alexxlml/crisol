@@ -237,21 +237,35 @@ fn progress_in_place_redraws_one_line_and_only_when_the_percentage_moves() {
         from_file: false,
     };
     let mut last = None;
-    let first = progress_in_place(&event(500), &mut last).unwrap();
+    let first = progress_in_place(&event(500), &mut last, 80).unwrap();
     assert!(first.starts_with("\r\x1b[2K"));
     assert_eq!(
         strip_ansi(&first).trim_start_matches('\r'),
         "Downloading nginx 1.30.5  [██████████░░░░░░░░░░] 50% (500 B)"
     );
     assert!(
-        progress_in_place(&event(501), &mut last).is_none(),
+        progress_in_place(&event(501), &mut last, 80).is_none(),
         "same percentage"
     );
-    assert!(progress_in_place(&event(510), &mut last).is_some());
+    assert!(progress_in_place(&event(510), &mut last, 80).is_some());
     assert!(
-        progress_in_place(&event(2000), &mut last)
+        progress_in_place(&event(2000), &mut last, 80)
             .unwrap()
             .contains("100%"),
         "never past 100"
     );
+}
+
+#[test]
+fn progress_in_place_never_wraps_in_a_narrow_window() {
+    let event = Event::Progress {
+        what: "php 8.4.27".to_owned(),
+        done: 300,
+        total: Some(1000),
+        from_file: false,
+    };
+    let line = progress_in_place(&event, &mut None, 30).unwrap();
+    let shown = line.trim_start_matches("\r\x1b[2K");
+    assert_eq!(shown.chars().count(), 30);
+    assert!(shown.starts_with("Downloading php 8.4.27"));
 }
