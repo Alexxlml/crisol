@@ -162,16 +162,21 @@ impl Session<'_> {
         }
     }
 
-    /// Prints a text, or `json` when `--json` was given.
-    fn say(&mut self, text: &str, json: &serde_json::Value) {
+    /// Prints the lines of a message, each with its own mark in a terminal (ADR-0028), or `json`
+    /// when `--json` was given.
+    fn say_lines(&mut self, lines: &[(String, render::Outcome)], json: &serde_json::Value) {
         if self.json {
             let _ = writeln!(self.out, "{json}");
         } else {
-            let _ = writeln!(self.out, "{text}");
+            for (line, outcome) in lines {
+                let shown = render::message_styled(line, *outcome, &self.style);
+                let _ = write!(self.out, "{shown}");
+            }
         }
     }
 
-    /// Like [`Self::say`], with the mark of `outcome` in a terminal (ADR-0028).
+    /// Prints a text with the mark of `outcome` on its first line in a terminal (ADR-0028), or
+    /// `json` when `--json` was given.
     fn say_marked(&mut self, text: &str, outcome: render::Outcome, json: &serde_json::Value) {
         if self.json {
             let _ = writeln!(self.out, "{json}");
@@ -563,14 +568,17 @@ impl Session<'_> {
             if let Some(thumbprint) = &plan.thumbprint {
                 lines.push(format!("  SHA-1   {thumbprint}"));
             }
-            if !plan.already {
-                lines.push(
-                    "Windows will ask you to confirm: check that the thumbprint (sha1) it shows is the SHA-1 above"
-                        .to_owned(),
-                );
-            }
             for line in lines {
                 let _ = writeln!(self.out, "{line}");
+            }
+            if !plan.already {
+                // A thing to look at before saying yes.
+                let ask = render::message_styled(
+                    "Windows will ask you to confirm: check that the thumbprint (sha1) it shows is the SHA-1 above",
+                    render::Outcome::Warn,
+                    &self.style,
+                );
+                let _ = write!(self.out, "{ask}");
             }
             let _ = self.out.flush();
         }
@@ -578,29 +586,34 @@ impl Session<'_> {
             Ok(outcome) => outcome,
             Err(error) => return self.trust_error(&error),
         };
-        let (word, mut lines, code) = match outcome {
+        let (word, said, mark, code) = match outcome {
             AddOutcome::Added => (
                 "added",
-                vec![
-                    "Windows trusts it now; a browser that was open may need a restart".to_owned(),
-                ],
+                "Windows trusts it now; a browser that was open may need a restart",
+                render::Outcome::Good,
                 EXIT_OK,
             ),
             AddOutcome::AlreadyThere => (
                 "already",
-                vec!["Windows already trusts it; nothing was changed".to_owned()],
+                "Windows already trusts it; nothing was changed",
+                render::Outcome::Good,
                 EXIT_OK,
             ),
             AddOutcome::Declined => (
                 "declined",
-                vec!["Windows was told no; nothing was changed".to_owned()],
+                "Windows was told no; nothing was changed",
+                render::Outcome::Bad,
                 EXIT_FAILED,
             ),
         };
+        let mut lines = vec![(said.to_owned(), mark)];
         if !plan.stale.is_empty() {
-            lines.push(format!(
-                "Older Crisol CAs are still trusted: {}; `crisol untrust --stale` takes them out",
-                plan.stale.join(", ")
+            lines.push((
+                format!(
+                    "Older Crisol CAs are still trusted: {}; `crisol untrust --stale` takes them out",
+                    plan.stale.join(", ")
+                ),
+                render::Outcome::Warn,
             ));
         }
         let json = serde_json::json!({
@@ -612,7 +625,7 @@ impl Session<'_> {
             "valid_until": info.valid_until(),
             "stale": plan.stale,
         });
-        self.say(&lines.join("\n"), &json);
+        self.say_lines(&lines, &json);
         code
     }
 
@@ -639,7 +652,13 @@ impl Session<'_> {
             Err(error) => return self.trust_error(&error),
         };
         let tld = crisol_core::setup::suffix_of(paths);
-        let mut lines = vec![match (report.removed.is_empty(), stale, &report.current) {
+        // Nothing changed only because Windows was told no: the line under it carries the cross.
+        let first_mark = if report.removed.is_empty() && !report.declined.is_empty() {
+            render::Outcome::Info
+        } else {
+            render::Outcome::Good
+        };
+        let first = match (report.removed.is_empty(), stale, &report.current) {
             _ if report.removed.is_empty() && !report.declined.is_empty() => {
                 "Nothing was changed".to_owned()
             }
@@ -656,17 +675,24 @@ impl Session<'_> {
                 "Windows no longer trusts {}: browsers warn about the secured sites under .{tld} until `crisol trust`",
                 report.removed.join(", ")
             ),
-        }];
+        };
+        let mut lines = vec![(first, first_mark)];
         if !report.declined.is_empty() {
-            lines.push(format!(
-                "Windows was told no for {}; it is still trusted",
-                report.declined.join(", ")
+            lines.push((
+                format!(
+                    "Windows was told no for {}; it is still trusted",
+                    report.declined.join(", ")
+                ),
+                render::Outcome::Bad,
             ));
         }
         if !stale && report.stale_left > 0 {
-            lines.push(format!(
-                "{} older Crisol CA(s) are still trusted; `crisol untrust --stale` takes them out",
-                report.stale_left
+            lines.push((
+                format!(
+                    "{} older Crisol CA(s) are still trusted; `crisol untrust --stale` takes them out",
+                    report.stale_left
+                ),
+                render::Outcome::Warn,
             ));
         }
         let json = serde_json::json!({
@@ -675,7 +701,7 @@ impl Session<'_> {
             "current": report.current,
             "stale_left": report.stale_left,
         });
-        self.say(&lines.join("\n"), &json);
+        self.say_lines(&lines, &json);
         if report.declined.is_empty() {
             EXIT_OK
         } else {
