@@ -160,8 +160,22 @@ pub fn draw(headers: &[&str], rows: &[Vec<Cell>], width: usize, color: bool) -> 
     let head: Vec<Cell> = headers.iter().map(|h| Cell::new(*h, Tone::Bold)).collect();
     push_row(&mut out, &head, &widths, color);
     out.push_str(&rule("├", "┼", "┤"));
-    for row in rows {
-        push_row(&mut out, row, &widths, color);
+    let drawn: Vec<(String, usize)> = rows
+        .iter()
+        .map(|row| {
+            let mut text = String::new();
+            push_row(&mut text, row, &widths, color);
+            let height = text.lines().count();
+            (text, height)
+        })
+        .collect();
+    // When a row takes several lines, a rule between rows keeps them from running together.
+    let separate = drawn.iter().any(|(_, height)| *height > 1);
+    for (n, (text, _)) in drawn.iter().enumerate() {
+        if separate && n > 0 {
+            out.push_str(&rule("├", "┼", "┤"));
+        }
+        out.push_str(text);
     }
     out.push_str(&rule("└", "┴", "┘"));
     Some(out)

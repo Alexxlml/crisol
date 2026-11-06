@@ -82,16 +82,18 @@ fn doctor_is_a_boxed_table_with_the_fix_inside_the_cell_and_a_summary() {
 │ Status │ Check              │ Detail                     │
 ├────────┼────────────────────┼────────────────────────────┤
 │ ✓ ok   │ home permissions   │ only you can write to it   │
+├────────┼────────────────────┼────────────────────────────┤
 │ ! warn │ Visual C++ runtime │ not installed              │
 │        │                    │ fix:                       │
 │        │                    │ https://aka.ms/vs/17/relea │
 │        │                    │ se/vc_redist.x64.exe       │
+├────────┼────────────────────┼────────────────────────────┤
 │ ✗ fail │ php                │ 8.4.26 cannot start        │
 └────────┴────────────────────┴────────────────────────────┘
 1 ok · 1 warning · 1 problem
 ";
     assert_eq!(text, expected);
-    for line in text.lines().take(10) {
+    for line in text.lines().take(12) {
         assert_eq!(line.chars().count(), 60, "{line}");
     }
 }
