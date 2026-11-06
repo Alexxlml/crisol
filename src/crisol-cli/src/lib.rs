@@ -171,6 +171,16 @@ impl Session<'_> {
         }
     }
 
+    /// Like [`Self::say`], with the mark of `outcome` in a terminal (ADR-0028).
+    fn say_marked(&mut self, text: &str, outcome: render::Outcome, json: &serde_json::Value) {
+        if self.json {
+            let _ = writeln!(self.out, "{json}");
+        } else {
+            let shown = render::message_styled(text, outcome, &self.style);
+            let _ = write!(self.out, "{shown}");
+        }
+    }
+
     fn shims(&mut self, action: ShimsAction) -> u8 {
         match action {
             ShimsAction::Install => self.shims_install(),
@@ -247,7 +257,14 @@ impl Session<'_> {
             "globals_removed": done.globals_removed,
             "globals_skipped": globals_skipped,
         });
-        self.say(&text, &json);
+        let outcome = if !done.failed.is_empty() {
+            render::Outcome::Bad
+        } else if done.globals_skipped.is_empty() {
+            render::Outcome::Good
+        } else {
+            render::Outcome::Warn
+        };
+        self.say_marked(&text, outcome, &json);
         if done.failed.is_empty() {
             EXIT_OK
         } else {
@@ -279,7 +296,12 @@ impl Session<'_> {
         let json = serde_json::json!({
             "added": done.added, "removed": done.removed, "skipped": skipped,
         });
-        self.say(&text, &json);
+        let outcome = if done.skipped.is_empty() {
+            render::Outcome::Good
+        } else {
+            render::Outcome::Warn
+        };
+        self.say_marked(&text, outcome, &json);
         EXIT_OK
     }
 
@@ -292,7 +314,11 @@ impl Session<'_> {
                 } else {
                     format!("{} shim(s) removed from {folder}", removed.len())
                 };
-                self.say(&text, &serde_json::json!({ "removed": removed }));
+                self.say_marked(
+                    &text,
+                    render::Outcome::Good,
+                    &serde_json::json!({ "removed": removed }),
+                );
                 EXIT_OK
             }
             Err(e) => self.fail(&RpcError::new(ErrorCode::Io, e.to_string())),
@@ -328,7 +354,12 @@ impl Session<'_> {
             .map(|(c, p)| serde_json::json!({"command": c, "present": p}))
             .collect();
         let json = serde_json::json!({"folder": folder, "shims": list, "globals": globals});
-        self.say(&text, &json);
+        let outcome = if missing.is_empty() {
+            render::Outcome::Good
+        } else {
+            render::Outcome::Warn
+        };
+        self.say_marked(&text, outcome, &json);
         EXIT_OK
     }
 
@@ -367,7 +398,16 @@ impl Session<'_> {
             _ => format!("{folder} is not in your user PATH; `crisol path add` puts it there"),
         };
         // What would win over the shims matters whenever they are (or are about to be) in use.
-        if word != "removed" && word != "absent" {
+        let shows_shadows = word != "removed" && word != "absent";
+        // Not in the PATH is only worth a `!` when it was asked about, not after `path remove`.
+        let outcome = if (shows_shadows && !status.shadows.is_empty())
+            || (word == "status" && !status.in_path)
+        {
+            render::Outcome::Warn
+        } else {
+            render::Outcome::Good
+        };
+        if shows_shadows {
             for line in shimsetup::describe_shadows(&status.shadows) {
                 text.push_str("\n  ");
                 text.push_str(&line);
@@ -389,7 +429,7 @@ impl Session<'_> {
             "in_path": status.in_path,
             "shadowed_by": shadowed,
         });
-        self.say(&text, &json);
+        self.say_marked(&text, outcome, &json);
         EXIT_OK
     }
 
@@ -858,30 +898,37 @@ impl Session<'_> {
         };
         let store = self.context.client.autostart.as_ref();
         let io_error = |e: std::io::Error| RpcError::new(ErrorCode::Io, e.to_string());
-        let (word, message) = match action {
+        // Off is a choice, not a fault: as a plain answer to `status` it carries no mark.
+        let (good, info, warn) = (
+            render::Outcome::Good,
+            render::Outcome::Info,
+            render::Outcome::Warn,
+        );
+        let (word, outcome, message) = match action {
             AutostartAction::On => match crisol_core::autostart::enable(store, &daemon, self.context.client.dirs.as_ref()) {
-                Ok(AutostartChange::Enabled) => ("on", "Crisol will start when you sign in".to_owned()),
-                Ok(AutostartChange::Replaced) => ("on", "Crisol will start when you sign in (the entry of another crisold was replaced)".to_owned()),
-                Ok(AutostartChange::Unchanged) => ("on", "Crisol already starts when you sign in".to_owned()),
+                Ok(AutostartChange::Enabled) => ("on", good, "Crisol will start when you sign in".to_owned()),
+                Ok(AutostartChange::Replaced) => ("on", good, "Crisol will start when you sign in (the entry of another crisold was replaced)".to_owned()),
+                Ok(AutostartChange::Unchanged) => ("on", good, "Crisol already starts when you sign in".to_owned()),
                 Err(crisol_core::autostart::AutostartError::Program(e)) => return self.fail(&program_error(&e)),
                 Err(crisol_core::autostart::AutostartError::Io(e)) => return self.fail(&io_error(e)),
             },
             AutostartAction::Off => match crisol_core::autostart::disable(store) {
-                Ok(true) => ("off", "Crisol will not start when you sign in".to_owned()),
-                Ok(false) => ("off", "Crisol did not start when you signed in".to_owned()),
+                Ok(true) => ("off", good, "Crisol will not start when you sign in".to_owned()),
+                Ok(false) => ("off", good, "Crisol did not start when you signed in".to_owned()),
                 Err(e) => return self.fail(&io_error(e)),
             },
             AutostartAction::Status => match crisol_core::autostart::state(store, &daemon) {
-                Ok(AutostartState::On) => ("on", "Crisol starts when you sign in".to_owned()),
-                Ok(AutostartState::Off) => ("off", "Crisol does not start when you sign in; `crisol autostart on` makes it".to_owned()),
-                Ok(AutostartState::Other(other)) => ("other", format!("Crisol starts when you sign in, but with another crisold: {other}")),
+                Ok(AutostartState::On) => ("on", good, "Crisol starts when you sign in".to_owned()),
+                Ok(AutostartState::Off) => ("off", info, "Crisol does not start when you sign in; `crisol autostart on` makes it".to_owned()),
+                Ok(AutostartState::Other(other)) => ("other", warn, format!("Crisol starts when you sign in, but with another crisold: {other}")),
                 Err(e) => return self.fail(&io_error(e)),
             },
         };
         if self.json {
             let _ = writeln!(self.out, "{{\"autostart\":\"{word}\"}}");
         } else {
-            let _ = writeln!(self.out, "{message}");
+            let shown = render::message_styled(&message, outcome, &self.style);
+            let _ = write!(self.out, "{shown}");
         }
         EXIT_OK
     }

@@ -387,6 +387,35 @@ fn marked(text: &str) -> String {
     out
 }
 
+/// How a message that the CLI writes by itself (`shims`, `path`, `autostart`) went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Done, or all is in place: a green tick.
+    Good,
+    /// Done, but something deserves a look: a yellow `!`.
+    Warn,
+    /// Part of it failed: a red cross.
+    Bad,
+    /// Only says how things are, neither good nor bad: no mark.
+    Info,
+}
+
+/// A message of the CLI's own, ending with a newline. Formatted, its first line carries the
+/// mark of `outcome`; the lines under it are kept as they are. Plain, it is the text itself.
+#[must_use]
+pub fn message_styled(text: &str, outcome: Outcome, style: &Style) -> String {
+    let mark = match outcome {
+        Outcome::Good => Some(("✓", Tone::Good)),
+        Outcome::Warn => Some(("!", Tone::Warn)),
+        Outcome::Bad => Some(("✗", Tone::Bad)),
+        Outcome::Info => None,
+    };
+    match mark {
+        Some((mark, tone)) if style.formatted => format!("{} {text}\n", paint(mark, tone)),
+        _ => format!("{text}\n"),
+    }
+}
+
 fn warnings_marked(out: &mut String, list: &[String]) {
     for warning in list {
         let _ = writeln!(out, "{}", paint(&format!("! {warning}"), Tone::Warn));

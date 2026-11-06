@@ -269,3 +269,37 @@ fn progress_in_place_never_wraps_in_a_narrow_window() {
     assert_eq!(shown.chars().count(), 30);
     assert!(shown.starts_with("Downloading php 8.4.27"));
 }
+
+#[test]
+fn a_message_of_the_cli_carries_the_mark_of_how_it_went() {
+    let text = "3 shim(s) written\n  no command `x`: taken";
+    let shown = message_styled(text, Outcome::Warn, &Style::formatted(80));
+    assert_eq!(strip_ansi(&shown), format!("! {text}\n"));
+    assert!(shown.starts_with("\x1b[33m!"), "the mark is yellow");
+    assert_eq!(
+        strip_ansi(&message_styled(
+            "done",
+            Outcome::Good,
+            &Style::formatted(80)
+        )),
+        "✓ done\n"
+    );
+    assert_eq!(
+        strip_ansi(&message_styled(
+            "failed",
+            Outcome::Bad,
+            &Style::formatted(80)
+        )),
+        "✗ failed\n"
+    );
+    assert_eq!(
+        message_styled("off", Outcome::Info, &Style::formatted(80)),
+        "off\n",
+        "a plain fact has no mark"
+    );
+    assert_eq!(
+        message_styled(text, Outcome::Good, &Style::plain()),
+        format!("{text}\n"),
+        "plain text is unchanged"
+    );
+}
