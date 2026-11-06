@@ -142,6 +142,28 @@
   "versions.no_fix": "No hay una versión corregida.",
   "versions.missing_default": "crisol.toml pide {tool} {asked}, que ya no está instalada; se usa {version}. Elige una con «Usar esta» para que los comandos dejen de avisarlo.",
 
+  "logs.service": "Registro de",
+  "logs.follow": "Seguir el final",
+  "logs.loading": "Leyendo el registro…",
+  "logs.empty": "El registro está vacío por ahora.",
+
+  "credentials.service": "Servicio",
+  "credentials.loading": "Leyendo las credenciales…",
+  "credentials.copied": "Se copió {what} al portapapeles",
+  "credentials.copy_failed": "El portapapeles no aceptó el texto. Selecciónalo y cópialo a mano.",
+  "credentials.show": "Mostrar",
+  "credentials.hide": "Ocultar",
+  "credentials.copy": "Copiar",
+  "credentials.copy_env": "Copiar todo como .env",
+  "credentials.reset": "Restablecer contraseña…",
+  "credentials.reset_confirm": "Restablecer la contraseña de {name}",
+  "credentials.reset_warning": "Una contraseña nueva reemplaza a la actual y hay que actualizar todos los proyectos que la usan. Los datos se conservan.",
+  "credentials.no_password": "{name} no tiene contraseña que restablecer.",
+  "credentials.reset_needs_daemon": "Restablecer una contraseña pasa por el daemon de Crisol, que no está corriendo. Usa antes Iniciar todo.",
+  "credentials.reset_stop_first": "{name} lee su contraseña solo al arrancar. Detenlo, restablece la contraseña y vuelve a iniciarlo.",
+  "credentials.reset_start_first": "La contraseña de {name} se cambia pidiéndoselo al servidor en marcha. Inícialo primero.",
+  "credentials.reset_busy": "{name} está arrancando o deteniéndose. Inténtalo en un momento.",
+
   "webview2.title": "Crisol necesita WebView2",
   "webview2.body": "Crisol dibuja su ventana con Microsoft Edge WebView2, que no está instalado en este equipo. Instala el runtime Evergreen desde https://developer.microsoft.com/microsoft-edge/webview2/ y abre Crisol otra vez."
 }

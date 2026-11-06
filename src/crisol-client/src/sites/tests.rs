@@ -186,6 +186,12 @@ fn each_click_makes_the_call_the_command_line_makes() {
             path: "www".to_owned()
         }
     );
+    assert_eq!(
+        act(json!({"do": "reset_password", "service": "mysql"})),
+        Call::ResetPassword {
+            service: "mysql".to_owned()
+        }
+    );
 }
 
 #[test]

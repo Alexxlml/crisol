@@ -72,7 +72,19 @@
         </section>
         <section id="section-logs" class="panel" hidden>
           <p class="hint" data-i18n="section.logs.hint"></p>
-          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+          <div class="toolbar">
+            <label class="field">
+              <span data-i18n="logs.service"></span>
+              <select id="log-select"></select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="log-follow" checked>
+              <span data-i18n="logs.follow"></span>
+            </label>
+          </div>
+          <p id="log-path" class="path"></p>
+          <pre id="log-view" class="log" tabindex="0" hidden></pre>
+          <p id="log-empty" class="empty-line" hidden></p>
         </section>
         <section id="section-doctor" class="panel" hidden>
           <p class="hint" data-i18n="section.doctor.hint"></p>
@@ -80,7 +92,12 @@
         </section>
         <section id="section-credentials" class="panel" hidden>
           <p class="hint" data-i18n="section.credentials.hint"></p>
-          <div class="empty"><strong data-i18n="empty.title"></strong><span data-i18n="empty.body"></span></div>
+          <label class="field">
+            <span data-i18n="credentials.service"></span>
+            <select id="cred-select"></select>
+          </label>
+          <p id="cred-empty" class="empty-line" hidden></p>
+          <div id="cred-view"></div>
         </section>
         <section id="section-setup" class="panel" hidden>
           <p class="hint" data-i18n="section.setup.hint"></p>

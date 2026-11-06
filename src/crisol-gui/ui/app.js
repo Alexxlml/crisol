@@ -83,6 +83,7 @@ function chip(kind, label) {
 
 function showSection(name) {
   section = name;
+  notice = null; // what the last action said belongs to the screen it was done on
   for (const panel of document.querySelectorAll(".panel")) {
     panel.hidden = panel.id !== "section-" + name;
   }
@@ -95,6 +96,9 @@ function showSection(name) {
   if (name === "sites") refreshSites();
   if (name === "versions") refreshVersions();
   if (name === "settings") refreshTerminalOptions();
+  if (name === "logs") openLogs();
+  else stopLogs();
+  if (name === "credentials") openCredentials();
 }
 
 // ---- calls ------------------------------------------------------------------------------
@@ -135,6 +139,8 @@ async function perform(act) {
     const done = await invoke("act", { act });
     notice = done.message || (done.warnings && done.warnings.length) ? done : null;
     if (SITE_ACTS.includes(act.do)) await loadSites();
+    // The new password is on screen as soon as it exists.
+    if (act.do === "reset_password") await loadCredentials();
     return done;
   });
   return done;
@@ -222,6 +228,272 @@ async function performVersion(act) {
     }
     await loadVersions();
   });
+}
+
+// ---- logs -------------------------------------------------------------------------------
+
+const LOG_EVERY = 1000; // ms between two reads of the log being followed
+
+// Follows one log by asking again from where the last read ended. A read that answers after the
+// person chose another log (or left the screen) is dropped: `logs.token` changes with each.
+const logs = { service: null, next: null, lines: [], timer: null, token: 0, choices: [] };
+
+function logView() {
+  return document.getElementById("log-view");
+}
+
+function stopLogs() {
+  logs.token += 1;
+  clearTimeout(logs.timer);
+  logs.timer = null;
+}
+
+function showLogMessage(text) {
+  const empty = document.getElementById("log-empty");
+  empty.hidden = !text;
+  empty.textContent = text || "";
+  logView().hidden = !!text;
+}
+
+function drawLogLines(update) {
+  const view = logView();
+  if (update.replace) {
+    logs.lines = update.lines.slice();
+    view.textContent = logs.lines.join("\n");
+  } else if (update.lines.length) {
+    const had = logs.lines.length > 0;
+    logs.lines.push(...update.lines);
+    if (logs.lines.length > update.keep) {
+      logs.lines.splice(0, logs.lines.length - update.keep);
+      view.textContent = logs.lines.join("\n");
+    } else {
+      view.append((had ? "\n" : "") + update.lines.join("\n"));
+    }
+  }
+  if (update.replace || update.lines.length) {
+    if (document.getElementById("log-follow").checked) view.scrollTop = view.scrollHeight;
+  }
+}
+
+async function readLog(token) {
+  const service = logs.service;
+  try {
+    const update = await invoke("log_read", { service, from: logs.next });
+    if (token !== logs.token) return;
+    logs.next = update.next;
+    document.getElementById("log-path").textContent = update.path;
+    showLogMessage("");
+    drawLogLines(update);
+    if (!logs.lines.length) showLogMessage(t("logs.empty"));
+  } catch (error) {
+    if (token !== logs.token) return;
+    // A service that has not written anything yet has no log: say so and keep looking.
+    logs.next = null;
+    logs.lines = [];
+    document.getElementById("log-path").textContent = "";
+    showLogMessage(asFailure(error).message);
+  }
+  if (token === logs.token) logs.timer = setTimeout(() => readLog(token), LOG_EVERY);
+}
+
+function followLog(service) {
+  stopLogs();
+  logs.service = service;
+  logs.next = null;
+  logs.lines = [];
+  logView().textContent = "";
+  document.getElementById("log-path").textContent = "";
+  showLogMessage(t("logs.loading"));
+  const token = logs.token;
+  readLog(token);
+}
+
+async function openLogs() {
+  let choices;
+  try {
+    choices = await invoke("log_choices");
+  } catch (error) {
+    failure = asFailure(error);
+    render();
+    return;
+  }
+  if (section !== "logs") return;
+  logs.choices = choices;
+  const select = document.getElementById("log-select");
+  select.replaceChildren(...choices.map((name) => new Option(name, name)));
+  const service = choices.includes(logs.service) ? logs.service : choices[0];
+  select.value = service;
+  followLog(service);
+}
+
+// ---- credentials ------------------------------------------------------------------------
+
+// What the credentials screen shows: the service chosen, its answer or why there is none, which
+// secrets are on view, and whether the reset waits for its second click.
+const creds = { service: null, view: null, error: null, revealed: new Set(), confirming: false, serviceState: null };
+
+async function loadCredentials() {
+  const service = creds.service;
+  if (!service) return;
+  try {
+    const view = await invoke("credentials", { service });
+    if (service !== creds.service) return;
+    creds.view = view;
+    creds.error = null;
+  } catch (error) {
+    if (service !== creds.service) return;
+    creds.view = null;
+    creds.error = asFailure(error);
+  }
+  render();
+}
+
+function chooseCredentials(service) {
+  creds.service = service;
+  creds.view = null;
+  creds.error = null;
+  creds.revealed = new Set();
+  creds.confirming = false;
+  creds.serviceState = serviceStateOf(service);
+  render();
+  return loadCredentials();
+}
+
+function serviceStateOf(name) {
+  const found = current && current.state.services.find((s) => s.name === name);
+  return found ? found.state : null;
+}
+
+async function openCredentials() {
+  let choices;
+  try {
+    choices = await invoke("credential_choices");
+  } catch (error) {
+    failure = asFailure(error);
+    render();
+    return;
+  }
+  const select = document.getElementById("cred-select");
+  select.replaceChildren(...choices.map((name) => new Option(name, name)));
+  // The first one that is running, else the first: that is the one a person came to look at.
+  const running = choices.find((name) => serviceStateOf(name) === "running");
+  const service = choices.includes(creds.service) ? creds.service : running || choices[0];
+  select.value = service;
+  chooseCredentials(service);
+}
+
+// Puts `text` on the clipboard. The page is not a secure context in every WebView, so the old way
+// is the fallback.
+async function copyText(text, what) {
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch (_) {
+    const area = el("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    try {
+      // It answers false, it does not throw, when the browser refuses.
+      copied = document.execCommand("copy");
+    } finally {
+      area.remove();
+    }
+  }
+  if (copied) {
+    failure = null;
+    notice = { message: t("credentials.copied", { what }), warnings: [] };
+  } else {
+    notice = null;
+    failure = { message: t("credentials.copy_failed"), fix: null };
+  }
+  render();
+}
+
+function resetBox(view) {
+  const box = el("div", "cred-actions");
+  const reason = {
+    needs_daemon: "credentials.reset_needs_daemon",
+    stop_first: "credentials.reset_stop_first",
+    start_first: "credentials.reset_start_first",
+    busy: "credentials.reset_busy",
+  }[view.reset];
+  if (view.reset === "no_password") {
+    box.append(el("span", "hint small", t("credentials.no_password", { name: view.service })));
+  } else if (reason) {
+    box.append(el("span", "hint small", t(reason, { name: view.service })));
+  } else {
+    const act = { do: "reset_password", service: view.service };
+    if (creds.confirming) {
+      box.append(
+        el("span", "hint small warn", t("credentials.reset_warning", { name: view.service })),
+        button(t("credentials.reset_confirm", { name: view.service }), async () => {
+          creds.confirming = false;
+          await perform(act);
+        }, JSON.stringify(act), "danger"),
+        button(t("action.keep"), () => {
+          creds.confirming = false;
+          render();
+        })
+      );
+    } else {
+      box.append(
+        button(t("credentials.reset"), () => {
+          creds.confirming = true;
+          render();
+        })
+      );
+    }
+  }
+  return box;
+}
+
+function renderCredentials() {
+  const empty = document.getElementById("cred-empty");
+  const box = document.getElementById("cred-view");
+  if (creds.error) {
+    empty.hidden = false;
+    empty.textContent = creds.error.message;
+    box.replaceChildren();
+    return;
+  }
+  if (!creds.view) {
+    empty.hidden = !creds.service;
+    empty.textContent = t("credentials.loading");
+    box.replaceChildren();
+    return;
+  }
+  empty.hidden = true;
+  const view = creds.view;
+  const rows = el("ul", "rows");
+  for (const line of view.lines) {
+    const row = el("li", "row cred-line");
+    const hidden = line.secret && !creds.revealed.has(line.key);
+    row.append(
+      el("span", "key", line.key),
+      el("span", "value", hidden ? "••••••••••••" : line.value)
+    );
+    const actions = el("span", "actions");
+    if (line.secret) {
+      actions.append(
+        button(hidden ? t("credentials.show") : t("credentials.hide"), () => {
+          if (creds.revealed.has(line.key)) creds.revealed.delete(line.key);
+          else creds.revealed.add(line.key);
+          render();
+        })
+      );
+    }
+    actions.append(button(t("credentials.copy"), () => copyText(line.value, line.key)));
+    row.append(actions);
+    rows.append(row);
+  }
+  const all = el("div", "cred-actions");
+  all.append(button(t("credentials.copy_env"), () => copyText(view.env, ".env")));
+  const notes = view.notes.map((note) => el("p", "hint small", note));
+  box.replaceChildren(all, rows, ...notes, resetBox(view));
 }
 
 function refreshTerminalOptions() {
@@ -633,6 +905,14 @@ function take(payload) {
   // When the daemon finishes applying the web configuration the sites may have changed.
   if (wasReloading && !current.state.reloading && section === "sites") refreshSites();
   wasReloading = current.state.reloading;
+  // Whether the password of a service can be reset depends on its state.
+  if (section === "credentials" && creds.service) {
+    const now = serviceStateOf(creds.service);
+    if (now !== creds.serviceState) {
+      creds.serviceState = now;
+      loadCredentials();
+    }
+  }
   render();
 }
 
@@ -643,6 +923,7 @@ function render() {
   renderServices(current);
   renderSites();
   renderVersions();
+  renderCredentials();
   renderSettings();
   renderBanners(current);
 }
@@ -692,6 +973,16 @@ async function start() {
   for (const id of ["terminal-general", "terminal-general-sites"]) {
     document.getElementById(id).addEventListener("click", () => openTerminal({ where: "projects" }));
   }
+  document.getElementById("log-select").addEventListener("change", (event) => followLog(event.target.value));
+  document.getElementById("cred-select").addEventListener("change", (event) => chooseCredentials(event.target.value));
+  // Scrolling away from the end stops following; coming back to the end follows again.
+  logView().addEventListener("scroll", () => {
+    const view = logView();
+    document.getElementById("log-follow").checked = view.scrollHeight - view.scrollTop - view.clientHeight < 8;
+  });
+  document.getElementById("log-follow").addEventListener("change", (event) => {
+    if (event.target.checked) logView().scrollTop = logView().scrollHeight;
+  });
   document.getElementById("link-folder").addEventListener("click", pickAndLink);
   document.getElementById("park-folder").addEventListener("click", pickAndPark);
   document.getElementById("link-form").addEventListener("submit", submitLink);

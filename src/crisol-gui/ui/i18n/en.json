@@ -142,6 +142,28 @@
   "versions.no_fix": "There is no fixed build.",
   "versions.missing_default": "crisol.toml asks for {tool} {asked}, which is no longer installed; {version} is used instead. Pick one with “Use this one” so the commands stop warning about it.",
 
+  "logs.service": "Log of",
+  "logs.follow": "Follow the end",
+  "logs.loading": "Reading the log…",
+  "logs.empty": "The log is empty so far.",
+
+  "credentials.service": "Service",
+  "credentials.loading": "Reading the credentials…",
+  "credentials.copied": "Copied {what} to the clipboard",
+  "credentials.copy_failed": "The clipboard did not accept the text. Select it and copy it by hand.",
+  "credentials.show": "Show",
+  "credentials.hide": "Hide",
+  "credentials.copy": "Copy",
+  "credentials.copy_env": "Copy all as .env",
+  "credentials.reset": "Reset password…",
+  "credentials.reset_confirm": "Reset the password of {name}",
+  "credentials.reset_warning": "A new password replaces the current one and every project that uses it must be updated. The data is kept.",
+  "credentials.no_password": "{name} has no password to reset.",
+  "credentials.reset_needs_daemon": "Resetting a password goes through the Crisol daemon, which is not running. Use Start all first.",
+  "credentials.reset_stop_first": "{name} reads its password only when it starts. Stop it, reset the password, then start it again.",
+  "credentials.reset_start_first": "The password of {name} is changed by asking the running server. Start it first.",
+  "credentials.reset_busy": "{name} is starting or stopping. Try again in a moment.",
+
   "webview2.title": "Crisol needs WebView2",
   "webview2.body": "Crisol draws its window with Microsoft Edge WebView2, which is not installed on this computer. Install the Evergreen runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and open Crisol again."
 }

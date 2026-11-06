@@ -16,9 +16,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use crisol_client::{
-    clean_env, connect, current_terminal_options, fetch_sites, fetch_versions,
-    open_site as open_in_browser, run_version_act, suggested_site_name, Act, Context, GuiSettings,
-    Language, LeaveAction, LiveConfig, LiveState, LiveView, Opened, Place, SitesView, Summary,
+    clean_env, connect, credential_services, current_terminal_options, fetch_credentials,
+    fetch_log, fetch_sites, fetch_versions, log_services, open_site as open_in_browser,
+    run_version_act, suggested_site_name, Act, Context, CredentialsView, GuiSettings, Language,
+    LeaveAction, LiveConfig, LiveState, LiveView, LogUpdate, Opened, Place, SitesView, Summary,
     TerminalOptions, VersionAct, VersionsView,
 };
 use crisol_protocol::{Call, Reply, RpcError};
@@ -297,6 +298,34 @@ async fn version_act(app: AppHandle, act: VersionAct) -> Result<Reply, Failure> 
     Ok(reply)
 }
 
+/// The logs the viewer offers: the services the daemon knows, and the daemon's own.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn log_choices(app: AppHandle) -> Vec<String> {
+    log_services(&live_state(&app))
+}
+
+/// One read of a log: its end when `from` is `None`, what came after `from` otherwise. The
+/// daemon reads a bounded window of the file, never all of it.
+#[tauri::command]
+async fn log_read(service: String, from: Option<u64>) -> Result<LogUpdate, Failure> {
+    blocking(move |context| fetch_log(context, &service, from).map_err(Failure::from)).await
+}
+
+/// The services that have credentials.
+#[tauri::command]
+fn credential_choices() -> Vec<&'static str> {
+    credential_services()
+}
+
+/// What a project needs to connect to `service`, and whether its password can be reset now.
+#[tauri::command]
+async fn credentials(app: AppHandle, service: String) -> Result<CredentialsView, Failure> {
+    let live = live_state(&app);
+    blocking(move |context| fetch_credentials(context, &service, &live).map_err(Failure::from))
+        .await
+}
+
 #[tauri::command]
 async fn open_site(name: String) -> Result<(), Failure> {
     blocking(move |context| open_in_browser(context, &name).map_err(Failure::from)).await
@@ -402,6 +431,10 @@ fn main() {
             sites,
             versions,
             version_act,
+            log_choices,
+            log_read,
+            credential_choices,
+            credentials,
             open_site,
             pick_folder,
             open_terminal,

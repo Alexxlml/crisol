@@ -15,9 +15,11 @@
 
 pub mod connect;
 mod context;
+mod credentials;
 mod language;
 mod link;
 mod live;
+mod logs;
 mod settings;
 mod sites;
 mod summary;
@@ -27,9 +29,16 @@ mod versions;
 mod windows;
 
 pub use context::{Context, RemovePrograms};
+pub use credentials::{
+    credential_services, credentials_view, fetch_credentials, is_secret, reset_offer,
+    CredentialLine, CredentialsView, ResetOffer,
+};
 pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};
+pub use logs::{
+    fetch_log, log_call, log_services, log_update, LogUpdate, DAEMON_LOG, FIRST_LINES, KEEP_LINES,
+};
 pub use settings::GuiSettings;
 pub use sites::{
     fetch_sites, open_site, parked_rows, site_actions, site_url, sites_view, suggested_site_name,

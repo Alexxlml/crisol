@@ -270,6 +270,11 @@ pub enum Act {
         /// The entry, as `crisol.toml` writes it ([`ParkedRow::entry`]).
         entry: String,
     },
+    /// A new password for a data service (the credentials screen).
+    ResetPassword {
+        /// The service.
+        service: String,
+    },
 }
 
 impl Act {
@@ -288,6 +293,9 @@ impl Act {
             Self::Park { path } => Call::Park { path: path.clone() },
             Self::Unpark { entry } => Call::Unpark {
                 path: entry.clone(),
+            },
+            Self::ResetPassword { service } => Call::ResetPassword {
+                service: service.clone(),
             },
         }
     }
