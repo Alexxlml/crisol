@@ -140,6 +140,7 @@
   "versions.warn_advisory": "{name} tiene una vulnerabilidad conocida, {id}: {summary}",
   "versions.fixed_in": "Corregida en {version}: instala esa.",
   "versions.no_fix": "No hay una versión corregida.",
+  "versions.missing_default": "crisol.toml pide {tool} {asked}, que ya no está instalada; se usa {version}. Elige una con «Usar esta» para que los comandos dejen de avisarlo.",
 
   "webview2.title": "Crisol necesita WebView2",
   "webview2.body": "Crisol dibuja su ventana con Microsoft Edge WebView2, que no está instalado en este equipo. Instala el runtime Evergreen desde https://developer.microsoft.com/microsoft-edge/webview2/ y abre Crisol otra vez."

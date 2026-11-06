@@ -19,7 +19,7 @@ fn list(installed: Vec<VersionInfo>, available: Vec<VersionInfo>) -> VersionList
     }
 }
 
-fn nothing(_: &str) -> Option<String> {
+fn nothing(_: &str) -> Option<InUse> {
     None
 }
 
@@ -131,7 +131,7 @@ fn the_tools_come_in_a_fixed_order() {
 
 #[test]
 fn only_the_installed_version_that_is_the_default_is_marked() {
-    let default = |service: &str| (service == "php").then(|| "8.4.27".to_owned());
+    let default = |service: &str| (service == "php").then(|| InUse::chosen("8.4.27"));
     let view = versions_view(
         list(
             vec![info("php", "8.4.27", true), info("php", "8.3.36", true)],
@@ -164,12 +164,64 @@ fn only_the_installed_version_that_is_the_default_is_marked() {
 
 #[test]
 fn a_default_that_is_not_installed_marks_nothing() {
-    let default = |_: &str| Some("8.4.27".to_owned());
+    let default = |_: &str| Some(InUse::chosen("8.4.27"));
     let view = versions_view(
         list(Vec::new(), vec![info("php", "8.4.27", false)]),
         &default,
     );
     assert!(!view.services[0].rows[0].default);
+}
+
+#[test]
+fn a_version_standing_in_for_a_removed_default_can_still_be_chosen() {
+    let default = |service: &str| {
+        (service == "php").then(|| InUse {
+            version: "8.4.27".to_owned(),
+            missing_default: Some("7.4".to_owned()),
+        })
+    };
+    let view = versions_view(
+        list(
+            vec![info("php", "8.4.27", true), info("php", "8.3.36", true)],
+            Vec::new(),
+        ),
+        &default,
+    );
+    let php = &view.services[0];
+    assert_eq!(php.missing_default.as_deref(), Some("7.4"));
+    let in_use = php.rows.iter().find(|r| r.default).expect("in use");
+    assert_eq!(in_use.version, "8.4.27");
+    // Choosing it is what puts `crisol.toml` right and silences the shims' warning.
+    assert_eq!(
+        in_use.actions,
+        vec![VersionAction::Use, VersionAction::Uninstall]
+    );
+}
+
+#[test]
+fn a_default_is_missing_only_when_the_resolution_passed_over_it() {
+    let asked = || Some("7.4".to_owned());
+    assert_eq!(
+        missing_default(asked(), &Source::CatalogRecommendation).as_deref(),
+        Some("7.4")
+    );
+    assert_eq!(
+        missing_default(asked(), &Source::HighestInstalled).as_deref(),
+        Some("7.4")
+    );
+    assert_eq!(missing_default(asked(), &Source::GlobalDefault), None);
+    // No `[defaults]`: the catalog's line is the default itself, nothing is missing.
+    assert_eq!(missing_default(None, &Source::CatalogRecommendation), None);
+}
+
+#[test]
+fn a_default_that_is_installed_leaves_nothing_missing() {
+    let default = |_: &str| Some(InUse::chosen("8.4.27"));
+    let view = versions_view(
+        list(vec![info("php", "8.4.27", true)], Vec::new()),
+        &default,
+    );
+    assert_eq!(view.services[0].missing_default, None);
 }
 
 #[test]

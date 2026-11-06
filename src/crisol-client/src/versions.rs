@@ -8,7 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use crisol_core::resolve::{resolve, ResolveContext, Tool as CoreTool};
+use crisol_core::config::Config;
+use crisol_core::resolve::{resolve, ResolveContext, Source, Tool as CoreTool};
 use crisol_core::version::Version;
 use crisol_protocol::{Call, ErrorCode, Event, Reply, RpcError, Tool, VersionInfo, VersionList};
 use serde::{Deserialize, Serialize};
@@ -40,13 +41,15 @@ pub fn tool_of(service: &str) -> Option<Tool> {
 
 /// Which buttons a row offers. Something that is not installed can only be installed. Something
 /// installed can be removed, and chosen as the default when it is PHP or Node and is not already.
+/// `chosen` is "the version in use, and `crisol.toml` agrees": the version in use only because
+/// the one in `[defaults]` was removed can still be chosen, which puts `crisol.toml` right.
 #[must_use]
-pub fn version_actions(service: &str, installed: bool, default: bool) -> Vec<VersionAction> {
+pub fn version_actions(service: &str, installed: bool, chosen: bool) -> Vec<VersionAction> {
     if !installed {
         return vec![VersionAction::Install];
     }
     let mut actions = Vec::new();
-    if tool_of(service).is_some() && !default {
+    if tool_of(service).is_some() && !chosen {
         actions.push(VersionAction::Use);
     }
     actions.push(VersionAction::Uninstall);
@@ -85,6 +88,29 @@ pub struct ServiceVersions {
     pub service: String,
     /// Its versions.
     pub rows: Vec<VersionRow>,
+    /// The version `[defaults]` asks for when it is no longer installed (`7.4`): the shims use
+    /// another one, and say so every time they run, until one is chosen.
+    pub missing_default: Option<String>,
+}
+
+/// The version a tool runs when nothing else is chosen, as [`versions_view`] is told it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InUse {
+    /// The exact installed version (`8.4.27`).
+    pub version: String,
+    /// What `[defaults]` asks for, when it is not installed and `version` stands in for it.
+    pub missing_default: Option<String>,
+}
+
+impl InUse {
+    /// The version in use, as `crisol.toml` asks (or as the catalog recommends without one).
+    #[must_use]
+    pub fn chosen(version: &str) -> Self {
+        Self {
+            version: version.to_owned(),
+            missing_default: None,
+        }
+    }
 }
 
 /// What the versions screen draws.
@@ -110,7 +136,7 @@ fn rank(service: &str) -> (usize, &str) {
 #[must_use]
 pub fn versions_view(
     list: VersionList,
-    default_of: &dyn Fn(&str) -> Option<String>,
+    default_of: &dyn Fn(&str) -> Option<InUse>,
 ) -> VersionsView {
     let mut rows: BTreeMap<String, Vec<VersionRow>> = BTreeMap::new();
     let mut add = |info: VersionInfo, installed_here: bool| {
@@ -143,10 +169,13 @@ pub fn versions_view(
     let mut services: Vec<ServiceVersions> = rows
         .into_iter()
         .map(|(service, mut rows)| {
-            let default = default_of(&service);
+            let in_use = default_of(&service);
+            let missing_default = in_use.as_ref().and_then(|u| u.missing_default.clone());
             for row in &mut rows {
-                row.default = row.installed && default.as_deref() == Some(row.version.as_str());
-                row.actions = version_actions(&row.service, row.installed, row.default);
+                row.default =
+                    row.installed && in_use.as_ref().is_some_and(|u| u.version == row.version);
+                let chosen = row.default && missing_default.is_none();
+                row.actions = version_actions(&row.service, row.installed, chosen);
             }
             // The highest first; a version that does not parse (it should not happen) goes last.
             rows.sort_by(
@@ -157,7 +186,11 @@ pub fn versions_view(
                     (Err(_), Err(_)) => a.version.cmp(&b.version),
                 },
             );
-            ServiceVersions { service, rows }
+            ServiceVersions {
+                service,
+                rows,
+                missing_default,
+            }
         })
         .collect();
     services.sort_by(|a, b| rank(&a.service).cmp(&rank(&b.service)));
@@ -178,10 +211,18 @@ pub fn fetch_versions(context: &Context) -> Result<VersionsView, RpcError> {
     };
     let deps = (context.deps)().map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
     let env = |_: &str| None;
-    let default_of = |service: &str| -> Option<String> {
-        let tool = match service {
-            "php" => CoreTool::Php,
-            "node" => CoreTool::Node,
+    // A `crisol.toml` that does not load leaves nothing to compare with; the shims would fail
+    // the same way, and `doctor` says why.
+    let defaults = Config::load_from(&context.paths)
+        .map(|loaded| loaded.config.defaults)
+        .ok();
+    let default_of = |service: &str| -> Option<InUse> {
+        let (tool, asked) = match service {
+            "php" => (CoreTool::Php, defaults.as_ref().and_then(|d| d.php.clone())),
+            "node" => (
+                CoreTool::Node,
+                defaults.as_ref().and_then(|d| d.node.clone()),
+            ),
             _ => return None,
         };
         // The very rule the shims follow, asked from the home itself: no project, and no
@@ -198,9 +239,24 @@ pub fn fetch_versions(context: &Context) -> Result<VersionsView, RpcError> {
             },
         )
         .ok()?;
-        Some(resolved.resolved.version.version.to_string())
+        Some(InUse {
+            version: resolved.resolved.version.version.to_string(),
+            missing_default: missing_default(asked, &resolved.resolved.source),
+        })
     };
     Ok(versions_view(list, &default_of))
+}
+
+/// What `[defaults]` asks for (`asked`), when the resolution passed over it. Without a project
+/// that happens only when the version is not installed (`resolve`, step 5): the source is then
+/// the catalog's line or the highest version, which a written default never is.
+#[must_use]
+fn missing_default(asked: Option<String>, source: &Source) -> Option<String> {
+    let stood_in = matches!(
+        source,
+        Source::CatalogRecommendation | Source::HighestInstalled
+    );
+    asked.filter(|_| stood_in)
 }
 
 /// A click of the versions screen, as the page sends it.

@@ -45,7 +45,7 @@ pub use terminal::{
     TerminalOptions,
 };
 pub use versions::{
-    fetch_versions, run_version_act, tool_of, version_actions, versions_view, Progress,
+    fetch_versions, run_version_act, tool_of, version_actions, versions_view, InUse, Progress,
     ProgressGate, ServiceVersions, VersionAct, VersionAction, VersionRow, VersionsView,
 };
 #[cfg(windows)]

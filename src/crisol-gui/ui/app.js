@@ -494,6 +494,20 @@ function renderVersions() {
       const title = el("h2", "version-title");
       title.append(el("span", "dot " + group.service), el("span", null, group.service));
       section.append(title);
+      const inUse = group.rows.find((row) => row.default);
+      if (group.missing_default && inUse) {
+        section.append(
+          el(
+            "p",
+            "hint small warn",
+            t("versions.missing_default", {
+              tool: group.service,
+              asked: group.missing_default,
+              version: inUse.version,
+            })
+          )
+        );
+      }
       const list = el("ul", "rows");
       for (const row of group.rows) {
         const item = el("li", "row");
