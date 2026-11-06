@@ -264,10 +264,23 @@ fn progress_in_place_never_wraps_in_a_narrow_window() {
         total: Some(1000),
         from_file: false,
     };
-    let line = progress_in_place(&event, &mut None, 30).unwrap();
-    let shown = line.trim_start_matches("\r\x1b[2K");
-    assert_eq!(shown.chars().count(), 30);
-    assert!(shown.starts_with("Downloading php 8.4.27"));
+    let shown = |width| {
+        let line = progress_in_place(&event, &mut None, width).unwrap();
+        line.trim_start_matches("\r\x1b[2K").to_owned()
+    };
+    // Wide: the whole bar.
+    assert_eq!(
+        shown(79),
+        "Downloading php 8.4.27  [██████░░░░░░░░░░░░░░] 30% (300 B)"
+    );
+    // Narrower: a shorter bar, and the percentage is still there.
+    assert_eq!(shown(45), "Downloading php 8.4.27  [██░░░░░] 30% (300 B)");
+    // The size of the console the owner tried: no room for a bar, only the percentage.
+    assert_eq!(shown(39), "Downloading php 8.4.27 30% (300 B)");
+    // Narrower than even that: the name is cut, never the percentage, and nothing wraps.
+    let tiny = shown(20);
+    assert_eq!(tiny.chars().count(), 20);
+    assert!(tiny.ends_with(" 30% (300 B)"), "{tiny}");
 }
 
 #[test]

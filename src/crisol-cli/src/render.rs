@@ -604,9 +604,10 @@ pub fn error_styled(error: &RpcError, style: &Style) -> String {
 
 /// What to write over the line of a download that is shown in place: `None` when there is
 /// nothing new (same percentage as before, or an event of another kind). It starts with the
-/// code that erases the line, so the caller writes it as it is, without a newline. The text is
-/// cut to `width` characters: a line that wrapped could not be erased, and each redraw would
-/// leave a new line behind.
+/// code that erases the line, so the caller writes it as it is, without a newline. The line
+/// never passes `width` characters, since a line that wrapped could not be erased and each
+/// redraw would leave a new one behind: in a narrow window the bar gets shorter, then goes, and
+/// the percentage stays.
 #[must_use]
 pub fn progress_in_place(
     event: &Event,
@@ -634,12 +635,18 @@ pub fn progress_in_place(
                 return None;
             }
             *last_percent = Some(percent);
-            let filled = usize::try_from(percent / 5).unwrap_or(20);
+            let amount = format!(" {percent}% ({})", bytes(*done));
+            // "  [" and "]" around the bar.
+            let room = width.saturating_sub(doing.chars().count() + amount.chars().count() + 4);
+            let bar = room.min(MAX_BAR);
+            if bar < MIN_BAR {
+                return Some(in_place(&doing, &amount, width));
+            }
+            let filled = usize::try_from(percent).unwrap_or(100) * bar / 100;
             format!(
-                "{doing}  [{}{}] {percent}% ({})",
+                "{doing}  [{}{}]{amount}",
                 "█".repeat(filled),
-                "░".repeat(20 - filled),
-                bytes(*done)
+                "░".repeat(bar - filled),
             )
         }
         _ => {
@@ -650,8 +657,20 @@ pub fn progress_in_place(
             format!("{doing}...")
         }
     };
-    let text: String = text.chars().take(width.max(1)).collect();
-    Some(format!("\r\x1b[2K{text}"))
+    Some(in_place(&text, "", width))
+}
+
+/// The longest and the shortest progress bar worth drawing.
+const MAX_BAR: usize = 20;
+const MIN_BAR: usize = 5;
+
+/// The line that erases the one under the cursor and writes `text` and `tail`, cutting `text`
+/// so that the whole fits in `width` and `tail` (the percentage) is kept.
+fn in_place(text: &str, tail: &str, width: usize) -> String {
+    let keep = width.max(1).saturating_sub(tail.chars().count());
+    let text: String = text.chars().take(keep).collect();
+    let line: String = format!("{text}{tail}").chars().take(width.max(1)).collect();
+    format!("\r\x1b[2K{line}")
 }
 
 #[cfg(test)]
