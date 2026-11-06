@@ -1,8 +1,27 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use crisol_cli::render::Style;
 use crisol_cli::{run, Context};
+
+/// How a stream should look (ADR-0028). The window's width comes from the console; in a
+/// pseudo-terminal (Git Bash) from `COLUMNS` when the shell exports it, else 80.
+fn style_of(stream: crisol_platform::Stream, is_terminal: bool) -> Style {
+    if !is_terminal {
+        return Style::plain();
+    }
+    let width = crisol_platform::console_width(stream)
+        .or_else(|| std::env::var("COLUMNS").ok()?.trim().parse().ok())
+        .unwrap_or(80);
+    Style::detect(
+        crisol_platform::enable_ansi(stream),
+        std::env::var_os("NO_COLOR").is_some(),
+        std::env::var("TERM").ok().as_deref(),
+        false,
+        width,
+    )
+}
 
 /// Reads one line from the terminal: whether it is `yes`.
 fn ask_yes() -> bool {
@@ -42,6 +61,14 @@ fn main() -> ExitCode {
         }),
         follow_every: Duration::from_millis(500),
         follow_rounds: None,
+        style: style_of(
+            crisol_platform::Stream::Stdout,
+            std::io::stdout().is_terminal(),
+        ),
+        err_style: style_of(
+            crisol_platform::Stream::Stderr,
+            std::io::stderr().is_terminal(),
+        ),
     };
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();

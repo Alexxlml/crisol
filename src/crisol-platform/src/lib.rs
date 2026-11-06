@@ -55,7 +55,7 @@ pub use appearance::{error_box, taskbar_uses_light_theme, ui_languages};
 #[cfg(windows)]
 pub use autostart::RegistryAutostart;
 #[cfg(windows)]
-pub use console::survive_ctrl_c;
+pub use console::{console_width, enable_ansi, survive_ctrl_c, Stream};
 #[cfg(windows)]
 pub use db_admin::WindowsDbAdmin;
 #[cfg(windows)]

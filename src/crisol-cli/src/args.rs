@@ -17,6 +17,10 @@ pub struct Args {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Print plain text even in a terminal: no tables, colours or marks.
+    #[arg(long, global = true)]
+    pub plain: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

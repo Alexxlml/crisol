@@ -417,6 +417,8 @@ impl Env {
             },
             follow_every: Duration::from_millis(25),
             follow_rounds: Some(40),
+            style: crisol_cli::render::Style::plain(),
+            err_style: crisol_cli::render::Style::plain(),
         }
     }
 

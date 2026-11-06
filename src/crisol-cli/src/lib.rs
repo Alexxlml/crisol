@@ -76,6 +76,10 @@ pub struct Context {
     pub follow_every: Duration,
     /// Stops `logs -f` after this many rounds (`None`: until the process is killed).
     pub follow_rounds: Option<u32>,
+    /// How standard output looks (tables and colour only in a terminal; `--plain` turns it off).
+    pub style: render::Style,
+    /// How standard error looks (the messages of errors and the progress line).
+    pub err_style: render::Style,
 }
 
 impl std::fmt::Debug for Context {
@@ -107,9 +111,20 @@ pub fn run(
         }
     };
     let json = args.json;
+    let plain = args.plain || json;
     let mut session = Session {
         context,
         json,
+        style: if plain {
+            render::Style::plain()
+        } else {
+            context.style
+        },
+        err_style: if plain {
+            render::Style::plain()
+        } else {
+            context.err_style
+        },
         out,
         err,
         daemon_version: None,
@@ -120,6 +135,8 @@ pub fn run(
 struct Session<'a> {
     context: &'a Context,
     json: bool,
+    style: render::Style,
+    err_style: render::Style,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
     /// The version of the daemon the last connection spoke with.
@@ -886,14 +903,27 @@ impl Session<'_> {
         };
         let mut last = None;
         let json = self.json;
+        let in_place = self.err_style.formatted;
+        let mut drawn = false;
         let err = &mut *self.err;
         let outcome = link.call(call, &mut |event| {
-            if !json {
-                if let Some(line) = render::progress(&event, &mut last) {
-                    let _ = writeln!(err, "{line}");
+            if json {
+                return;
+            }
+            if in_place {
+                // One line that is drawn again over itself (ADR-0028).
+                if let Some(line) = render::progress_in_place(&event, &mut last) {
+                    drawn = true;
+                    let _ = write!(err, "{line}");
+                    let _ = err.flush();
                 }
+            } else if let Some(line) = render::progress(&event, &mut last) {
+                let _ = writeln!(err, "{line}");
             }
         });
+        if drawn {
+            let _ = writeln!(self.err);
+        }
         match outcome {
             Ok(mut reply) => {
                 self.note_daemon_version(&mut reply);
@@ -924,7 +954,7 @@ impl Session<'_> {
                 serde_json::to_string(reply).unwrap_or_default()
             );
         } else {
-            let _ = write!(self.out, "{}", render::reply(reply));
+            let _ = write!(self.out, "{}", render::reply_styled(reply, &self.style));
         }
         match reply {
             Reply::Doctor { checks } if checks.iter().any(|c| c.status == CheckStatus::Problem) => {
@@ -942,7 +972,7 @@ impl Session<'_> {
                 serde_json::to_string(error).unwrap_or_default()
             );
         } else {
-            let _ = write!(self.err, "{}", render::error(error));
+            let _ = write!(self.err, "{}", render::error_styled(error, &self.err_style));
         }
         EXIT_FAILED
     }
