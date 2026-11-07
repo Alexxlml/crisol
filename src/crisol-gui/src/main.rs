@@ -17,11 +17,12 @@ use std::time::Duration;
 
 use crisol_client::{
     clean_env, connect, credential_services, current_terminal_options, fetch_credentials,
-    fetch_doctor, fetch_log, fetch_sites, fetch_versions, log_services,
-    open_site as open_in_browser, run_doctor_action, run_version_act, suggested_site_name,
-    trust_preview, Act, ActionDone, Context, CredentialsView, DoctorView, GuiSettings, Language,
-    LeaveAction, LiveConfig, LiveState, LiveView, LogUpdate, Opened, Place, SitesView, Summary,
-    TerminalOptions, TrustPreview, VersionAct, VersionsView,
+    fetch_doctor, fetch_log, fetch_setup, fetch_sites, fetch_uninstall, fetch_versions,
+    log_services, open_site as open_in_browser, run_doctor_action, run_setup, run_uninstall,
+    run_version_act, suggested_site_name, trust_preview, Act, ActionDone, Context, CredentialsView,
+    DoctorView, GuiSettings, Language, LeaveAction, LiveConfig, LiveState, LiveView, LogUpdate,
+    Opened, Place, SetupDone, SetupView, SitesView, Summary, TerminalOptions, TrustPreview,
+    UninstallDone, UninstallView, VersionAct, VersionsView,
 };
 use crisol_protocol::{Call, CheckAction, Reply, RpcError};
 use serde::Serialize;
@@ -331,6 +332,75 @@ async fn doctor_act(app: AppHandle, action: CheckAction) -> Result<ActionDone, F
     Ok(done)
 }
 
+/// What is left to set up, and whether the screen opens by itself now. It opens by itself once;
+/// after that the page only shows a banner (F13.8). Asking marks it as offered.
+#[derive(Debug, Serialize)]
+struct SetupScreen {
+    view: SetupView,
+    open: bool,
+}
+
+#[tauri::command]
+async fn setup_plan(first: bool) -> Result<SetupScreen, Failure> {
+    blocking(move |context| {
+        let view = fetch_setup(context);
+        let mut settings = GuiSettings::load(&context.paths);
+        let open = first && settings.offers_setup(&view);
+        if open {
+            settings.setup_offered = true;
+            // A failure to remember only means it opens once more.
+            let _ = settings.save(&context.paths);
+        }
+        Ok(SetupScreen { view, open })
+    })
+    .await
+}
+
+/// The button of the setup screen. `accepted` are the optional steps whose switch was on; the
+/// core plans again and does only what its own plan lists. The dialogs of Windows and the
+/// permission prompt come up from this process.
+#[tauri::command]
+async fn setup_run(app: AppHandle, accepted: Vec<String>) -> Result<SetupDone, Failure> {
+    let done =
+        blocking(move |context| run_setup(context, &accepted).map_err(Failure::from)).await?;
+    // The PATH, the sign-in entry and the shims are files and keys, not events.
+    publish(&app);
+    Ok(done)
+}
+
+/// What `uninstall --all` would do, with or without `--purge`.
+#[tauri::command]
+async fn uninstall_plan(purge: bool) -> Result<UninstallView, Failure> {
+    blocking(move |context| Ok(fetch_uninstall(context, purge))).await
+}
+
+/// How long the app stays open after an uninstall that went through: its programs are deleted
+/// once it ends, and the deletion tries only for a few seconds.
+const CLOSE_AFTER_UNINSTALL: Duration = Duration::from_secs(5);
+
+/// The button of the uninstall screen. `backups` is the person's answer to whether they have a
+/// backup; the core refuses a purge without it. When Crisol is out of Windows the app closes by
+/// itself after a moment, so that its own files can go.
+#[tauri::command]
+async fn uninstall_run(
+    app: AppHandle,
+    purge: bool,
+    backups: bool,
+) -> Result<UninstallDone, Failure> {
+    let done = blocking(move |context| {
+        run_uninstall(context, purge, backups, &mut |_| {}).map_err(Failure::from)
+    })
+    .await?;
+    if done.close_app {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(CLOSE_AFTER_UNINSTALL);
+            app.exit(0);
+        });
+    }
+    Ok(done)
+}
+
 /// The logs the viewer offers: the services the daemon knows, and the daemon's own.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -423,10 +493,9 @@ fn bootstrap(app: AppHandle, words: State<Dictionary>) -> Result<serde_json::Val
 #[allow(clippy::needless_pass_by_value)]
 fn quit_confirmed(app: AppHandle) {
     if let Ok(paths) = crisol_platform::resolve_paths() {
-        let _ = GuiSettings {
-            exit_notice_shown: true,
-        }
-        .save(&paths);
+        let mut settings = GuiSettings::load(&paths);
+        settings.exit_notice_shown = true;
+        let _ = settings.save(&paths);
     }
     app.exit(0);
 }
@@ -467,6 +536,10 @@ fn main() {
             doctor,
             doctor_trust_preview,
             doctor_act,
+            setup_plan,
+            setup_run,
+            uninstall_plan,
+            uninstall_run,
             log_choices,
             log_read,
             credential_choices,

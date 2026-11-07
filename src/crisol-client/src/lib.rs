@@ -17,6 +17,7 @@ pub mod connect;
 mod context;
 mod credentials;
 mod doctor;
+mod firstrun;
 mod language;
 mod link;
 mod live;
@@ -37,6 +38,11 @@ pub use credentials::{
 pub use doctor::{
     doctor_button, doctor_view, fetch_doctor, inside_home, run_doctor_action, trust_preview,
     ActionDone, ButtonKind, DoctorButton, DoctorRow, DoctorView, TrustPreview, Words,
+};
+pub use firstrun::{
+    fetch_setup, fetch_uninstall, run_setup, run_setup_on, run_uninstall, run_uninstall_on,
+    setup_view, uninstall_view, with_setup_system, with_teardown_system, SetupDone, SetupProblem,
+    SetupStep, SetupView, UninstallDone, UninstallView,
 };
 pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};

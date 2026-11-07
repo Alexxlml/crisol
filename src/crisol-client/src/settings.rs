@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 pub struct GuiSettings {
     /// The one-time notice "the services go on" was already shown on leaving.
     pub exit_notice_shown: bool,
+    /// The setup screen already came up by itself once. After that it is a banner the person
+    /// can follow or ignore, not a window that opens at every start (F13.8).
+    pub setup_offered: bool,
 }
 
 impl GuiSettings {
@@ -20,6 +23,13 @@ impl GuiSettings {
     #[must_use]
     pub fn file(paths: &CrisolPaths) -> PathBuf {
         paths.state_dir().join("gui.json")
+    }
+
+    /// Whether the setup screen opens by itself now: there is something to set up and nothing
+    /// stops it, and it did not open before.
+    #[must_use]
+    pub fn offers_setup(&self, view: &crate::SetupView) -> bool {
+        view.can_run() && !self.setup_offered
     }
 
     /// Reads it. A missing or damaged file is the defaults: this is a convenience, never a
@@ -69,6 +79,7 @@ mod tests {
         let paths = paths(&dir);
         let settings = GuiSettings {
             exit_notice_shown: true,
+            setup_offered: true,
         };
         settings.save(&paths).expect("saved");
         assert_eq!(GuiSettings::load(&paths), settings);
@@ -96,5 +107,42 @@ mod tests {
         std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
         std::fs::write(&file, r#"{"exit_notice_shown":true,"later":1}"#).expect("written");
         assert!(GuiSettings::load(&paths).exit_notice_shown);
+    }
+
+    #[test]
+    fn the_setup_opens_by_itself_only_once_and_only_when_it_can_run() {
+        use crate::{SetupProblem, SetupStep, SetupView};
+        let step = SetupStep {
+            id: "path",
+            description: "put it in the PATH".to_owned(),
+            optional: false,
+            on_by_default: false,
+        };
+        let pending = SetupView {
+            steps: vec![step],
+            done: Vec::new(),
+            problems: Vec::new(),
+            notes: Vec::new(),
+        };
+        let blocked = SetupView {
+            problems: vec![SetupProblem {
+                message: "no".to_owned(),
+                fix: None,
+            }],
+            ..pending.clone()
+        };
+        let finished = SetupView {
+            steps: Vec::new(),
+            ..pending.clone()
+        };
+        let fresh = GuiSettings::default();
+        assert!(fresh.offers_setup(&pending));
+        assert!(!fresh.offers_setup(&blocked));
+        assert!(!fresh.offers_setup(&finished));
+        let told = GuiSettings {
+            setup_offered: true,
+            ..GuiSettings::default()
+        };
+        assert!(!told.offers_setup(&pending));
     }
 }

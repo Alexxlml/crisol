@@ -99,10 +99,13 @@ function showSection(name) {
   if (name === "sites") refreshSites();
   if (name === "versions") refreshVersions();
   if (name === "doctor") refreshDoctor();
+  if (name === "setup") refreshSetup();
   if (name === "settings") refreshTerminalOptions();
   if (name === "logs") openLogs();
   else stopLogs();
   if (name === "credentials") openCredentials();
+  // The banners belong to the screen: the offer to set up is not shown on its own screen.
+  render();
 }
 
 // ---- calls ------------------------------------------------------------------------------
@@ -370,6 +373,257 @@ function renderDoctor() {
       return item;
     })
   );
+}
+
+// ---- first run and uninstall ------------------------------------------------------------
+
+// The plan of `crisol setup` and of `crisol uninstall --all`, in the core's words. Looking
+// changes nothing; a run plans again in the app, so what this page holds is only what it draws.
+let setupView = null; // the last answer of `setup_plan`
+let setupSwitches = {}; // the optional steps the person has on, by id
+let setupResult = null; // how the last run went: { outcomes, failed }
+let uninstallView = null; // the last answer of `uninstall_plan`, once the person asked for it
+let uninstallPurge = false; // also delete the home, with the data and the projects
+let uninstallBackups = false; // the person says they have a backup
+let uninstallArmed = false; // the button waits for its second click
+let uninstallResult = null; // how the last run went: { outcomes, done, close_app }
+
+const OUTCOME_CHIPS = { done: "running", nothing: "running", declined: "starting", failed: "failed", skipped: "stopped" };
+
+function applySetupView(view) {
+  setupView = view;
+  // A switch keeps what the person chose; a step seen for the first time starts as the app says.
+  const next = {};
+  for (const step of view.steps) {
+    if (!step.optional) continue;
+    next[step.id] = Object.prototype.hasOwnProperty.call(setupSwitches, step.id) ? setupSwitches[step.id] : step.on_by_default;
+  }
+  setupSwitches = next;
+}
+
+async function loadSetup() {
+  const screen = await invoke("setup_plan", { first: false });
+  applySetupView(screen.view);
+}
+
+function refreshSetup() {
+  return run("setup", loadSetup);
+}
+
+async function performSetup() {
+  const accepted = Object.keys(setupSwitches).filter((id) => setupSwitches[id]);
+  await run("setup:run", async () => {
+    notice = null;
+    setupResult = await invoke("setup_run", { accepted });
+    await loadSetup();
+  });
+}
+
+function outcomesList(outcomes) {
+  const list = el("ul", "rows");
+  for (const outcome of outcomes) {
+    const item = el("li", "row doctor");
+    item.append(chip(OUTCOME_CHIPS[outcome.result], t("outcome." + outcome.result)));
+    const grow = el("span", "grow");
+    grow.append(el("strong", null, t("step." + outcome.step)), el("span", "detail", outcome.message));
+    item.append(grow);
+    list.append(item);
+  }
+  return list;
+}
+
+function renderSetup() {
+  const box = document.getElementById("setup-view");
+  const empty = document.getElementById("setup-empty");
+  if (!setupView) {
+    box.replaceChildren();
+    empty.hidden = false;
+    empty.textContent = t("setup.loading");
+    return;
+  }
+  empty.hidden = true;
+  const parts = [];
+  if (setupResult) {
+    parts.push(el("h2", null, t(setupResult.failed ? "setup.result_failed" : "setup.result")), outcomesList(setupResult.outcomes));
+  }
+  if (setupView.problems.length) {
+    parts.push(el("h2", null, t("setup.blocked")));
+    const list = el("ul", "rows");
+    for (const problem of setupView.problems) {
+      const item = el("li", "row doctor");
+      item.append(chip("failed", t("doctor.status.problem")));
+      const grow = el("span", "grow");
+      grow.append(el("span", "detail", problem.message));
+      if (problem.fix) {
+        const fix = el("span", "detail doctor-fix");
+        fix.append(t("doctor.will_do") + " ", el("code", null, problem.fix));
+        grow.append(fix);
+      }
+      item.append(grow);
+      list.append(item);
+    }
+    parts.push(list);
+  } else if (setupView.steps.length) {
+    parts.push(el("h2", null, t("setup.todo")), el("p", "hint small", t("setup.todo_hint")));
+    const list = el("ul", "rows");
+    for (const step of setupView.steps) {
+      const item = el("li", "row doctor");
+      const grow = el("span", "grow");
+      if (step.optional) {
+        const label = el("label", "check");
+        const switchBox = el("input");
+        switchBox.type = "checkbox";
+        switchBox.checked = !!setupSwitches[step.id];
+        switchBox.addEventListener("change", () => {
+          setupSwitches[step.id] = switchBox.checked;
+        });
+        label.append(switchBox, el("strong", null, t("step." + step.id)));
+        grow.append(label);
+      } else {
+        grow.append(el("strong", null, t("step." + step.id)));
+      }
+      grow.append(el("span", "detail", step.description));
+      item.append(grow);
+      list.append(item);
+    }
+    parts.push(list);
+    const actions = el("div", "toolbar");
+    const label = pending.has("setup:run") ? t("doctor.working") : t("setup.run");
+    actions.append(button(label, performSetup, "setup:run", "primary"));
+    parts.push(actions);
+  } else {
+    parts.push(el("p", "hint", t("setup.complete")));
+  }
+  if (setupView.done.length) {
+    parts.push(...linesSection(t("setup.in_place"), setupView.done));
+  }
+  for (const note of setupView.notes) parts.push(el("p", "hint small", note));
+  box.replaceChildren(...parts);
+}
+
+async function loadUninstall() {
+  uninstallArmed = false;
+  uninstallView = await invoke("uninstall_plan", { purge: uninstallPurge });
+  if (!uninstallView.deletes_home) uninstallBackups = false;
+}
+
+function openUninstall() {
+  uninstallResult = null;
+  return run("uninstall:plan", loadUninstall);
+}
+
+async function performUninstall() {
+  const purge = uninstallPurge;
+  const backups = uninstallBackups;
+  uninstallArmed = false;
+  await run("uninstall:run", async () => {
+    notice = null;
+    uninstallResult = await invoke("uninstall_run", { purge, backups });
+    // After a run that went through there is no daemon, no CA and no entry left to plan.
+    await loadUninstall();
+  });
+}
+
+function linesSection(title, lines) {
+  if (!lines.length) return [];
+  const list = el("ul", "plain");
+  for (const line of lines) list.append(el("li", null, line));
+  return [el("h3", null, title), list];
+}
+
+function renderUninstall() {
+  const box = document.getElementById("uninstall-view");
+  if (!uninstallView) {
+    box.replaceChildren(button(t("uninstall.review"), openUninstall, "uninstall:plan"));
+    return;
+  }
+  const plan = uninstallView;
+  const parts = [];
+  const purge = el("label", "check");
+  const purgeBox = el("input");
+  purgeBox.type = "checkbox";
+  purgeBox.checked = uninstallPurge;
+  purgeBox.disabled = pending.has("uninstall:run");
+  purgeBox.addEventListener("change", async () => {
+    uninstallPurge = purgeBox.checked;
+    uninstallBackups = false;
+    uninstallResult = null;
+    await run("uninstall:plan", loadUninstall);
+  });
+  purge.append(purgeBox, el("span", null, t("uninstall.purge")));
+  parts.push(purge, el("p", "hint small", t("uninstall.purge_hint")));
+
+  if (uninstallResult) {
+    parts.push(
+      el("h3", null, t(uninstallResult.done ? "uninstall.result_done" : "uninstall.result_left")),
+      outcomesList(uninstallResult.outcomes)
+    );
+    if (uninstallResult.close_app) parts.push(el("p", "hint", t("uninstall.closing")));
+  }
+
+  if (!plan.steps.length) {
+    parts.push(el("p", "hint", t("uninstall.nothing")));
+  } else {
+    parts.push(el("h3", null, t("uninstall.will")));
+    const list = el("ol", "plain");
+    for (const step of plan.steps) list.append(el("li", null, step.description));
+    parts.push(list);
+  }
+  if (plan.purge) {
+    const purgeNotice = plan.purge;
+    if (purgeNotice.foreign.length) {
+      parts.push(...linesSection(t("uninstall.foreign"), purgeNotice.foreign));
+    } else {
+      parts.push(el("p", "hint", t("uninstall.purge_deletes", { home: purgeNotice.home })));
+      parts.push(...linesSection(t("uninstall.databases"), purgeNotice.databases));
+      parts.push(...linesSection(t("uninstall.projects"), purgeNotice.projects));
+    }
+  }
+  parts.push(...linesSection(t("uninstall.by_hand"), plan.by_hand));
+  parts.push(...linesSection(t("uninstall.problems"), plan.problems));
+  parts.push(...linesSection(t("uninstall.kept"), plan.kept));
+
+  if (plan.steps.length && !(uninstallResult && uninstallResult.close_app)) {
+    if (plan.deletes_home) {
+      const label = el("label", "check");
+      const backupBox = el("input");
+      backupBox.type = "checkbox";
+      backupBox.checked = uninstallBackups;
+      backupBox.addEventListener("change", () => {
+        uninstallBackups = backupBox.checked;
+        uninstallArmed = false;
+        render();
+      });
+      label.append(backupBox, el("span", null, t("uninstall.backups")));
+      parts.push(label);
+    }
+    const actions = el("div", "toolbar");
+    const key = "uninstall:run";
+    const label = pending.has(key) ? t("doctor.working") : t("uninstall.run");
+    if (uninstallArmed) {
+      actions.append(
+        button(t("doctor.confirm", { label }), performUninstall, key, "danger"),
+        button(t("doctor.cancel"), () => {
+          uninstallArmed = false;
+          render();
+        })
+      );
+    } else {
+      const go = button(
+        label,
+        () => {
+          uninstallArmed = true;
+          render();
+        },
+        key,
+        "danger"
+      );
+      go.disabled = go.disabled || (plan.deletes_home && !uninstallBackups);
+      actions.append(go);
+    }
+    parts.push(actions);
+  }
+  box.replaceChildren(...parts);
 }
 
 // ---- logs -------------------------------------------------------------------------------
@@ -1017,6 +1271,15 @@ function renderBanners({ state, summary }) {
   for (const warning of state.warnings || []) {
     nodes.push(banner("", t("banner.warning"), warning));
   }
+  // The setup opened by itself once; until it is done it stays here as an offer.
+  if (setupView && setupView.steps.length && !setupView.problems.length && section !== "setup") {
+    const node = banner("", t("banner.setup"), t("banner.setup_text"));
+    const go = el("button", "button small", t("banner.setup_go"));
+    go.type = "button";
+    go.addEventListener("click", () => showSection("setup"));
+    node.append(go);
+    nodes.push(node);
+  }
   if (failure) {
     const node = banner("failed", t("banner.call_failed"), failure.message, failure.fix);
     const close = el("button", "button small", t("banner.dismiss"));
@@ -1073,6 +1336,8 @@ function render() {
   renderSites();
   renderVersions();
   renderDoctor();
+  renderSetup();
+  renderUninstall();
   renderCredentials();
   renderSettings();
   renderBanners(current);
@@ -1106,6 +1371,17 @@ async function start() {
   ready = true;
   take(boot);
   render();
+
+  // What is left to set up: the screen opens by itself the first time, and after that the
+  // banner offers it. A failure to look is not a reason to stop the app from opening.
+  invoke("setup_plan", { first: true }).then(
+    (screen) => {
+      applySetupView(screen.view);
+      if (screen.open) showSection("setup");
+      render();
+    },
+    () => {}
+  );
 
   for (const item of document.querySelectorAll(".nav-item")) {
     item.addEventListener("click", () => showSection(item.dataset.section));

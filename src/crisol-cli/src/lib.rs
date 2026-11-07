@@ -749,23 +749,13 @@ impl Session<'_> {
 
     fn setup(&mut self, yes: bool) -> u8 {
         let context = self.context;
-        let store = (context.client.trust_store)();
-        let system = onboarding::System {
-            paths: &context.client.paths,
-            dirs: context.client.dirs.as_ref(),
-            autostart: context.client.autostart.as_ref(),
-            user_path: context.client.user_path.as_ref(),
-            trust: match &store {
-                Ok(store) => Ok(store.as_ref()),
-                Err(error) => Err(error.to_string()),
-            },
-            setup: context.client.setup.as_ref(),
-            shim_exe: context.client.shim_exe.clone(),
-            daemon_exe: context.client.daemon_exe.clone(),
-            reserved_name: context.client.reserved_name.as_ref(),
-        };
+        crisol_client::with_setup_system(&context.client, |system| self.setup_on(system, yes))
+    }
+
+    fn setup_on(&mut self, system: &onboarding::System<'_>, yes: bool) -> u8 {
+        let context = self.context;
         let now = SystemTime::now();
-        let plan = onboarding::plan(&system, now);
+        let plan = onboarding::plan(system, now);
         let mut json = serde_json::to_value(&plan).unwrap_or_default();
         if !self.json {
             let _ = write!(self.out, "{}", render::setup_plan(&plan));
@@ -777,7 +767,7 @@ impl Session<'_> {
             return EXIT_OK;
         }
         let agreed = onboarding::run_if_agreed(
-            &system,
+            system,
             &plan,
             // What is asked alone is asked when its turn comes; if that is all there is, one
             // more question about the whole list would only repeat them.
@@ -834,23 +824,14 @@ impl Session<'_> {
 
     fn uninstall_all(&mut self, purge: bool, yes: bool) -> u8 {
         let context = self.context;
-        let daemon_running = (context.client.connect)().is_ok();
-        let store = (context.client.trust_store)();
-        let system = teardown::System {
-            paths: &context.client.paths,
-            autostart: context.client.autostart.as_ref(),
-            user_path: context.client.user_path.as_ref(),
-            trust: match &store {
-                Ok(store) => Ok(store.as_ref()),
-                Err(error) => Err(error.to_string()),
-            },
-            setup: context.client.setup.as_ref(),
-            daemon_running,
-            programs: context.client.programs.clone(),
-            remove_programs: context.client.remove_programs.as_ref(),
-            winget: context.client.winget,
-        };
-        let plan = teardown::plan(&system, purge);
+        crisol_client::with_teardown_system(&context.client, |system| {
+            self.uninstall_on(system, purge, yes)
+        })
+    }
+
+    fn uninstall_on(&mut self, system: &teardown::System<'_>, purge: bool, yes: bool) -> u8 {
+        let context = self.context;
+        let plan = teardown::plan(system, purge);
         let mut json = serde_json::to_value(&plan).unwrap_or_default();
         if !self.json {
             let _ = write!(self.out, "{}", render::teardown_plan(&plan));
@@ -862,7 +843,7 @@ impl Session<'_> {
             return EXIT_OK;
         }
         let agreed = teardown::run_if_agreed(
-            &system,
+            system,
             &plan,
             &mut |plan| yes || (context.confirm)(plan),
             &mut || self.stop_daemon(),
