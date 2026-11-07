@@ -1014,7 +1014,6 @@ impl Daemon {
     }
 }
 
-/// The exit code a failure carries, if any.
 /// The address of a Microsoft page (`aka.ms`) a message points to, as the loader's explanation
 /// of an exit code does for the Visual C++ runtime.
 fn microsoft_link(text: &str) -> Option<String> {
@@ -1026,6 +1025,7 @@ fn microsoft_link(text: &str) -> Option<String> {
     Some(url)
 }
 
+/// The exit code a failure carries, if any.
 fn exit_code(reason: &FailureReason) -> Option<i32> {
     match reason {
         FailureReason::ExitedDuringStartup { code } | FailureReason::Crashed { code } => *code,

@@ -917,7 +917,8 @@ impl Engine {
                 ),
             });
         }
-        (!waiting.is_empty()).then(|| Check { action: None,
+        (!waiting.is_empty()).then(|| Check {
+            action: None,
             name: "unverified installs".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -951,7 +952,8 @@ impl Engine {
                 })
             })
             .collect();
-        (!lines.is_empty()).then(|| Check { action: None,
+        (!lines.is_empty()).then(|| Check {
+            action: None,
             name: "data series".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -1165,7 +1167,8 @@ impl Engine {
             })
             .map(|c| format!("{} (line {}: `{}`)", c.name, c.line, c.text))
             .collect();
-        (!elsewhere.is_empty()).then(|| Check { action: None,
+        (!elsewhere.is_empty()).then(|| Check {
+            action: None,
             name: "site names".to_owned(),
             status: CheckStatus::Problem,
             detail: format!(

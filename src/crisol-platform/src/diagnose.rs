@@ -220,13 +220,15 @@ fn ipv6_loopback_works() -> io::Result<()> {
 pub fn ipv6_check() -> Check {
     let name = "IPv6 loopback".to_owned();
     match ipv6_loopback_works() {
-        Ok(()) => Check { action: None,
+        Ok(()) => Check {
+            action: None,
             name,
             status: CheckStatus::Ok,
             detail: "programs can listen on [::1]".to_owned(),
             fix: None,
         },
-        Err(error) => Check { action: None,
+        Err(error) => Check {
+            action: None,
             name,
             status: CheckStatus::Problem,
             detail: format!(

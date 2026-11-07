@@ -200,7 +200,7 @@
   "doctor.trust_until": "Válida hasta {date}",
   "doctor.trust_check": "Windows te pedirá confirmar. Comprueba que la huella (SHA-1) que muestra sea {sha1}",
   "doctor.done.calls": "Hecho.",
-  "doctor.done.trust_added": "Windows ya confía en la CA local. Un navegador que estuviera abierto puede necesitar reiniciarse.",
+  "doctor.done.trust_added": "Listo: desde ahora Windows confía en la CA local. Un navegador que estuviera abierto puede necesitar reiniciarse.",
   "doctor.done.trust_already": "Windows ya confiaba en ella; no se cambió nada.",
   "doctor.done.trust_declined": "Se le dijo que no a Windows; no se cambió nada.",
   "doctor.done.untrust_done": "Windows ya no confía en: {names}.",
