@@ -1,6 +1,6 @@
 # ADR-0021 — `doctor` diagnostica y no cambia nada
 
-- **Estado:** aceptada (2026-10-29, F11.1). El propietario confirmó la sección 3 (Defender) el mismo día y pidió `crisol trust` de una vez (sección 4). **Sección 5 (acciones para la GUI, F13.7): borrador del 2026-11-06, pendiente de aprobación.**
+- **Estado:** aceptada (2026-10-29, F11.1). El propietario confirmó la sección 3 (Defender) el mismo día y pidió `crisol trust` de una vez (sección 4). **Sección 5 (acciones para la GUI, F13.7): aceptada por el propietario el 2026-11-06.**
 - **Fecha:** 2026-10-29
 
 ## Contexto
@@ -84,9 +84,9 @@ Pedidos por el propietario el 2026-10-29. `doctor` los sugiere: `crisol trust` c
 - **Dónde se ejecutan:** en el proceso del CLI, no en el daemon, para que el diálogo salga delante del usuario. El CLI solo encadena `trust::prepare_trust` (muestra el plan) y `trust::trust_ca`; `trust::untrust_local` hace el resto. La GUI llamará a las mismas funciones.
 - La parte manual, con el almacén real, la hace el propietario (ver «Verificación manual»).
 
-### 5. Acciones de `doctor` para la GUI (F13.7) — **BORRADOR, pendiente de aprobación**
+### 5. Acciones de `doctor` para la GUI (F13.7)
 
-> Estado: borrador de Opus (2026-11-06) para que el propietario lo apruebe antes de implementarlo (`docs/plan.md`, F13.7). Decididas por el propietario: **(1)** `crisol system install` es un botón con el UAC; **(4)** el núcleo manda el tipo y los datos, y `crisol-client` pone la etiqueta traducida. Quedan por decidir: **(2)** reinstalar con dos llamadas o con una, y **(3)** si hay acción para abrir un archivo o una carpeta. En las dos va la recomendación.
+> Estado: **aceptada** (2026-11-06). Borrador de Opus; decisiones del propietario: **(1)** `crisol system install` es un botón con el UAC; **(2)** reinstalar son dos llamadas, `uninstall` y después `install`; **(3)** hay una acción `Reveal` para abrir en el Explorador un archivo o una carpeta de la home; **(4)** el núcleo manda el tipo y los datos, y `crisol-client` pone la etiqueta traducida.
 
 Sustituye la idea de «Para la GUI» de la sección 3. Allí se proponía `AdminCommand { program, args }`, y eso ya no existe: la GUI nunca ejecuta un programa que le diga una respuesta (ADR-0026 §6).
 
@@ -118,7 +118,8 @@ pub enum CheckAction {
     ShowLog { service: String },
     /// A command to copy. Never run.
     Copy { text: String },
-    // Decision 3: `Reveal { path }`, if it is approved.
+    /// Opens Explorer with this file or folder selected. Only paths inside the home.
+    Reveal { path: String },
 }
 
 #[serde(rename_all = "snake_case")]
@@ -137,7 +138,7 @@ pub enum LocalOp { Trust, UntrustStale, AutostartOff, PathAdd, SystemInstall }
 | `installed` | `crisol install X` | `Calls [Install]` (con la barra de progreso de Versiones) |
 | `known vulnerabilities` | `crisol install php 8.4.x` | `Calls [Install]`. Sin versión que lo arregle (el texto con `--from <zip>`), ninguna |
 | `end of life` | `crisol install X` | `Calls [Install]` |
-| `unverified installs` (problema) | `crisol uninstall X && crisol install X` | según la decisión 2 |
+| `unverified installs` (problema) | `crisol uninstall X && crisol install X` | `Calls [Uninstall, Install]` (decisión 2), con segundo clic |
 | `unverified installs` (aviso) | «cuando un crisol.exe más nuevo…» | ninguna |
 | `services` (alguno falló) | `crisol logs X` | `ShowLog { service: X }` |
 | `services` (falta el runtime de Visual C++) | el enlace | `Link` |
@@ -149,8 +150,8 @@ pub enum LocalOp { Trust, UntrustStale, AutostartOff, PathAdd, SystemInstall }
 | `local CA` | `crisol trust` / `crisol untrust --stale` | `Local Trust` / `Local UntrustStale` (diálogo de Windows) |
 | `autostart` (entrada rota o ajena) | `crisol autostart off` | `Local AutostartOff` |
 | `database startup` (lenta por Defender) | `Add-MpPreference …` | `Copy` (ADR-0026 §6: de administrador y ajeno a Crisol) |
-| `configuration`, `ports` | `edit crisol.toml`, «set `port = N`» | según la decisión 3 |
-| `log leftovers` | «léelos y bórralos» | según la decisión 3 |
+| `configuration`, `ports` | `edit crisol.toml`, «set `port = N`» | `Reveal { crisol.toml }` (decisión 3) |
+| `log leftovers` | «léelos y bórralos» | `Reveal` del primer resto, en su carpeta (decisión 3) |
 | `site names` (`hosts`), `IPv6` | cambiar `hosts` o el registro | ninguna: es de administrador y no hay un comando exacto |
 | el resto | sin `fix` | ninguna |
 
@@ -159,7 +160,7 @@ pub enum LocalOp { Trust, UntrustStale, AutostartOff, PathAdd, SystemInstall }
 - **Antes de hacer nada, dice qué va a hacer.** La etiqueta la pone `crisol-client` a partir de la acción («Instalar php 8.4.27», «Confiar en la CA local…», «Instalar el ayudante (pide permiso de administrador)»), y debajo va el `fix` exacto, que es lo que haría el CLI.
 - **Hace falta un segundo clic** cuando la acción borra algo (`Uninstall` en la lista) o pide un permiso de Windows (`Trust`, `UntrustStale`, `SystemInstall`). En `Trust`, el segundo paso muestra lo mismo que imprime `crisol trust` antes del diálogo: el nombre, para qué vale, hasta cuándo, la SHA-256 y la SHA-1.
 - **`SystemInstall`** (decisión 1) cumple las condiciones de la sección 3: el botón muestra el comando exacto, el UAC es el consentimiento y `uninstall --all` ya quita el ayudante (ADR-0022), así que no hay nada nuevo que anotar en `state/`. Si se dice que no en el UAC, es un resultado y no un error: «no se cambió nada».
-- **`Copy`** es un botón *Copiar*, el mismo de Credenciales. **`Link`** abre el navegador con `Desktop::open_url`, que ya existe. **`ShowLog`** cambia a Registros con ese servicio.
+- **`Copy`** es un botón *Copiar*, el mismo de Credenciales. **`Link`** abre el navegador con `Desktop::open_url`, que ya existe. **`ShowLog`** cambia a Registros con ese servicio. **`Reveal`** abre el Explorador con el archivo seleccionado (`explorer /select,`), mediante un método nuevo de `Desktop` (`reveal`); no edita nada.
 - **Al terminar**, la GUI vuelve a pedir `doctor`, y la fila muestra el resultado nuevo.
 - **Qué acción se ofrece, la etiqueta y si pide segundo clic** se deciden en `crisol-client` (`doctor_view`, `doctor_actions`), con pruebas. La página solo dibuja.
 
@@ -169,10 +170,11 @@ pub enum LocalOp { Trust, UntrustStale, AutostartOff, PathAdd, SystemInstall }
   - `Calls` son llamadas del protocolo, que el daemon valida igual que si vinieran del CLI;
   - `Local` es una lista cerrada, sin argumentos libres;
   - `Link` solo `https://` y que pase `is_web_address` (que por sí sola admite también `http://`, para los sitios locales);
-  - `Copy` nunca se ejecuta.
+  - `Copy` nunca se ejecuta;
+  - `Reveal` solo abre rutas que `crisol-client` comprueba que están dentro de la home (`CrisolPaths`), ya normalizadas, para que `..` no saque de ella; si no, la fila se queda sin botón.
 - Nada se ejecuta sin un clic, y lo que borra o eleva pide dos.
 
-#### 5.5 Decisión 2: reinstalar con dos llamadas o con una (por decidir)
+#### 5.5 Decisión 2: reinstalar con dos llamadas o con una (decidido: dos llamadas)
 
 Solo la usa `unverified installs` cuando el hash de lo instalado no es el del catálogo: lo que hay **no es la compilación oficial**.
 
@@ -182,9 +184,9 @@ Solo la usa `unverified installs` cuando el hash de lo instalado no es el del ca
 - **Una llamada (`install` con `replace: true` y `crisol install X --replace`).**
   - A favor: descarga y verifica en la carpeta temporal y solo entonces cambia la vieja por la nueva. Si algo falla, todo queda como estaba.
   - En contra: es otra opción del protocolo y del CLI, el `fix` cambia de texto y el reemplazo en Windows también se niega si un programa de la carpeta está corriendo. Y «como estaba» es una compilación que no es la oficial.
-- **Recomendación: dos llamadas.** Es un caso raro, quitar primero lo que no es oficial es lo prudente, y no agrega superficie. `Calls` ya admite una lista, así que no cuesta nada.
+- **Decidido: dos llamadas** (propietario, 2026-11-06). Es un caso raro, quitar primero lo que no es oficial es lo prudente, y no agrega superficie. `Calls` ya admite una lista, así que no cuesta nada.
 
-#### 5.6 Decisión 3: abrir un archivo o una carpeta (por decidir)
+#### 5.6 Decisión 3: abrir un archivo o una carpeta (decidido: `Reveal`)
 
 Lo usarían `configuration` y `ports` (`crisol.toml`) y `log leftovers` (la carpeta de logs).
 
@@ -192,7 +194,7 @@ Lo usarían `configuration` y `ports` (`crisol.toml`) y `log leftovers` (la carp
   - A favor: un clic lleva al archivo que hay que tocar, y los errores de `crisol.toml` son los más comunes en `doctor`. Seleccionarlo en el Explorador evita que Windows pregunte con qué abrir un `.toml`, si no hay programa asociado.
   - En contra: es un método más en `Desktop` (`reveal`) y otra validación: la GUI solo abre rutas **dentro de la home**, comprobadas con `CrisolPaths`, para que una respuesta no pueda llevar a otro sitio. No edita nada; la persona hace el cambio.
 - **Sin acción (solo texto):** nada nuevo, pero la persona tiene que ir sola hasta `crisol.toml` o `logs\`. La ruta ya sale en el detalle.
-- **Recomendación: `Reveal`, limitado a la home.** Es poco código, el Explorador es lo que espera un usuario de Herd o Laragon, y deja para más adelante una llamada que escriba el puerto libre en `crisol.toml` (necesitaría su propia orden explícita, por la regla de no reescribir la configuración del usuario).
+- **Decidido: `Reveal`, limitado a la home** (propietario, 2026-11-06). La ruta se comprueba en `crisol-client` con `CrisolPaths`; una fuera de la home deja la fila sin botón. Es poco código, el Explorador es lo que espera un usuario de Herd o Laragon, y deja para más adelante una llamada que escriba el puerto libre en `crisol.toml` (necesitaría su propia orden explícita, por la regla de no reescribir la configuración del usuario).
 
 #### 5.7 Lo que F13.7 también recoge
 
