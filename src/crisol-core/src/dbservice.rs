@@ -78,6 +78,22 @@ pub enum Auth {
     Created,
 }
 
+/// Whether the password of a service can be changed in the state it is in. The one rule that
+/// `reset_password` applies and that a screen uses to decide whether to offer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordChange {
+    /// It can: a running server is asked to change it, or a stopped one that reads it when it
+    /// starts gets a new file.
+    Ready,
+    /// The service has no password (Mailpit, Memcached).
+    NoPassword,
+    /// It reads its password only when it starts (Garnet, Meilisearch): stop it first.
+    StopFirst,
+    /// The password is kept in its data and only the server can change it (MySQL, MariaDB,
+    /// PostgreSQL, MongoDB): start it first.
+    StartFirst,
+}
+
 /// What differs between the services, as data: one entry each.
 struct Descriptor {
     service: &'static str,
@@ -293,6 +309,20 @@ impl DbKind {
     #[must_use]
     pub fn auth(self) -> Auth {
         self.descriptor().auth
+    }
+
+    /// Whether its password can be changed while it runs (`running`) or while it does not.
+    /// Redis can be asked while it runs and reads a new file when it starts; Garnet and
+    /// Meilisearch only read it when they start; the others keep it in their data and only
+    /// their running server can change it.
+    #[must_use]
+    pub fn password_change(self, running: bool) -> PasswordChange {
+        match (self.auth(), running) {
+            (Auth::None, _) => PasswordChange::NoPassword,
+            (Auth::Applied, true) if self != Self::Redis => PasswordChange::StopFirst,
+            (Auth::Stored | Auth::Created, false) => PasswordChange::StartFirst,
+            _ => PasswordChange::Ready,
+        }
     }
 
     /// Whether `crisol.toml` enables it.
@@ -845,7 +875,8 @@ impl DbService {
     pub fn reset_password(&mut self, admin: &dyn DbAdmin) -> Result<String, String> {
         let kind = self.plan.kind;
         let name = kind.service();
-        if kind.auth() == Auth::None {
+        let change = kind.password_change(true);
+        if change == PasswordChange::NoPassword {
             return Err(format!("{name} has no password to reset"));
         }
         if self.state != ServiceState::Running {
@@ -853,7 +884,7 @@ impl DbService {
                 "{name} is not running yet; wait until it is, or start it"
             ));
         }
-        if kind.auth() == Auth::Applied && kind != DbKind::Redis {
+        if change == PasswordChange::StopFirst {
             return Err(format!(
                 "{name} reads its password only when it starts, so it cannot be changed while it runs: stop it (`crisol stop {name}`), run this again, then start it"
             ));

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crisol_protocol::{ErrorCode, RpcError};
 
 use crate::config::Config;
-use crate::dbservice::{plan, Auth, DbAdmin, DbError, DbKind, DbService, NoAdmin};
+use crate::dbservice::{plan, Auth, DbAdmin, DbError, DbKind, DbService, NoAdmin, PasswordChange};
 use crate::engine::{home_error, NoSystemChecks, SystemChecks};
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::ports::PortProbe;
@@ -111,7 +111,7 @@ impl DbStack {
     pub fn reset_password(&mut self, kind: DbKind) -> Result<String, RpcError> {
         require_private_home(&self.paths, self.dirs.as_ref()).map_err(|e| home_error(&e))?;
         let name = kind.service();
-        if kind.auth() == Auth::None {
+        if kind.password_change(false) == PasswordChange::NoPassword {
             return Err(RpcError::new(
                 ErrorCode::InvalidParams,
                 format!("{name} has no password to reset"),
@@ -138,7 +138,7 @@ impl DbStack {
             DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
             other => RpcError::new(ErrorCode::Io, other.to_string()),
         })?;
-        if kind.auth() == Auth::Applied {
+        if kind.password_change(false) == PasswordChange::Ready {
             let new = secrets::generate_password()
                 .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
             let file = plan.secret_path("");

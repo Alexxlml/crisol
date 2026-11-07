@@ -80,6 +80,28 @@ impl Rig {
 }
 
 #[test]
+fn when_a_password_can_be_changed_is_one_rule_per_service() {
+    use PasswordChange::{NoPassword, Ready, StartFirst, StopFirst};
+    // (service, while it runs, while it does not)
+    let expected = [
+        (DbKind::Mysql, Ready, StartFirst),
+        (DbKind::Mariadb, Ready, StartFirst),
+        (DbKind::Postgres, Ready, StartFirst),
+        (DbKind::Mongodb, Ready, StartFirst),
+        (DbKind::Redis, Ready, Ready),
+        (DbKind::Garnet, StopFirst, Ready),
+        (DbKind::Meilisearch, StopFirst, Ready),
+        (DbKind::Mailpit, NoPassword, NoPassword),
+        (DbKind::Memcached, NoPassword, NoPassword),
+    ];
+    assert_eq!(expected.len(), DbKind::ALL.len());
+    for (kind, running, stopped) in expected {
+        assert_eq!(kind.password_change(true), running, "{kind:?} running");
+        assert_eq!(kind.password_change(false), stopped, "{kind:?} stopped");
+    }
+}
+
+#[test]
 fn the_plan_picks_the_highest_installed_or_the_pinned_version_and_splits_data_by_series() {
     let mut rig = Rig::new();
     assert!(matches!(

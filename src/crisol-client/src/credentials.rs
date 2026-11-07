@@ -5,7 +5,7 @@
 //! the text a click copies and decides whether *reset password* is offered, with the reason
 //! when it is not, so a click never reaches the daemon only to be refused. The page draws it.
 
-use crisol_core::dbservice::{Auth, DbKind};
+use crisol_core::dbservice::{DbKind, PasswordChange};
 use crisol_protocol::{Call, CredentialsInfo, ErrorCode, Reply, RpcError};
 use serde::Serialize;
 
@@ -39,11 +39,12 @@ pub enum ResetOffer {
 }
 
 /// Whether the password of `kind` can be changed given the state of its service (`running`,
-/// `stopped`…; `None` when the daemon does not list it) and whether there is a daemon. The same
-/// rules the daemon applies, so that the answer to a click is not a refusal.
+/// `stopped`…; `None` when the daemon does not list it) and whether there is a daemon. The rule
+/// is the daemon's own ([`DbKind::password_change`]), so that the answer to a click is not a
+/// refusal.
 #[must_use]
 pub fn reset_offer(kind: DbKind, service_state: Option<&str>, daemon: bool) -> ResetOffer {
-    if kind.auth() == Auth::None {
+    if kind.password_change(false) == PasswordChange::NoPassword {
         return ResetOffer::NoPassword;
     }
     if !daemon {
@@ -53,13 +54,11 @@ pub fn reset_offer(kind: DbKind, service_state: Option<&str>, daemon: bool) -> R
     if matches!(state, "starting" | "stopping") {
         return ResetOffer::Busy;
     }
-    let running = state == "running";
-    // Redis is asked while it runs; Garnet and Meilisearch only read the password at start.
-    let reads_at_start = kind.auth() == Auth::Applied && kind != DbKind::Redis;
-    match (running, kind.auth()) {
-        (true, _) if reads_at_start => ResetOffer::StopFirst,
-        (false, Auth::Stored | Auth::Created) => ResetOffer::StartFirst,
-        _ => ResetOffer::Available,
+    match kind.password_change(state == "running") {
+        PasswordChange::Ready => ResetOffer::Available,
+        PasswordChange::NoPassword => ResetOffer::NoPassword,
+        PasswordChange::StopFirst => ResetOffer::StopFirst,
+        PasswordChange::StartFirst => ResetOffer::StartFirst,
     }
 }
 
