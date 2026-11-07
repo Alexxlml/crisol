@@ -122,7 +122,9 @@ pub fn credentials_view(
             .lines
             .into_iter()
             .map(|line| CredentialLine {
-                secret: is_secret(&line.key),
+                // An empty value or `null` is the absence of a password: hiding it would draw
+                // dots that pretend there is one.
+                secret: is_secret(&line.key) && !matches!(line.value.as_str(), "" | "null"),
                 key: line.key,
                 value: line.value,
             })

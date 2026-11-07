@@ -66,6 +66,19 @@ fn the_view_marks_the_secrets_and_makes_the_env_text() {
 }
 
 #[test]
+fn a_missing_password_is_shown_as_it_is_not_hidden() {
+    let view = credentials_view(
+        info(
+            "redis",
+            &[("REDIS_PASSWORD", "null"), ("MEILISEARCH_KEY", "")],
+        ),
+        Some("running"),
+        true,
+    );
+    assert!(view.lines.iter().all(|l| !l.secret));
+}
+
+#[test]
 fn a_service_without_a_password_offers_no_reset() {
     for kind in [DbKind::Mailpit, DbKind::Memcached] {
         assert_eq!(
