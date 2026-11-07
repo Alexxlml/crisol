@@ -18,7 +18,7 @@ fn connected(services: &[(&str, &str)]) -> LiveState {
         connection: Connection::Connected,
         daemon: Some(HelloInfo {
             daemon: "0.1.0".to_owned(),
-            protocol: 3,
+            protocol: 4,
             home: r"C:\Crisol".to_owned(),
         }),
         services: services.iter().map(|(n, s)| service(n, s)).collect(),

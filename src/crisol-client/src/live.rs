@@ -98,10 +98,14 @@ impl LiveState {
             },
             Event::ReloadStarted => self.reloading = true,
             Event::Reloaded | Event::ReloadFailed { .. } => self.reloading = false,
+            // The whole list as it is now, not something to add.
+            Event::Warnings { warnings } => self.warnings.clone_from(warnings),
+            // An event of a newer daemon: its number was counted, there is nothing to draw.
             Event::Blocked { .. }
             | Event::Log { .. }
             | Event::Progress { .. }
-            | Event::ShuttingDown => {}
+            | Event::ShuttingDown
+            | Event::Unknown => {}
         }
     }
 

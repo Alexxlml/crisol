@@ -207,6 +207,7 @@ Lo usarían `configuration` y `ports` (`crisol.toml`) y `log leftovers` (la carp
 - `services` con el runtime de Visual C++ ausente lleva `Link` (la página sale del propio mensaje del cargador, solo si es de `aka.ms`); su `fix` no cambia (`crisol logs X`), para que el CLI quede igual.
 - `database startup` copia solo el comando de Defender (`SystemChecks::slow_start_command`), no la frase entera del `fix`.
 - La etiqueta no viaja traducida: `crisol-client` manda la clave y los valores, y la página la traduce con sus diccionarios, como las demás pantallas.
+- Los avisos de `status` (§5.7) necesitaron más: el daemon los devolvía vacíos y ningún evento los actualizaba. Lo resuelve la ADR-0029 (avisos vigentes, evento `warnings`, protocolo 4).
 - En *Confiar en la CA*, el primer clic hace `crisol-client::trust_preview`, que crea la CA si no hay (como `crisol trust` antes de preguntar) y no añade nada al almacén; el segundo clic es el que abre el diálogo de Windows.
 
 ## Consecuencias

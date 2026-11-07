@@ -67,7 +67,17 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         from_file: bool,
     },
+    /// What the daemon has to say about the running web stack changed: this is the whole list
+    /// now, the same as `status` would give (empty when nothing holds any more).
+    Warnings {
+        /// The texts, ready to show.
+        warnings: Vec<String>,
+    },
     /// The daemon is going away: its services are down (or were killed) and this is the last
     /// event a subscriber gets.
     ShuttingDown,
+    /// An event of a newer daemon that this version does not know. Never sent: it is what one
+    /// reads as, so that a new kind of event is compatible (protocol 4). Its `seq` still counts.
+    #[serde(other)]
+    Unknown,
 }

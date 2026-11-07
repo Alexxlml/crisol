@@ -384,6 +384,9 @@ fn events_are_notifications_with_no_id_and_every_kind_round_trips() {
             total: Some(20),
             from_file: false,
         },
+        Event::Warnings {
+            warnings: vec!["the default php 8.3 in crisol.toml is not installed".to_owned()],
+        },
         Event::ShuttingDown,
     ];
     for event in events {
@@ -406,6 +409,21 @@ fn events_are_notifications_with_no_id_and_every_kind_round_trips() {
         from_line::<Message>(&response).unwrap(),
         Message::Response(_)
     ));
+}
+
+#[test]
+fn an_event_this_version_does_not_know_is_read_with_its_number() {
+    // A newer daemon may send a kind of event that did not exist yet: the connection goes on,
+    // and its number still tells a client whether one was lost (protocol 4).
+    let line =
+        r#"{"jsonrpc":"2.0","method":"event","params":{"type":"from_the_future","x":[1],"seq":9}}"#;
+    match from_line::<Message>(line).unwrap() {
+        Message::Notification(n) => {
+            assert_eq!(n.params.event, Event::Unknown);
+            assert_eq!(n.params.seq, Some(9));
+        }
+        Message::Response(r) => panic!("{r:?}"),
+    }
 }
 
 #[test]
@@ -449,7 +467,7 @@ fn only_the_calls_about_running_services_need_the_daemon() {
 #[test]
 fn version_is_not_empty() {
     assert_ne!(VERSION, "");
-    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(PROTOCOL_VERSION, 4);
 }
 
 // ---- the client over plain buffers -------------------------------------------------------

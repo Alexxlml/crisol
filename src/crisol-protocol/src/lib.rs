@@ -12,8 +12,9 @@
 //!   no `id`) carrying an [`Event`] on that connection.
 //! - Nothing here knows about Windows: paths travel as text.
 //!
-//! Adding a field to a reply or an event is compatible (unknown fields are ignored); anything
-//! else raises [`PROTOCOL_VERSION`].
+//! Adding a field to a reply or an event is compatible (unknown fields are ignored), and so is
+//! adding a kind of event (it reads as [`Event::Unknown`]); anything else raises
+//! [`PROTOCOL_VERSION`].
 
 mod call;
 mod client;
@@ -36,8 +37,9 @@ use serde::{Deserialize, Serialize};
 /// Crate version, exposed for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The version of this protocol. Raised for any change that is not an added field.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// The version of this protocol. Raised for any change that is not an added field or an added
+/// kind of event. 4: the `warnings` event, and unknown events are read, not refused (ADR-0029).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The `jsonrpc` member of every message.
 pub const JSONRPC: &str = "2.0";

@@ -71,6 +71,9 @@ pub struct Daemon {
     trouble: WebTrouble,
     /// The notes already handed out, so a reload does not repeat them.
     reported_notes: Vec<String>,
+    /// What still holds about the running web stack (the plan's warnings, the certificates',
+    /// `crisol.toml`'s): what `status` says, and what the `warnings` event says when it changes.
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +124,7 @@ impl Daemon {
             notes: Vec::new(),
             reported_notes: Vec::new(),
             trouble: WebTrouble::default(),
+            warnings: Vec::new(),
         }
     }
 
@@ -384,7 +388,7 @@ impl Daemon {
         }
         Ok(Reply::Status(StatusInfo {
             services,
-            warnings: Vec::new(),
+            warnings: self.warnings.clone(),
             // The events are numbered by whoever sends them (`crisold`), which adds it.
             seq: None,
             // What the events said and still holds, so a client that arrives late sees it.
@@ -618,18 +622,19 @@ impl Daemon {
         self.wanted = true;
         self.fingerprint = Some(self.watch_fingerprint());
         self.last_watch = Some(now);
-        let mut reply = DoneInfo {
+        self.notes.extend(applied.notes);
+        let warnings = self.standing(plan.warnings, applied.warnings);
+        self.set_warnings(warnings.clone(), events);
+        Ok(Reply::Done(DoneInfo {
             message: "Starting the web stack".to_owned(),
             changed: true,
-            warnings: plan.warnings,
-        };
-        reply.warnings.extend(applied.warnings);
-        self.notes.extend(applied.notes);
-        reply.warnings.extend(self.config_warnings());
-        Ok(Reply::Done(reply))
+            warnings,
+        }))
     }
 
     fn stop(&mut self, now: Instant, events: &mut dyn FnMut(Event), shutdown: bool) -> Reply {
+        // What was said about the running stack no longer holds once it is asked to stop.
+        self.set_warnings(Vec::new(), events);
         self.wanted = false;
         self.restart_pending = false;
         let databases_running = !self.dbs.is_stopped();
@@ -868,6 +873,30 @@ impl Daemon {
             .unwrap_or_default()
     }
 
+    /// What holds about the stack just applied: the plan's warnings, then the certificates',
+    /// then `crisol.toml`'s, each said once.
+    fn standing(&self, plan: Vec<String>, applied: Vec<String>) -> Vec<String> {
+        let mut all: Vec<String> = Vec::new();
+        for warning in plan
+            .into_iter()
+            .chain(applied)
+            .chain(self.config_warnings())
+        {
+            if !all.contains(&warning) {
+                all.push(warning);
+            }
+        }
+        all
+    }
+
+    /// Keeps `warnings` as what holds now and, when it is not what was said last, says it.
+    fn set_warnings(&mut self, warnings: Vec<String>, events: &mut dyn FnMut(Event)) {
+        if self.warnings != warnings {
+            self.warnings.clone_from(&warnings);
+            events(Event::Warnings { warnings });
+        }
+    }
+
     fn plan(&self, config: &Config) -> Result<WebPlan, RpcError> {
         let linked = SitesFile::load(self.engine.paths())
             .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?;
@@ -954,7 +983,11 @@ impl Daemon {
                 // `reload_started` comes from the stack when `nginx -t` begins, so that each one
                 // is followed by `reloaded` or `reload_failed`: a request may be merged into a
                 // round under way, or find the files already as wanted and test nothing.
-                Ok(applied) => self.notes.extend(applied.notes),
+                Ok(applied) => {
+                    self.notes.extend(applied.notes);
+                    let warnings = self.standing(plan.warnings, applied.warnings);
+                    self.set_warnings(warnings, events);
+                }
                 Err(WebError::Home(error)) => {
                     // Nothing was written, and closing the folder changes no file the watch
                     // looks at: the next look tries again, so the change is applied (and
@@ -1000,6 +1033,13 @@ impl Daemon {
         stamp(&paths.config_file(), &mut hasher);
         stamp(&paths.sites_file(), &mut hasher);
         stamp(&paths.ca_cert(), &mut hasher);
+        // Installing or removing a version changes what the sites resolve to, and whether the
+        // default of `crisol.toml` is still there.
+        if let Ok(installed) = list_installed(paths) {
+            for i in &installed {
+                (&i.service, i.version.to_string()).hash(&mut hasher);
+            }
+        }
         if let Ok(loaded) = Config::load_from(paths) {
             let linked = SitesFile::load(paths).unwrap_or_default();
             let list = crate::sites::discover(paths, &loaded.config, &linked);

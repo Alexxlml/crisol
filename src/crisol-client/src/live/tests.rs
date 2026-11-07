@@ -9,7 +9,7 @@ use crisol_protocol::{Client, PROTOCOL_VERSION};
 use super::*;
 use crate::link::Remote;
 
-const HELLO: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"type":"hello","daemon":"0.1.0","protocol":3,"home":"C:\\Crisol"}}"#;
+const HELLO: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"type":"hello","daemon":"0.1.0","protocol":4,"home":"C:\\Crisol"}}"#;
 const SUBSCRIBED: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"type":"done","message":"subscribed","changed":true,"warnings":[]}}"#;
 const REFUSAL: &str = r#"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"this daemon speaks protocol 4 and the client 3; update one of them"}}"#;
 
@@ -254,6 +254,37 @@ fn blocked_stays_until_a_configuration_is_applied() {
     assert_eq!(published[1].blocked.as_deref(), blocked);
     assert_eq!(published[2].blocked.as_deref(), blocked);
     assert_eq!(state.blocked, None);
+}
+
+#[test]
+fn the_warnings_event_replaces_the_list_and_an_unknown_event_is_counted_not_fatal() {
+    let warnings = |list: &str, seq: u64| {
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"event","params":{{"type":"warnings","warnings":[{list}],"seq":{seq}}}}}"#
+        )
+    };
+    let (ended, state, published, methods) = run_script(&[
+        HELLO.to_owned(),
+        SUBSCRIBED.to_owned(),
+        status(&[("nginx", "running")], Some(1)),
+        warnings(
+            r#""the default php 8.3 in crisol.toml is not installed""#,
+            2,
+        ),
+        // A newer daemon's event: read, counted (no gap at 4), nothing drawn.
+        event_with("from_the_future", "x", "y", 3),
+        warnings("", 4),
+        service_event("nginx", "stopped", 5),
+    ]);
+    assert!(matches!(ended, Ended::Lost), "{ended:?}");
+    assert_eq!(
+        published[1].warnings,
+        ["the default php 8.3 in crisol.toml is not installed"]
+    );
+    assert!(state.warnings.is_empty(), "{:?}", state.warnings);
+    // No gap was seen, so `status` was asked once: the last state came from the events.
+    assert_eq!(methods, ["hello", "subscribe", "status"]);
+    assert_eq!(state.services[0].state, "stopped");
 }
 
 #[test]

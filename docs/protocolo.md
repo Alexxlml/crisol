@@ -1,4 +1,4 @@
-# Protocolo de `crisold` (versión 3)
+# Protocolo de `crisold` (versión 4)
 
 Este es el contrato entre el daemon (`crisold`) y cualquier cliente: el CLI hoy, una GUI o un panel web después. La fuente de verdad es el crate `crisol-protocol`; una prueba de ese crate (`the_protocol_document_names_every_method_reply_event_and_error`) falla si este documento deja de nombrar un método, una respuesta, un evento o un código de error, o si la versión no coincide con `PROTOCOL_VERSION`.
 
@@ -50,9 +50,10 @@ Para distinguirlas al leer: una notificación tiene `method` y `params`; una res
 
 ## Versiones y compatibilidad
 
-- **`PROTOCOL_VERSION = 3`.** El primer mensaje de una conexión debería ser `hello` con esa versión. El daemon responde `unsupported_protocol` (código 1) a otra versión. No exige `hello`, pero un cliente que no lo envía no sabe si habla con un daemon compatible.
+- **`PROTOCOL_VERSION = 4`.** El primer mensaje de una conexión debería ser `hello` con esa versión. El daemon responde `unsupported_protocol` (código 1) a otra versión. No exige `hello`, pero un cliente que no lo envía no sabe si habla con un daemon compatible.
 - **Añadir un campo** a una respuesta o a un evento es compatible. Los clientes **deben ignorar** los campos que no conocen, y los campos opcionales pueden faltar.
-- **Cualquier otro cambio sube la versión:** quitar o renombrar algo, cambiar un tipo, o añadir un método, un tipo de respuesta, un evento o un código de error. Un cliente que encuentra un `type` desconocido no puede entender la respuesta.
+- **Añadir un evento** también es compatible desde la versión 4. Los clientes **deben ignorar** una notificación cuyo `type` no conocen, pero cuentan su `seq` (`crisol_protocol::Event::Unknown`). Un cliente de la versión 3 trataba un evento desconocido como un error de protocolo y cortaba la conexión.
+- **Cualquier otro cambio sube la versión:** quitar o renombrar algo, cambiar un tipo, o añadir un método, un tipo de respuesta o un código de error. Un cliente que encuentra un `type` de respuesta desconocido no puede entenderla.
 
 ## Errores
 
@@ -223,7 +224,7 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 ### `status`
 
 - `services`: lista, en orden estable, de `{name, state, detail?}`. `state` es `stopped`, `starting`, `running`, `stopping` o `failed`; `detail` dice por qué falló.
-- `warnings`: textos.
+- `warnings`: lo que el daemon tiene que decir de la pila web en marcha y que sigue vigente. Son los avisos de su plan (sitios, la versión por defecto que ya no está instalada), los de los certificados y los de `crisol.toml`. Es la misma lista que da el evento `warnings`, y queda vacía con la pila parada. En la respuesta final de `start` y `restart`, son en cambio los avisos de ese arranque.
 - `seq?`: el número del último evento que la foto ya refleja (ver «Eventos»). Lo pone el daemon también en la respuesta final de `start` y `restart`; falta cuando contesta el CLI sin daemon.
 - `blocked?`: el último `blocked` que sigue vigente (ver «Eventos»). Falta si no hay nada bloqueado.
 - `reload_error?`: el último `reload_failed` que sigue vigente: la configuración web nueva no se aplicó y sigue la anterior. Falta si la última se aplicó.
@@ -330,6 +331,10 @@ Se dice una vez por motivo. El daemon vuelve a intentar el cambio en cada vistaz
 `what` (`php 8.4.26`), `done` (bytes), `total?` y `from_file?` (`true` si los bytes vienen de un archivo del usuario, `install --from`).
 
 Es el único evento que llega también **sin suscripción**, a la conexión que pidió el `install`.
+
+### `warnings`
+
+`warnings`: la lista entera de avisos vigentes, la misma que daría ahora `status`. Llega cada vez que cambia: al arrancar o parar la pila web, y cuando el daemon vuelve a mirar los archivos del usuario (`crisol.toml`, los sitios, las versiones instaladas) o atiende un `use`, `link` u otro cambio de los sitios. Por ejemplo, después de `use php 8.4`, si el default que faltaba era `php 8.3`. Una lista vacía significa que ya no queda ninguno. Un cliente sustituye la suya; no hay que sumar.
 
 ### `shutting_down`
 

@@ -147,7 +147,7 @@ mod tests {
             connection: Connection::Connected,
             daemon: Some(HelloInfo {
                 daemon: "0.1.0".to_owned(),
-                protocol: 3,
+                protocol: 4,
                 home: "C:\\Crisol".to_owned(),
             }),
             services,

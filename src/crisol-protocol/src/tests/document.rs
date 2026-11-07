@@ -90,10 +90,13 @@ fn event_kind(event: &Event) -> usize {
         Event::Blocked { .. } => 4,
         Event::Log { .. } => 5,
         Event::Progress { .. } => 6,
-        Event::ShuttingDown => 7,
+        Event::Warnings { .. } => 7,
+        Event::ShuttingDown => 8,
+        // Never sent, so not documented as an event: it is how an unknown one is read.
+        Event::Unknown => EVENT_KINDS,
     }
 }
-const EVENT_KINDS: usize = 8;
+const EVENT_KINDS: usize = 9;
 
 fn every_reply() -> Vec<Reply> {
     let text = String::new;
@@ -184,6 +187,7 @@ fn every_event() -> Vec<Event> {
             total: None,
             from_file: false,
         },
+        Event::Warnings { warnings: vec![] },
         Event::ShuttingDown,
     ]
 }

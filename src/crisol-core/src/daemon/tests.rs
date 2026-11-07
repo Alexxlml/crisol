@@ -912,6 +912,121 @@ fn a_start_without_the_bundle_says_so_and_the_ini_has_no_cainfo() {
     assert!(!ini.contains("curl.cainfo = "), "{ini}");
 }
 
+impl Rig {
+    fn status_warnings(&mut self) -> Vec<String> {
+        match self.call(&Call::Status { service: None }, 0).unwrap() {
+            Reply::Status(info) => info.warnings,
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+fn warnings_events(events: &[Event]) -> Vec<Vec<String>> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Warnings { warnings } => Some(warnings.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_warnings_of_the_running_stack_are_in_status_and_said_again_when_they_change() {
+    // The case of the review of F13.7: the default is no longer installed, and choosing the
+    // version that was already in use leaves Nginx's files as they were, so no reload is
+    // announced. The warning must still go away.
+    let mut rig = Rig::new();
+    rig.with_php();
+    fs::write(
+        rig.paths.config_file(),
+        format!("[services.nginx]\nhttp_port = {HTTP}\nhttps_port = 19443\n\n[php]\nbase_port = 19100\n\n[defaults]\nphp = \"8.3\"\n"),
+    )
+    .unwrap();
+    let missing = |w: &String| crate::resolve::is_default_missing(w);
+
+    let (reply, events) = rig.call_events(&Call::Start { service: None }, 0);
+    reply.unwrap();
+    let said = warnings_events(&events);
+    assert_eq!(said.len(), 1, "{events:?}");
+    assert_eq!(said[0].iter().filter(|w| missing(w)).count(), 1, "{said:?}");
+    assert_eq!(rig.status_warnings(), said[0]);
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(100);
+    rig.listen(HTTP);
+    for port in 19100..19104 {
+        rig.listen(port);
+    }
+    rig.tick(600);
+    let controls = rig.controls().len();
+
+    let use_84 = Call::Use {
+        tool: crisol_protocol::Tool::Php,
+        version: "8.4".to_owned(),
+        dir: None,
+    };
+    let (reply, mut events) = rig.call_events(&use_84, 1000);
+    reply.unwrap();
+    events.extend(rig.tick(1100));
+    let said = warnings_events(&events);
+    assert_eq!(said.len(), 1, "{events:?}");
+    assert!(!said[0].iter().any(missing), "{said:?}");
+    assert_eq!(rig.status_warnings(), said[0]);
+    assert_eq!(
+        rig.controls().len(),
+        controls,
+        "Nginx's files did not change"
+    );
+
+    // Looking at the files again with nothing new says nothing.
+    assert_eq!(warnings_events(&rig.tick(5000)), Vec::<Vec<String>>::new());
+
+    // Stopped, nothing holds about a running stack.
+    let (_, events) = rig.call_events(&Call::Stop { service: None }, 6000);
+    if !said[0].is_empty() {
+        assert_eq!(warnings_events(&events), [Vec::<String>::new()]);
+    }
+    assert_eq!(rig.status_warnings(), Vec::<String>::new());
+}
+
+#[test]
+fn removing_the_default_version_is_noticed_by_the_watch() {
+    let mut rig = Rig::new();
+    rig.with_php();
+    let other = rig.paths.bin_for("php", "8.3.20").unwrap();
+    fs::create_dir_all(other.join("ext")).unwrap();
+    fs::write(other.join("php-cgi.exe"), "MZ").unwrap();
+    fs::write(other.join("php.ini-development"), "[PHP]\n").unwrap();
+    fs::write(
+        rig.paths.config_file(),
+        format!("[services.nginx]\nhttp_port = {HTTP}\nhttps_port = 19443\n\n[php]\nbase_port = 19100\n\n[defaults]\nphp = \"8.3\"\n"),
+    )
+    .unwrap();
+    let (reply, events) = rig.call_events(&Call::Start { service: None }, 0);
+    reply.unwrap();
+    assert!(warnings_events(&events).is_empty(), "{events:?}");
+    let (test, _) = rig.controls().pop().unwrap();
+    rig.supervisor.exit(test, 0).unwrap();
+    rig.tick(100);
+    rig.listen(HTTP);
+    for port in 19100..19108 {
+        rig.listen(port);
+    }
+    rig.tick(600);
+
+    // What `uninstall` leaves, done behind the daemon's back as the worker does.
+    fs::remove_dir_all(&other).unwrap();
+    let said = warnings_events(&rig.tick(5000));
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0]
+            .iter()
+            .any(|w| crate::resolve::is_default_missing(w)),
+        "{said:?}"
+    );
+}
+
 #[test]
 fn changing_php_in_the_file_regenerates_the_ini_and_restarts_only_its_pool() {
     let mut rig = Rig::new();
