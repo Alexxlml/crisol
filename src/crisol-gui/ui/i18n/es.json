@@ -151,6 +151,7 @@
   "credentials.loading": "Leyendo las credenciales…",
   "credentials.copied": "Se copió {what} al portapapeles",
   "credentials.copy_failed": "El portapapeles no aceptó el texto. Selecciónalo y cópialo a mano.",
+  "credentials.reset_reminder": "Actualiza el .env de cada proyecto que la use: usa «Copiar todo como .env» y pega las líneas nuevas.",
   "credentials.show": "Mostrar",
   "credentials.hide": "Ocultar",
   "credentials.copy": "Copiar",

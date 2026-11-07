@@ -140,7 +140,12 @@ async function perform(act) {
     notice = done.message || (done.warnings && done.warnings.length) ? done : null;
     if (SITE_ACTS.includes(act.do)) await loadSites();
     // The new password is on screen as soon as it exists.
-    if (act.do === "reset_password") await loadCredentials();
+    if (act.do === "reset_password") {
+      await loadCredentials();
+      // The projects keep their own copy of the old password in their .env.
+      const said = notice || { message: "", warnings: [] };
+      notice = { message: said.message, warnings: [...(said.warnings || []), t("credentials.reset_reminder")] };
+    }
     return done;
   });
   return done;
