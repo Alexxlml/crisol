@@ -1271,8 +1271,9 @@ function renderBanners({ state, summary }) {
   for (const warning of state.warnings || []) {
     nodes.push(banner("", t("banner.warning"), warning));
   }
-  // The setup opened by itself once; until it is done it stays here as an offer.
-  if (setupView && setupView.steps.length && !setupView.problems.length && section !== "setup") {
+  // The setup opened by itself once; while Crisol still lacks a step it needs, it stays here as
+  // an offer (`incomplete` is decided by the app, not here).
+  if (setupView && setupView.incomplete && section !== "setup") {
     const node = banner("", t("banner.setup"), t("banner.setup_text"));
     const go = el("button", "button small", t("banner.setup_go"));
     go.type = "button";

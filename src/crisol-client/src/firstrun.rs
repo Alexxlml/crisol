@@ -59,6 +59,11 @@ pub struct SetupView {
     pub problems: Vec<SetupProblem>,
     /// Things worth knowing that do not stop it.
     pub notes: Vec<String>,
+    /// Crisol is not set up yet: a step it needs (the commands, the PATH) is left and nothing
+    /// stops it. The other screens offer the setup while this holds. An optional step the
+    /// person left off (starting at sign-in, which begins off) is a choice, not something
+    /// missing, so it does not keep the offer up.
+    pub incomplete: bool,
 }
 
 impl SetupView {
@@ -101,6 +106,7 @@ pub fn setup_view(plan: &onboarding::Plan) -> SetupView {
             })
             .collect(),
         notes: plan.notes.clone(),
+        incomplete: plan.problems.is_empty() && plan.steps.iter().any(|step| !step.optional()),
     }
 }
 

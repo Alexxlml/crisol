@@ -123,6 +123,7 @@ mod tests {
             done: Vec::new(),
             problems: Vec::new(),
             notes: Vec::new(),
+            incomplete: true,
         };
         let blocked = SetupView {
             problems: vec![SetupProblem {

@@ -111,7 +111,7 @@ fn a_fresh_install_shows_every_step_and_which_switches_start_on() {
     assert_eq!(switch("autostart"), (true, false));
     assert_eq!(switch("shims"), (false, false));
     assert_eq!(switch("path"), (false, false));
-    assert!(view.can_run());
+    assert!(view.can_run() && view.incomplete);
     assert!(view.steps.iter().all(|s| !s.description.is_empty()));
     // Looking changed nothing.
     assert_eq!(setup.calls(), Vec::<String>::new());
@@ -157,6 +157,27 @@ fn a_name_the_page_makes_up_is_not_a_step() {
 }
 
 #[test]
+fn a_setup_with_the_switches_as_they_start_is_not_offered_again() {
+    // The review of F13.8: starting at sign-in begins off, so after a setup with the switches
+    // as they come it is still a step of the plan. The screen keeps it, with its switch, but
+    // the other screens must not say forever that Crisol is not set up.
+    let world = World::new();
+    let setup = FakeSetup::not_installed();
+    let accepted = ["trust", "helper"].map(str::to_owned);
+    run_setup_on(&world.setup_system(&setup), &accepted, SystemTime::now()).unwrap();
+    // The fake does not remember the helper it installed: from now on it is there.
+    let setup = FakeSetup::new();
+
+    let view = setup_view(&onboarding::plan(
+        &world.setup_system(&setup),
+        SystemTime::now(),
+    ));
+    assert_eq!(ids(&view), ["autostart"]);
+    assert!(view.can_run(), "the screen still offers to switch it on");
+    assert!(!view.incomplete, "{view:?}");
+}
+
+#[test]
 fn a_setup_that_is_done_has_nothing_to_show_and_nothing_to_run() {
     let world = World::new();
     world.set_up();
@@ -164,7 +185,10 @@ fn a_setup_that_is_done_has_nothing_to_show_and_nothing_to_run() {
 
     let plan = onboarding::plan(&world.setup_system(&setup), SystemTime::now());
     let view = setup_view(&plan);
-    assert!(view.steps.is_empty() && !view.can_run(), "{view:?}");
+    assert!(
+        view.steps.is_empty() && !view.can_run() && !view.incomplete,
+        "{view:?}"
+    );
     assert_ne!(view.done, Vec::<String>::new());
 
     let again = run_setup_on(&world.setup_system(&setup), &[], SystemTime::now()).unwrap();
@@ -180,7 +204,7 @@ fn what_stops_the_setup_is_shown_with_its_fix_and_nothing_is_offered() {
     let view = setup_view(&onboarding::plan(&system, SystemTime::now()));
 
     assert_ne!(view.problems, Vec::new());
-    assert!(!view.can_run(), "{view:?}");
+    assert!(!view.can_run() && !view.incomplete, "{view:?}");
     let error = run_setup_on(&system, &["helper".to_owned()], SystemTime::now()).unwrap_err();
     assert_eq!(error.code, ErrorCode::Conflict);
     assert_eq!(setup.calls(), Vec::<String>::new());
