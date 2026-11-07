@@ -9,7 +9,7 @@ use std::io;
 use std::net::{Ipv6Addr, SocketAddr, TcpListener};
 use std::path::Path;
 
-use crisol_protocol::{Check, CheckStatus};
+use crisol_protocol::{Check, CheckAction, CheckStatus};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
 use crate::pe_imports::needs_vc_runtime;
@@ -178,6 +178,7 @@ pub fn vc_runtime_check() -> Check {
     let name = "Visual C++ runtime".to_owned();
     if let Some(version) = vc_runtime_version() {
         return Check {
+            action: None,
             name,
             status: CheckStatus::Ok,
             detail: format!("{version} (x64) is installed"),
@@ -186,6 +187,7 @@ pub fn vc_runtime_check() -> Check {
     }
     if system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir)) {
         return Check {
+            action: None,
             name,
             status: CheckStatus::Ok,
             detail: "its DLLs are in the system folder (no installer recorded a version)"
@@ -194,6 +196,7 @@ pub fn vc_runtime_check() -> Check {
         };
     }
     Check {
+        action: None,
         name,
         status: CheckStatus::Warning,
         detail: "the Microsoft Visual C++ runtime (x64) is not installed: PHP and the database \
@@ -201,6 +204,9 @@ pub fn vc_runtime_check() -> Check {
             .to_owned(),
         fix: Some(format!("install it from {VC_RUNTIME_URL}")),
     }
+    .with_action(CheckAction::Link {
+        url: VC_RUNTIME_URL.to_owned(),
+    })
 }
 
 /// Whether a program can listen on `::1`: Nginx listens there as well as on `127.0.0.1`, so a
@@ -214,13 +220,13 @@ fn ipv6_loopback_works() -> io::Result<()> {
 pub fn ipv6_check() -> Check {
     let name = "IPv6 loopback".to_owned();
     match ipv6_loopback_works() {
-        Ok(()) => Check {
+        Ok(()) => Check { action: None,
             name,
             status: CheckStatus::Ok,
             detail: "programs can listen on [::1]".to_owned(),
             fix: None,
         },
-        Err(error) => Check {
+        Err(error) => Check { action: None,
             name,
             status: CheckStatus::Problem,
             detail: format!(
@@ -241,9 +247,17 @@ pub fn slow_start_hint(data: &Path) -> String {
     let quoted = crisol_core::shell::powershell_quote(&data.display().to_string());
     format!(
         "if Microsoft Defender is on, an administrator can exclude only the data folder, in \
-         PowerShell as administrator: Add-MpPreference -ExclusionPath {quoted} \
-         (Remove-MpPreference -ExclusionPath {quoted} undoes it)"
+         PowerShell as administrator: {} \
+         (Remove-MpPreference -ExclusionPath {quoted} undoes it)",
+        slow_start_command(data)
     )
+}
+
+/// The command alone: what the button copies. Crisol never runs it (ADR-0021 section 3).
+#[must_use]
+pub fn slow_start_command(data: &Path) -> String {
+    let quoted = crisol_core::shell::powershell_quote(&data.display().to_string());
+    format!("Add-MpPreference -ExclusionPath {quoted}")
 }
 
 #[cfg(test)]
@@ -285,6 +299,33 @@ mod tests {
         // This computer has the runtime and IPv6; the point is that they read and answer.
         assert_eq!(vc_runtime_check().name, "Visual C++ runtime");
         assert_eq!(ipv6_check().status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn the_command_to_copy_is_the_exclusion_alone_and_the_hint_carries_it() {
+        let data = Path::new(r"C:\Users\o'neil\Crisol\data");
+        let command = slow_start_command(data);
+        assert_eq!(
+            command,
+            r"Add-MpPreference -ExclusionPath 'C:\Users\o''neil\Crisol\data'"
+        );
+        assert!(slow_start_hint(data).contains(&command));
+    }
+
+    #[test]
+    fn a_missing_runtime_is_mended_with_the_page_that_gives_it() {
+        assert!(VC_RUNTIME_URL.starts_with("https://"));
+        let check = Check {
+            action: None,
+            name: String::new(),
+            status: CheckStatus::Warning,
+            detail: String::new(),
+            fix: Some(format!("install it from {VC_RUNTIME_URL}")),
+        }
+        .with_action(CheckAction::Link {
+            url: VC_RUNTIME_URL.to_owned(),
+        });
+        assert!(check.action_agrees_with_fix());
     }
 
     #[test]

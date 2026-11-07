@@ -1484,3 +1484,42 @@ fn the_plan_has_a_mail_name_only_when_mailpit_is_enabled() {
     assert_eq!(mail.domain, format!("mail.{}", rig.config.sites.tld));
     assert_eq!(mail.port, 19025);
 }
+
+/// Review of F13.5 (taken up in F13.7): a default that was removed is a fact about `crisol.toml`,
+/// so the plan says it once, not once per site.
+#[test]
+fn a_default_that_is_no_longer_installed_is_warned_once_and_not_for_every_site() {
+    let rig = Rig::new(&["8.3.35", "8.4.26"]);
+    // The resolution reads the default from the file, as the shims do.
+    fs::write(
+        rig.paths.config_file(),
+        "[defaults]
+php = \"7.4\"
+",
+    )
+    .unwrap();
+    for name in ["shop", "blog", "wiki"] {
+        rig.site(name, None);
+    }
+    rig.site("odd", Some("lts/*"));
+    let plan = rig.plan();
+    let about_default: Vec<&String> = plan
+        .warnings
+        .iter()
+        .filter(|w| w.contains("in crisol.toml is not installed"))
+        .collect();
+    assert_eq!(about_default.len(), 1, "{:?}", plan.warnings);
+    assert!(
+        about_default[0].starts_with("the default php 7.4"),
+        "{}",
+        about_default[0]
+    );
+    // What is about one site keeps its name.
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.starts_with("odd.test: ignoring")),
+        "{:?}",
+        plan.warnings
+    );
+}

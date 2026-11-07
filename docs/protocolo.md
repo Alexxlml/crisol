@@ -271,6 +271,17 @@ Los dos siguen la misma regla que un cliente aplica a los eventos (`crisol_core:
 
 `checks`: lista de `{name, status, detail, fix?}`, en orden. `status` es `ok`, `warning` o `problem`; `fix` es lo exacto que hay que hacer.
 
+`action?` (ADR-0021 §5) es lo que un botón puede hacer por `fix`. El CLI no la muestra; `--json` la trae. Es un objeto con `kind`:
+
+- `calls`: `{calls: [<llamada>, …]}`, llamadas del protocolo una tras otra; la primera que falla detiene las demás.
+- `local`: `{op}`, una operación del núcleo que el cliente ejecuta en su propio proceso, para que los diálogos de Windows (y el UAC) salgan delante de la persona. `op` es `trust`, `untrust_stale`, `autostart_off`, `path_add` o `system_install`; la lista es cerrada y no lleva argumentos.
+- `link`: `{url}`, una página web (solo `https`).
+- `show_log`: `{service}`, el visor de registros de ese servicio.
+- `copy`: `{text}`, un comando para copiar. Nunca se ejecuta.
+- `reveal`: `{path}`, abrir el Explorador con ese archivo o carpeta seleccionados; solo rutas dentro de la home.
+
+Agregar un `kind` o un `op` es compatible: un cliente que no conoce la acción la lee como si no hubiera (`action` ausente) y conserva el resto de la comprobación. `fix` y `action` salen de la misma función del núcleo, y una prueba comprueba que el comando equivalente a la acción es el que dice `fix`.
+
 ### `credentials`
 
 `service`, `lines` (lista de `{key, value}`, las líneas de un `.env`) y `notes`.

@@ -209,12 +209,14 @@ pub fn plan_web(
         };
         match resolve(Tool::Php, &context) {
             Ok(resolution) => {
-                resolution_warnings.extend(
-                    resolution
-                        .warnings
-                        .iter()
-                        .map(|w| format!("{}: {w}", site.domain)),
-                );
+                resolution_warnings.extend(resolution.warnings.iter().map(|w| {
+                    // About `crisol.toml`, not about this site: said once, not per site.
+                    if crate::resolve::is_default_missing(w) {
+                        w.clone()
+                    } else {
+                        format!("{}: {w}", site.domain)
+                    }
+                }));
                 Ok(Some(resolution.resolved.version))
             }
             Err(error) => Err(error.to_string()),

@@ -26,6 +26,7 @@ fn strip_ansi(text: &str) -> String {
 
 fn check(name: &str, status: CheckStatus, detail: &str, fix: Option<&str>) -> Check {
     Check {
+        action: None,
         name: name.to_owned(),
         status,
         detail: detail.to_owned(),

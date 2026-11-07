@@ -1126,13 +1126,26 @@ impl SystemChecks for Explains {
     }
 
     fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
-        Some("exclude data/".to_owned())
+        Some("exclude data/ with: exclude-data".to_owned())
+    }
+
+    fn slow_start_command(&self, _paths: &CrisolPaths) -> Option<String> {
+        Some("exclude-data".to_owned())
     }
 }
 
 fn doctor(rig: &mut Rig, ms: u64) -> Vec<Check> {
     match rig.call(&Call::Doctor, ms).unwrap() {
-        Reply::Doctor { checks } => checks,
+        Reply::Doctor { checks } => {
+            for check in &checks {
+                assert!(
+                    check.action_agrees_with_fix(),
+                    "the button and the fix of `{}` differ: {check:?}",
+                    check.name
+                );
+            }
+            checks
+        }
         other => panic!("{other:?}"),
     }
 }
@@ -1185,6 +1198,12 @@ fn doctor_tells_who_holds_the_port_of_a_service_that_is_not_running_and_not_of_o
             "in crisol.toml, set `http_port = 19081` under `[services.nginx]` (that port is free)"
         )
     );
+    assert_eq!(
+        ports.action,
+        Some(CheckAction::Reveal {
+            path: rig.paths.config_file().display().to_string()
+        })
+    );
 
     rig.probe.release(HTTP);
     rig.start_running();
@@ -1224,6 +1243,12 @@ fn doctor_says_which_service_failed_and_what_its_exit_code_means() {
         services.detail
     );
     assert_eq!(services.fix.as_deref(), Some("crisol logs mysql"));
+    assert_eq!(
+        services.action,
+        Some(CheckAction::ShowLog {
+            service: "mysql".to_owned()
+        })
+    );
     assert!(line(&found, "ports").is_none(), "MySQL's port is free");
 }
 
@@ -1255,7 +1280,17 @@ fn doctor_measures_how_long_a_database_took_to_be_ready_and_says_when_it_was_slo
             assert_eq!(startup.status, CheckStatus::Warning);
             assert!(startup.detail.contains("mysql 1"), "{}", startup.detail);
             assert!(startup.detail.contains("antivirus"), "{}", startup.detail);
-            assert_eq!(startup.fix.as_deref(), Some("exclude data/"));
+            assert_eq!(
+                startup.fix.as_deref(),
+                Some("exclude data/ with: exclude-data")
+            );
+            // The command alone to copy; Crisol never runs it.
+            assert_eq!(
+                startup.action,
+                Some(CheckAction::Copy {
+                    text: "exclude-data".to_owned()
+                })
+            );
         } else {
             assert_eq!(startup.status, CheckStatus::Ok);
             assert!(
@@ -1435,4 +1470,21 @@ fn a_failed_reload_is_in_the_picture_until_nginx_starts_again() {
         "{events:?}"
     );
     assert_eq!(picture(&mut rig).reload_error, None);
+}
+
+#[test]
+fn a_loader_message_that_points_to_a_page_of_microsoft_gives_that_page_as_the_link() {
+    assert_eq!(
+        microsoft_link(
+            "mysql exited with code 1 (the Visual C++ runtime is not installed, get it from https://aka.ms/vs/17/release/vc_redist.x64.exe (code 0xC0000135))"
+        )
+        .as_deref(),
+        Some("https://aka.ms/vs/17/release/vc_redist.x64.exe")
+    );
+    assert_eq!(microsoft_link("mysql exited with code 1"), None);
+    assert_eq!(
+        microsoft_link("see https://example.org/vc_redist for it"),
+        None,
+        "only the pages of Microsoft's own short address"
+    );
 }

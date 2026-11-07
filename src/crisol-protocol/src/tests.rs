@@ -3,6 +3,7 @@
 
 use super::*;
 
+mod actions;
 mod document;
 
 fn round_trip<T>(value: &T) -> T

@@ -147,6 +147,7 @@ fn the_json_the_page_reads() {
     );
 
     state.version_warning = Some(Check {
+        action: None,
         name: "daemon version".to_owned(),
         status: CheckStatus::Warning,
         detail: "old".to_owned(),

@@ -24,6 +24,10 @@ pub trait Desktop: Send + Sync {
     /// Opens an `http://` or `https://` address in the browser of the user.
     fn open_url(&self, url: &str) -> io::Result<()>;
 
+    /// Opens Explorer with this file or folder selected (`explorer /select,`). It edits nothing.
+    /// The caller has already decided that the path may be shown (inside the Crisol home).
+    fn reveal(&self, path: &std::path::Path) -> io::Result<()>;
+
     /// Asks the user for a folder with the dialog of the system. `owner` is the handle of the
     /// window the dialog belongs to. `None` when the dialog is cancelled.
     fn pick_folder(&self, owner: Option<isize>) -> io::Result<Option<PathBuf>>;
@@ -136,6 +140,22 @@ mod real {
             } else {
                 Err(io::Error::other("Windows could not open the browser"))
             }
+        }
+
+        fn reveal(&self, path: &std::path::Path) -> io::Result<()> {
+            let text = path.to_string_lossy();
+            // The path is one argument of Explorer's own syntax, so it travels as it is
+            // quoted here; a quote inside it would end that argument early.
+            if text.chars().any(|c| c == '"' || c.is_control()) || !path.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("`{text}` cannot be shown in Explorer"),
+                ));
+            }
+            let mut command = std::process::Command::new("explorer.exe");
+            command.raw_arg(format!("/select,\"{text}\""));
+            // Explorer answers with 1 even when it worked: it is started, not waited for.
+            command.spawn().map(drop)
         }
 
         fn pick_folder(&self, owner: Option<isize>) -> io::Result<Option<PathBuf>> {

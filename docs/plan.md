@@ -246,7 +246,7 @@ Reglas de toda la fase:
   - **Logs:** un visor por servicio, con las últimas líneas y el seguimiento con `from`, como `logs -f`, o el evento `log` si ya hay suscripción. Debe aguantar logs grandes sin cargar el archivo entero.
   - **Credenciales:** las líneas `.env` de cada base, con un botón para copiar y `reset_password` con confirmación (y el aviso de Garnet y Meilisearch si corren).
   - *Aceptación:* verificación manual; la lógica de seguimiento está en `crisol-client` y tiene pruebas.
-- **F13.7** `doctor` con acciones. Primero se diseña: una ampliación de la ADR-0021 con el campo opcional `action` en `Check`, que es compatible (se añade un campo, sin cambiar la versión del protocolo). Las acciones tienen este alcance:
+- **F13.7** `doctor` con acciones. **Implementada el 2026-11-07** (ADR-0021 §5.8; falta la verificación manual de los diálogos de Windows y la revisión). Primero se diseña: una ampliación de la ADR-0021 con el campo opcional `action` en `Check`, que es compatible (se añade un campo, sin cambiar la versión del protocolo). Las acciones tienen este alcance:
   - una llamada del protocolo;
   - una operación local del núcleo (`trust`, `setup`, `untrust --stale`, `autostart off`);
   - un enlace.

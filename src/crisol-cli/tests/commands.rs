@@ -244,6 +244,10 @@ impl crisol_platform::Desktop for FakeDesktop {
         unreachable!()
     }
 
+    fn reveal(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        unreachable!("the command line never opens Explorer")
+    }
+
     fn pick_folder(&self, _owner: Option<isize>) -> std::io::Result<Option<std::path::PathBuf>> {
         unreachable!()
     }
@@ -271,6 +275,7 @@ impl Env {
             owners: Arc::new(TrustAllOwners),
             env: Arc::new(|_| None),
             system: Arc::new(Marked(vec![Check {
+                action: None,
                 name: "windows thing".to_owned(),
                 status: CheckStatus::Warning,
                 detail: "from the system".to_owned(),

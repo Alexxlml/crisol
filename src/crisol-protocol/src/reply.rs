@@ -269,4 +269,202 @@ pub struct Check {
     /// The exact thing to do, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// What a button can do for `fix` (ADR-0021 §5). The CLI does not show it; `--json` carries
+    /// it. An action this version does not know reads as `None`, so an older client keeps
+    /// `doctor` and only loses the button.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub action: Option<CheckAction>,
+}
+
+impl Check {
+    /// Whether the button does what `fix` says (ADR-0021 section 5): a check without an action
+    /// always agrees. For the ones with a `crisol` command (`calls`, `local`, `show_log`) `fix`
+    /// is that command; a command to copy is in `fix`; a link or a path is in `fix` or in the
+    /// `detail`. The tests of the core and of the platform assert this for every check they
+    /// build, so the text and the button cannot drift apart.
+    #[must_use]
+    pub fn action_agrees_with_fix(&self) -> bool {
+        let fix = self.fix.as_deref().unwrap_or_default();
+        let mentioned = |text: &str| fix.contains(text) || self.detail.contains(text);
+        match &self.action {
+            None => true,
+            Some(
+                action @ (CheckAction::Calls { .. }
+                | CheckAction::Local { .. }
+                | CheckAction::ShowLog { .. }),
+            ) => action.command().as_deref() == self.fix.as_deref(),
+            Some(CheckAction::Copy { text }) => fix.contains(text.as_str()),
+            Some(CheckAction::Link { url }) => mentioned(url),
+            // The file is named by its path, or by its name (`in crisol.toml, set …`).
+            Some(CheckAction::Reveal { path }) => {
+                mentioned(path)
+                    || std::path::Path::new(path)
+                        .file_name()
+                        .is_some_and(|name| mentioned(&name.to_string_lossy()))
+            }
+        }
+    }
+
+    /// The same check with a button.
+    #[must_use]
+    pub fn with_action(mut self, action: CheckAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+}
+
+/// What a button of `doctor` does. A closed list: nothing here runs a program a reply names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckAction {
+    /// Calls to the daemon, one after another; the first that fails stops the rest.
+    Calls {
+        /// The calls, in order.
+        calls: Vec<crate::Call>,
+    },
+    /// An operation of the core that runs in the client's process, so that the dialogs of
+    /// Windows (and the UAC) show in front of the person.
+    Local {
+        /// Which one.
+        op: LocalOp,
+    },
+    /// A web page (`https` only).
+    Link {
+        /// The address.
+        url: String,
+    },
+    /// The log viewer on this service.
+    ShowLog {
+        /// `nginx`, `mysql`, …
+        service: String,
+    },
+    /// A command to copy. Never run.
+    Copy {
+        /// The text.
+        text: String,
+    },
+    /// Opens Explorer with this file or folder selected. Only paths inside the home.
+    Reveal {
+        /// An absolute path.
+        path: String,
+    },
+}
+
+impl CheckAction {
+    /// `crisol install <service> [<version>]`: without a version, the line Crisol recommends.
+    #[must_use]
+    pub fn install(service: &str, version: Option<&str>) -> Self {
+        Self::Calls {
+            calls: vec![install_call(service, version)],
+        }
+    }
+
+    /// `crisol uninstall <service> <version> && crisol install <service> <version>`.
+    #[must_use]
+    pub fn reinstall(service: &str, version: &str) -> Self {
+        Self::Calls {
+            calls: vec![
+                crate::Call::Uninstall {
+                    service: service.to_owned(),
+                    version: version.to_owned(),
+                },
+                install_call(service, Some(version)),
+            ],
+        }
+    }
+
+    /// `crisol start`.
+    #[must_use]
+    pub fn start() -> Self {
+        Self::Calls {
+            calls: vec![crate::Call::Start { service: None }],
+        }
+    }
+
+    /// The `crisol` command that does the same as the button, written as the CLI takes it, for
+    /// the actions that have one. `fix` says this command: the tests compare the two so that
+    /// they cannot drift apart.
+    #[must_use]
+    pub fn command(&self) -> Option<String> {
+        match self {
+            Self::Calls { calls } => calls
+                .iter()
+                .map(call_command)
+                .collect::<Option<Vec<_>>>()
+                .map(|all| all.join(" && ")),
+            Self::Local { op } => Some(
+                match op {
+                    LocalOp::Trust => "crisol trust",
+                    LocalOp::UntrustStale => "crisol untrust --stale",
+                    LocalOp::AutostartOff => "crisol autostart off",
+                    LocalOp::PathAdd => "crisol path add",
+                    LocalOp::SystemInstall => "crisol system install",
+                }
+                .to_owned(),
+            ),
+            Self::ShowLog { service } => Some(format!("crisol logs {service}")),
+            Self::Copy { text } => Some(text.clone()),
+            Self::Link { .. } | Self::Reveal { .. } => None,
+        }
+    }
+}
+
+fn install_call(service: &str, version: Option<&str>) -> crate::Call {
+    crate::Call::Install {
+        service: service.to_owned(),
+        version: version.map(str::to_owned),
+        from: None,
+        sha256: None,
+    }
+}
+
+fn call_command(call: &crate::Call) -> Option<String> {
+    use crate::Call;
+    Some(match call {
+        Call::Start { service: None } => "crisol start".to_owned(),
+        Call::Install {
+            service,
+            version: Some(version),
+            from: None,
+            ..
+        } => format!("crisol install {service} {version}"),
+        Call::Install {
+            service,
+            version: None,
+            from: None,
+            ..
+        } => format!("crisol install {service}"),
+        Call::Uninstall { service, version } => format!("crisol uninstall {service} {version}"),
+        _ => return None,
+    })
+}
+
+/// The operations of the core a client runs in its own process for a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalOp {
+    /// `crisol trust`.
+    Trust,
+    /// `crisol untrust --stale`.
+    UntrustStale,
+    /// `crisol autostart off`.
+    AutostartOff,
+    /// `crisol path add`.
+    PathAdd,
+    /// `crisol system install` (asks for administrator permission).
+    SystemInstall,
+}
+
+/// Reads an optional value, and gives `None` when it is not one this version knows.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }

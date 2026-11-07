@@ -254,6 +254,17 @@ impl fmt::Debug for ResolveContext<'_> {
     }
 }
 
+/// How the warning of a global default that is no longer installed begins. It is about
+/// `crisol.toml`, not about the folder that was being resolved, so a list that resolves many
+/// folders (the sites) says it once.
+pub const DEFAULT_MISSING: &str = "the default";
+
+/// Whether `warning` is the one of a default that is no longer installed.
+#[must_use]
+pub fn is_default_missing(warning: &str) -> bool {
+    warning.starts_with(DEFAULT_MISSING) && warning.contains("in crisol.toml is not installed")
+}
+
 /// Chooses the installed version of `tool` that applies in `ctx.cwd`.
 pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, ResolveError> {
     let mut warnings = Vec::new();
@@ -353,7 +364,7 @@ pub fn resolve(tool: Tool, ctx: &ResolveContext<'_>) -> Result<Resolution, Resol
         match by_request(&request, Source::GlobalDefault, warnings.clone()) {
             Err(ResolveError::NotInstalled { .. }) if !installed.is_empty() => {
                 warnings.push(format!(
-                    "the default {} {request} in crisol.toml is not installed; using the next best choice (`crisol use {} <version>` changes it)",
+                    "{DEFAULT_MISSING} {} {request} in crisol.toml is not installed; using the next best choice (`crisol use {} <version>` changes it)",
                     tool.service(),
                     tool.service(),
                 ));

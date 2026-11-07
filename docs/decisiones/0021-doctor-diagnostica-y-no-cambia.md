@@ -201,6 +201,14 @@ Lo usarían `configuration` y `ports` (`crisol.toml`) y `log leftovers` (la carp
 - La GUI dibuja los avisos de `status` (`LiveState.warnings`), que hoy no se ven y solo se actualizan al conectar (revisión de F13.4).
 - Cuando falta la versión por defecto, el aviso sale una sola vez y no una por cada sitio (revisión de F13.5).
 
+#### 5.8 Cómo quedó (F13.7, 2026-11-07)
+
+- La forma de §5.1 se implementó tal cual. Además, `CheckAction::command()` da el comando de `crisol` que equivale a la acción, y `Check::action_agrees_with_fix()` es lo que usan las pruebas para exigir que el botón y el `fix` digan lo mismo, en cada comprobación que construyen el núcleo, el daemon y la plataforma.
+- `services` con el runtime de Visual C++ ausente lleva `Link` (la página sale del propio mensaje del cargador, solo si es de `aka.ms`); su `fix` no cambia (`crisol logs X`), para que el CLI quede igual.
+- `database startup` copia solo el comando de Defender (`SystemChecks::slow_start_command`), no la frase entera del `fix`.
+- La etiqueta no viaja traducida: `crisol-client` manda la clave y los valores, y la página la traduce con sus diccionarios, como las demás pantallas.
+- En *Confiar en la CA*, el primer clic hace `crisol-client::trust_preview`, que crea la CA si no hay (como `crisol trust` antes de preguntar) y no añade nada al almacén; el segundo clic es el que abre el diálogo de Windows.
+
 ## Consecuencias
 
 - `doctor` sigue siendo de solo lectura. Lo único que «toca» es:

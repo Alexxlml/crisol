@@ -151,7 +151,16 @@ fn sites(reply: Reply) -> Vec<SiteInfo> {
 
 fn checks(reply: Reply) -> Vec<Check> {
     match reply {
-        Reply::Doctor { checks } => checks,
+        Reply::Doctor { checks } => {
+            for check in &checks {
+                assert!(
+                    check.action_agrees_with_fix(),
+                    "the button and the fix of `{}` differ: {check:?}",
+                    check.name
+                );
+            }
+            checks
+        }
         other => panic!("{other:?}"),
     }
 }
@@ -792,6 +801,7 @@ fn a_service_without_a_log_or_with_a_bad_name_is_an_error() {
 #[test]
 fn doctor_reports_each_check_and_adds_the_ones_of_the_system() {
     let extra = Check {
+        action: None,
         name: "elevated helper".to_owned(),
         status: CheckStatus::Warning,
         detail: "not installed".to_owned(),
@@ -848,6 +858,12 @@ fn doctor_names_the_open_folder_and_the_command_and_an_invalid_config() {
         .fix
         .as_deref()
         .is_some_and(|f| f.contains("crisol.toml")));
+    assert_eq!(
+        config.action,
+        Some(CheckAction::Reveal {
+            path: rig.paths().config_file().display().to_string()
+        })
+    );
 }
 
 #[test]
@@ -1193,6 +1209,10 @@ fn doctor_lists_installed_versions_with_a_known_vulnerability_and_how_to_fix_it(
     assert!(line.detail.contains("PHP2Shell"), "{}", line.detail);
     assert!(!line.detail.contains("nginx"), "{}", line.detail);
     assert_eq!(line.fix.as_deref(), Some("crisol install php 8.4.27"));
+    assert_eq!(
+        line.action,
+        Some(CheckAction::install("php", Some("8.4.27")))
+    );
 }
 
 #[test]
@@ -1265,6 +1285,8 @@ fn doctor_says_when_an_unverified_install_is_not_the_official_build() {
         line.fix.as_deref(),
         Some("crisol uninstall php 8.4.28 && crisol install php 8.4.28")
     );
+    // Two calls, the suspect one out first (ADR-0021 section 5.5).
+    assert_eq!(line.action, Some(CheckAction::reinstall("php", "8.4.28")));
 }
 
 #[test]
@@ -1374,6 +1396,7 @@ fn doctor_lists_unsupported_versions_and_one_from_a_file_of_an_unsupported_line(
     );
     assert!(!line.detail.contains("8.4.26"), "{}", line.detail);
     assert_eq!(line.fix.as_deref(), Some("crisol install php"));
+    assert_eq!(line.action, Some(CheckAction::install("php", None)));
 }
 
 #[test]
@@ -1390,6 +1413,7 @@ fn doctor_offers_no_install_when_the_service_has_no_supported_version() {
         .find(|c| c.name == "unsupported versions")
         .unwrap();
     assert_eq!(line.fix, None);
+    assert_eq!(line.action, None, "nothing to move to, so no button");
 }
 
 #[test]
@@ -1414,6 +1438,12 @@ fn doctor_points_at_pieces_of_logs_left_by_a_cut_rotation() {
         line.detail
     );
     assert!(!line.detail.contains("runtime.log,"), "{}", line.detail);
+    assert_eq!(
+        line.action,
+        Some(CheckAction::Reveal {
+            path: leftover.display().to_string()
+        })
+    );
 }
 
 #[test]
@@ -1433,6 +1463,10 @@ fn doctor_names_every_open_folder_and_gives_the_command_of_the_first() {
         home.detail
     );
     assert!(home.fix.as_deref().is_some_and(|f| f.contains(&bin)));
+    assert_eq!(
+        home.action, None,
+        "closing the home is the icacls command's"
+    );
 }
 
 struct Hosts(&'static str);

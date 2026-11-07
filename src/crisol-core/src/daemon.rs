@@ -22,8 +22,8 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crisol_protocol::{
-    Call, Check, CheckStatus, DoneInfo, ErrorCode, Event, HelloInfo, Reply, RpcError, ServiceInfo,
-    StatusInfo, PROTOCOL_VERSION,
+    Call, Check, CheckAction, CheckStatus, DoneInfo, ErrorCode, Event, HelloInfo, Reply, RpcError,
+    ServiceInfo, StatusInfo, PROTOCOL_VERSION,
 };
 
 use crate::config::Config;
@@ -710,6 +710,7 @@ impl Daemon {
         let system = &self.engine.deps().system;
         let mut failed = Vec::new();
         let mut first = None;
+        let mut runtime_link = None;
         for (service, state) in &states {
             let ServiceState::Failed(reason) = state else {
                 continue;
@@ -718,11 +719,23 @@ impl Daemon {
             if let Some(why) = exit_code(reason).and_then(|code| system.explain_exit(code)) {
                 let _ = write!(line, " ({why})");
             }
+            if first.is_none() {
+                runtime_link = microsoft_link(&line);
+            }
             failed.push(line);
             first.get_or_insert_with(|| service.clone());
         }
         if let Some(first) = first {
+            // A program the loader refused for a missing runtime is mended by the page that
+            // gives it; any other failure is read in the log.
+            let action = match runtime_link {
+                Some(url) => CheckAction::Link { url },
+                None => CheckAction::ShowLog {
+                    service: first.clone(),
+                },
+            };
             return Check {
+                action: Some(action),
                 name,
                 status: CheckStatus::Problem,
                 detail: format!("failed: {}", failed.join("; ")),
@@ -735,6 +748,7 @@ impl Daemon {
             .map(|(service, _)| service.as_str())
             .collect();
         Check {
+            action: None,
             name,
             status: CheckStatus::Ok,
             detail: if running.is_empty() {
@@ -779,7 +793,9 @@ impl Daemon {
                 }
             }
         }
+        let action = Some(self.engine.reveal_config());
         (!taken.is_empty()).then(|| Check {
+            action,
             name: "ports".to_owned(),
             status: CheckStatus::Problem,
             detail: format!(
@@ -808,6 +824,7 @@ impl Daemon {
         let name = "database startup".to_owned();
         if slow.is_empty() {
             return Some(Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: format!("ready in {}", list(false).join(", ")),
@@ -820,6 +837,12 @@ impl Daemon {
             .system
             .slow_start_hint(self.engine.paths());
         Some(Check {
+            action: self
+                .engine
+                .deps()
+                .system
+                .slow_start_command(self.engine.paths())
+                .map(|text| CheckAction::Copy { text }),
             name,
             status: CheckStatus::Warning,
             detail: format!(
@@ -992,6 +1015,17 @@ impl Daemon {
 }
 
 /// The exit code a failure carries, if any.
+/// The address of a Microsoft page (`aka.ms`) a message points to, as the loader's explanation
+/// of an exit code does for the Visual C++ runtime.
+fn microsoft_link(text: &str) -> Option<String> {
+    let start = text.find("https://aka.ms/")?;
+    let url: String = text[start..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !matches!(c, ')' | ',' | ';' | '`'))
+        .collect();
+    Some(url)
+}
+
 fn exit_code(reason: &FailureReason) -> Option<i32> {
     match reason {
         FailureReason::ExitedDuringStartup { code } | FailureReason::Crashed { code } => *code,

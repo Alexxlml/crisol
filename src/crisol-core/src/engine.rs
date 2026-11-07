@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crisol_protocol::{
-    AdvisoryInfo, Call, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, ErrorCode, Event,
-    InstalledInfo, LogChunk, RemovedInfo, Reply, RpcError, SiteInfo, Tool as WireTool, UsedInfo,
-    VersionInfo, VersionList,
+    AdvisoryInfo, Call, Check, CheckAction, CheckStatus, CredentialsInfo, DoneInfo, EnvLine,
+    ErrorCode, Event, InstalledInfo, LogChunk, RemovedInfo, Reply, RpcError, SiteInfo,
+    Tool as WireTool, UsedInfo, VersionInfo, VersionList,
 };
 
 use crate::cacert::RootCertificates;
@@ -78,6 +78,11 @@ pub trait SystemChecks: Send + Sync {
     /// What usually makes a database slow to start on this system and how to avoid it, for
     /// `doctor` (F11.1). Read only: it says what to do, it does nothing.
     fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
+        None
+    }
+
+    /// The command of `slow_start_hint` alone, for a button that copies it. It is never run.
+    fn slow_start_command(&self, _paths: &CrisolPaths) -> Option<String> {
         None
     }
 
@@ -263,6 +268,7 @@ impl Engine {
         match call {
             Call::Doctor => Some(Ok(Reply::Doctor {
                 checks: vec![Check {
+                    action: None,
                     name: "home".to_owned(),
                     status: CheckStatus::Warning,
                     detail: message,
@@ -773,12 +779,14 @@ impl Engine {
     fn check_advisories(&self) -> Option<Check> {
         let installed = list_installed(&self.paths).ok()?;
         let mut lines = Vec::new();
-        let mut fix = None;
+        let mut action: Option<CheckAction> = None;
         for i in &installed {
             for advisory in self.deps.catalog.advisories_for(&i.service, &i.version) {
                 let remedy = match advisory.fix_for(&i.version) {
                     Some(fixed) => {
-                        fix.get_or_insert_with(|| format!("crisol install {} {fixed}", i.service));
+                        action.get_or_insert_with(|| {
+                            CheckAction::install(&i.service, Some(&fixed.to_string()))
+                        });
                         format!("fixed in {} {fixed}", i.service)
                     }
                     None => "no fixed build exists".to_owned(),
@@ -790,11 +798,12 @@ impl Engine {
             }
         }
         (!lines.is_empty()).then(|| Check {
+            action: action.clone(),
             name: "known vulnerabilities".to_owned(),
             status: CheckStatus::Warning,
             detail: lines.join("; "),
             // When the catalog of this `crisol.exe` lacks the fix, the way out is `--from`.
-            fix: fix.or_else(|| {
+            fix: action.as_ref().and_then(CheckAction::command).or_else(|| {
                 Some(
                     "install a fixed version if the line has one; if this crisol.exe does not \
                      list it yet: crisol install <tool> <version> --from <zip> --sha256 <hash>"
@@ -820,7 +829,10 @@ impl Engine {
             .available(&first.service, self.deps.target)
             .into_iter()
             .any(|p| !p.end_of_life && !p.version.is_prerelease());
+        let action = supported.then(|| CheckAction::install(&first.service, None));
         Some(Check {
+            fix: action.as_ref().and_then(CheckAction::command),
+            action,
             name: "unsupported versions".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -831,7 +843,6 @@ impl Engine {
                     .join(", "),
                 if old.len() == 1 { "s" } else { "" }
             ),
-            fix: supported.then(|| format!("crisol install {}", first.service)),
         })
     }
 
@@ -850,6 +861,9 @@ impl Engine {
             .collect();
         found.sort();
         (!found.is_empty()).then(|| Check {
+            action: Some(CheckAction::Reveal {
+                path: found[0].display().to_string(),
+            }),
             name: "log leftovers".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -868,7 +882,7 @@ impl Engine {
     fn check_unverified(&self) -> Option<Check> {
         let installed = list_installed(&self.paths).ok()?;
         let mut waiting = Vec::new();
-        let mut different = Vec::new();
+        let mut different: Vec<(String, String, String)> = Vec::new();
         for i in installed.iter().filter(|i| is_unverified_install(i)) {
             let name = format!("{} {}", i.service, i.version);
             let official = self
@@ -880,27 +894,30 @@ impl Engine {
             match official {
                 // The mark records the hash the user gave; the catalog now has the real one.
                 Some(p) if unverified_sha256(&i.path).as_deref() != Some(p.sha256.as_str()) => {
-                    different.push(name);
+                    different.push((name, i.service.clone(), i.version.to_string()));
                 }
                 _ => waiting.push(name),
             }
         }
-        if !different.is_empty() {
-            let first = &different[0];
+        if let Some((_, service, version)) = different.first() {
+            let action = CheckAction::reinstall(service, version);
             return Some(Check {
+                fix: action.command(),
+                action: Some(action),
                 name: "unverified installs".to_owned(),
                 status: CheckStatus::Problem,
                 detail: format!(
                     "{} {} not the official build: the catalog lists that version with another hash",
-                    different.join(", "),
+                    different
+                        .iter()
+                        .map(|(name, ..)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     if different.len() == 1 { "is" } else { "are" }
                 ),
-                fix: Some(format!(
-                    "crisol uninstall {first} && crisol install {first}"
-                )),
             });
         }
-        (!waiting.is_empty()).then(|| Check {
+        (!waiting.is_empty()).then(|| Check { action: None,
             name: "unverified installs".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -934,7 +951,7 @@ impl Engine {
                 })
             })
             .collect();
-        (!lines.is_empty()).then(|| Check {
+        (!lines.is_empty()).then(|| Check { action: None,
             name: "data series".to_owned(),
             status: CheckStatus::Warning,
             detail: format!(
@@ -963,6 +980,7 @@ impl Engine {
         )
         .ok()??;
         (!notes.is_empty()).then(|| Check {
+            action: None,
             name: "php ca bundle".to_owned(),
             status: CheckStatus::Ok,
             detail: notes.join("; "),
@@ -974,6 +992,7 @@ impl Engine {
     fn check_memcached(&self) -> Option<Check> {
         let loaded = Config::load_from(&self.paths).ok()?;
         loaded.config.services.memcached.enabled.then(|| Check {
+            action: None,
             name: "memcached".to_owned(),
             status: CheckStatus::Warning,
             detail: crate::dbservice::MEMCACHED_NOTE.to_owned(),
@@ -986,6 +1005,7 @@ impl Engine {
         let problems = home_problems(&self.paths, self.deps.dirs.as_ref());
         let Some(first) = problems.first() else {
             return Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: format!(
@@ -1003,6 +1023,7 @@ impl Engine {
             let _ = write!(detail, "; the same goes for {}", others.join(", "));
         }
         Check {
+            action: None,
             name,
             status: CheckStatus::Problem,
             detail,
@@ -1010,16 +1031,26 @@ impl Engine {
         }
     }
 
+    /// The button of the checks about `crisol.toml`: Explorer with the file selected.
+    #[must_use]
+    pub fn reveal_config(&self) -> CheckAction {
+        CheckAction::Reveal {
+            path: self.paths.config_file().display().to_string(),
+        }
+    }
+
     fn check_config(&self) -> Check {
         let name = "configuration".to_owned();
         match Config::load_from(&self.paths) {
             Ok(loaded) if loaded.warnings.is_empty() => Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: format!("{} is valid", self.paths.config_file().display()),
                 fix: None,
             },
             Ok(loaded) => Check {
+                action: Some(self.reveal_config()),
                 name,
                 status: CheckStatus::Warning,
                 detail: loaded
@@ -1031,6 +1062,7 @@ impl Engine {
                 fix: Some(format!("edit {}", self.paths.config_file().display())),
             },
             Err(error) => Check {
+                action: Some(self.reveal_config()),
                 name,
                 status: CheckStatus::Problem,
                 detail: error.to_string(),
@@ -1045,6 +1077,7 @@ impl Engine {
             Ok(list) => list,
             Err(error) => {
                 return Check {
+                    action: None,
                     name,
                     status: CheckStatus::Problem,
                     detail: error.to_string(),
@@ -1056,6 +1089,7 @@ impl Engine {
         let missing: Vec<&str> = ["nginx", "php"].into_iter().filter(|s| !has(s)).collect();
         if missing.is_empty() {
             Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: installed
@@ -1066,11 +1100,13 @@ impl Engine {
                 fix: None,
             }
         } else {
+            let action = CheckAction::install(missing[0], None);
             Check {
+                fix: action.command(),
+                action: Some(action),
                 name,
                 status: CheckStatus::Warning,
                 detail: format!("not installed: {}", missing.join(", ")),
-                fix: Some(format!("crisol install {}", missing[0])),
             }
         }
     }
@@ -1085,6 +1121,7 @@ impl Engine {
             .collect();
         if missing.is_empty() {
             Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: format!("{} has {}", dir.display(), SHIM_COMMANDS.join(", ")),
@@ -1092,6 +1129,7 @@ impl Engine {
             }
         } else {
             Check {
+                action: None,
                 name,
                 status: CheckStatus::Warning,
                 detail: format!("missing in {}: {}", dir.display(), missing.join(", ")),
@@ -1127,7 +1165,7 @@ impl Engine {
             })
             .map(|c| format!("{} (line {}: `{}`)", c.name, c.line, c.text))
             .collect();
-        (!elsewhere.is_empty()).then(|| Check {
+        (!elsewhere.is_empty()).then(|| Check { action: None,
             name: "site names".to_owned(),
             status: CheckStatus::Problem,
             detail: format!(
@@ -1145,18 +1183,21 @@ impl Engine {
         let name = "sites".to_owned();
         match self.discover() {
             Ok((list, config)) if list.warnings.is_empty() => Check {
+                action: None,
                 name,
                 status: CheckStatus::Ok,
                 detail: format!("{} site(s) under .{}", list.sites.len(), config.sites.tld),
                 fix: None,
             },
             Ok((list, _)) => Check {
+                action: None,
                 name,
                 status: CheckStatus::Warning,
                 detail: list.warnings.join("; "),
                 fix: None,
             },
             Err(error) => Check {
+                action: None,
                 name,
                 status: CheckStatus::Problem,
                 detail: error.message,

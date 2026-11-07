@@ -19,6 +19,9 @@ let picked = null; // the folder waiting for a name in the link dialog
 let versionsView = null; // the last answer of `versions`
 let installProgress = {}; // how far each installation in flight is, by what it installs
 let confirming = null; // the version whose removal waits for a second click
+let doctorView = null; // the last answer of `doctor`
+let doctorArmed = null; // the finding whose button waits for its second click
+let trustPreview = null; // what the trust button shows before its second click
 
 // The dictionary key of what the daemon says; a state this page does not know shows as itself.
 const STATE_KEYS = {
@@ -95,6 +98,7 @@ function showSection(name) {
   // What a section draws is asked when it is opened; the app owns the truth.
   if (name === "sites") refreshSites();
   if (name === "versions") refreshVersions();
+  if (name === "doctor") refreshDoctor();
   if (name === "settings") refreshTerminalOptions();
   if (name === "logs") openLogs();
   else stopLogs();
@@ -233,6 +237,139 @@ async function performVersion(act) {
     }
     await loadVersions();
   });
+}
+
+// ---- doctor -----------------------------------------------------------------------------
+
+// The core says what is wrong and, beside the fix, what a button can do for it; the app decides
+// which of those become a button. Nothing is done without a click, and what removes something
+// or asks Windows for a permission takes two.
+async function loadDoctor() {
+  doctorArmed = null;
+  trustPreview = null;
+  doctorView = await invoke("doctor");
+}
+
+function refreshDoctor() {
+  return run("doctor", loadDoctor);
+}
+
+async function performDoctor(row) {
+  const action = row.button.action;
+  doctorArmed = null;
+  trustPreview = null;
+  await run("doctor:" + row.name, async () => {
+    notice = null;
+    const done = await invoke("doctor_act", { action });
+    notice = { message: t(done.words.key, done.words.args), warnings: [] };
+    await loadDoctor();
+  });
+}
+
+async function pressDoctor(row) {
+  const b = row.button;
+  if (b.kind === "copy") {
+    copyText(b.text, t("doctor.copied_what"));
+    return;
+  }
+  if (b.kind === "show_log") {
+    logs.service = b.text;
+    showSection("logs");
+    return;
+  }
+  if (b.confirm && doctorArmed !== row.name) {
+    doctorArmed = row.name;
+    trustPreview = null;
+    if (b.action.kind === "local" && b.action.op === "trust") {
+      // What Windows will ask about, before it asks.
+      await run("doctor-preview", async () => {
+        trustPreview = await invoke("doctor_trust_preview");
+      });
+      if (!trustPreview) doctorArmed = null;
+    }
+    render();
+    return;
+  }
+  await performDoctor(row);
+}
+
+const DOCTOR_CHIPS = { ok: "running", warning: "starting", problem: "failed" };
+
+function trustBox(p) {
+  const box = el("div", "doctor-preview");
+  if (p.already) {
+    box.append(el("p", null, t("doctor.trust_already")));
+    return box;
+  }
+  box.append(
+    el("p", null, p.name + (p.created ? t("doctor.trust_made") : "")),
+    el("p", "detail", t("doctor.trust_vouches", { what: p.vouches_for })),
+    el("p", "detail", t("doctor.trust_until", { date: p.valid_until })),
+    el("p", "detail", "SHA-256 " + p.sha256)
+  );
+  if (p.sha1) {
+    box.append(el("p", null, t("doctor.trust_check", { sha1: p.sha1 })));
+  }
+  return box;
+}
+
+function doctorActions(row) {
+  const b = row.button;
+  const actions = el("span", "actions");
+  const key = "doctor:" + row.name;
+  const label = pending.has(key) ? t("doctor.working") : t(b.label.key, b.label.args);
+  if (b.confirm && doctorArmed === row.name) {
+    actions.append(
+      button(t("doctor.confirm", { label }), () => pressDoctor(row), key, "danger"),
+      button(t("doctor.cancel"), () => {
+        doctorArmed = null;
+        trustPreview = null;
+        render();
+      })
+    );
+  } else {
+    actions.append(button(label, () => pressDoctor(row), key));
+  }
+  return actions;
+}
+
+function renderDoctor() {
+  const box = document.getElementById("doctor-view");
+  const empty = document.getElementById("doctor-empty");
+  const summary = document.getElementById("doctor-summary");
+  if (!doctorView) {
+    box.replaceChildren();
+    empty.hidden = false;
+    empty.textContent = t("doctor.loading");
+    summary.textContent = "";
+    return;
+  }
+  empty.hidden = true;
+  summary.textContent =
+    doctorView.problems || doctorView.warnings
+      ? t("doctor.summary", { problems: doctorView.problems, warnings: doctorView.warnings })
+      : t("doctor.all_ok");
+  box.replaceChildren(
+    ...doctorView.rows.map((row) => {
+      const item = el("li", "row doctor");
+      item.append(chip(DOCTOR_CHIPS[row.status], t("doctor.status." + row.status)));
+      const grow = el("span", "grow");
+      grow.append(el("strong", null, row.name), el("span", "detail", row.detail));
+      // The exact thing to do: what the command line would say, in the core's words, shown
+      // under the button so that nothing is done without being seen first.
+      if (row.fix) {
+        const fix = el("span", "detail doctor-fix");
+        fix.append(t("doctor.will_do") + " ", el("code", null, row.fix));
+        grow.append(fix);
+      }
+      if (row.button && doctorArmed === row.name && trustPreview) {
+        grow.append(trustBox(trustPreview));
+      }
+      item.append(grow);
+      if (row.button) item.append(doctorActions(row));
+      return item;
+    })
+  );
 }
 
 // ---- logs -------------------------------------------------------------------------------
@@ -875,6 +1012,11 @@ function renderBanners({ state, summary }) {
   if (state.blocked) {
     nodes.push(banner("", t("banner.blocked"), state.blocked));
   }
+  // What the daemon has to say about the services (a default version that was removed, say), in
+  // its own words.
+  for (const warning of state.warnings || []) {
+    nodes.push(banner("", t("banner.warning"), warning));
+  }
   if (failure) {
     const node = banner("failed", t("banner.call_failed"), failure.message, failure.fix);
     const close = el("button", "button small", t("banner.dismiss"));
@@ -930,6 +1072,7 @@ function render() {
   renderServices(current);
   renderSites();
   renderVersions();
+  renderDoctor();
   renderCredentials();
   renderSettings();
   renderBanners(current);

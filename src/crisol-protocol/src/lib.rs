@@ -26,9 +26,9 @@ pub use client::{read_bounded_line, Client, ClientError};
 pub use error::{ErrorCode, RpcError};
 pub use event::{Event, Numbered};
 pub use reply::{
-    AdvisoryInfo, Check, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, HelloInfo, InstalledInfo,
-    LogChunk, RemovedInfo, Reply, ServiceInfo, SiteInfo, StatusInfo, UsedInfo, VersionInfo,
-    VersionList,
+    AdvisoryInfo, Check, CheckAction, CheckStatus, CredentialsInfo, DoneInfo, EnvLine, HelloInfo,
+    InstalledInfo, LocalOp, LogChunk, RemovedInfo, Reply, ServiceInfo, SiteInfo, StatusInfo,
+    UsedInfo, VersionInfo, VersionList,
 };
 
 use serde::{Deserialize, Serialize};

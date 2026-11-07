@@ -161,7 +161,7 @@ pub fn stop_daemon(context: &Context, notice: &mut dyn FnMut(&str)) -> Result<()
 /// replaced while it runs, so the update itself needs it stopped).
 #[must_use]
 pub fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
-    (daemon != mine).then(|| Check {
+    (daemon != mine).then(|| Check { action: None,
         name: "daemon version".to_owned(),
         status: CheckStatus::Warning,
         detail: format!(

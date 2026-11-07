@@ -16,6 +16,7 @@
 pub mod connect;
 mod context;
 mod credentials;
+mod doctor;
 mod language;
 mod link;
 mod live;
@@ -32,6 +33,10 @@ pub use context::{Context, RemovePrograms};
 pub use credentials::{
     credential_services, credentials_view, fetch_credentials, is_secret, reset_offer,
     CredentialLine, CredentialsView, ResetOffer,
+};
+pub use doctor::{
+    doctor_button, doctor_view, fetch_doctor, inside_home, run_doctor_action, trust_preview,
+    ActionDone, ButtonKind, DoctorButton, DoctorRow, DoctorView, TrustPreview, Words,
 };
 pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};

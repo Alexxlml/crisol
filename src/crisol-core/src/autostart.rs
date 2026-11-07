@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-use crisol_protocol::{Check, CheckStatus};
+use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
 use crate::paths::PrivateDirs;
 use crate::programs::{require_trusted_program, ProgramError};
@@ -141,11 +141,17 @@ fn program_of(command: &str) -> Option<&str> {
 /// desktop appears (about 20 s were measured), so the daemon may simply not be there yet.
 pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool) -> Option<Check> {
     let name = "autostart";
-    let mk = |status, detail: String, fix: Option<&str>| Check {
+    let mk = |status, detail: String, action: Option<CheckAction>| Check {
+        fix: action.as_ref().and_then(CheckAction::command),
+        action,
         name: name.to_owned(),
         status,
         detail,
-        fix: fix.map(str::to_owned),
+    };
+    let off = || {
+        Some(CheckAction::Local {
+            op: LocalOp::AutostartOff,
+        })
     };
     let command = match store.current() {
         Ok(Some(command)) => command,
@@ -162,7 +168,7 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
         return Some(mk(
             CheckStatus::Warning,
             format!("the sign-in entry is not a program: {command}"),
-            Some("crisol autostart off"),
+            off(),
         ));
     };
     match require_trusted_program(program, dirs) {
@@ -177,7 +183,7 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
                 "{} starts when you sign in, but the daemon is not running now. Windows delays the programs that start at sign-in by some seconds (about 20 were measured), so if you have just signed in, wait a moment; if it was closed on purpose, `crisol start` brings it back",
                 program.display()
             ),
-            Some("crisol start"),
+            Some(CheckAction::start()),
         )),
         Err(ProgramError::Missing { .. }) => Some(mk(
             CheckStatus::Warning,
@@ -185,7 +191,7 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
                 "the sign-in entry runs {}, which is not there any more",
                 program.display()
             ),
-            Some("crisol autostart off"),
+            off(),
         )),
         Err(ProgramError::Exposed { path, .. }) => Some(mk(
             CheckStatus::Problem,
@@ -194,7 +200,7 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
                 program.display(),
                 path.display()
             ),
-            Some("crisol autostart off"),
+            off(),
         )),
         Err(error @ ProgramError::Check { .. }) => {
             Some(mk(CheckStatus::Warning, error.to_string(), None))

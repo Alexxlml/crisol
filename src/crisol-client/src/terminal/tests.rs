@@ -48,6 +48,10 @@ impl Desktop for FakeDesktop {
         unreachable!()
     }
 
+    fn reveal(&self, _path: &std::path::Path) -> io::Result<()> {
+        unreachable!()
+    }
+
     fn pick_folder(&self, _owner: Option<isize>) -> io::Result<Option<PathBuf>> {
         unreachable!()
     }

@@ -260,6 +260,58 @@ fn the_protocol_document_names_every_method_reply_event_and_error() {
     assert!(DOC.contains(&format!("**{} MiB**", MAX_LINE >> 20)));
 }
 
+/// Every kind of `Check.action` and every `op` is named in the section of `doctor`. The matches
+/// have no wildcard, so a new one does not compile until it is listed here.
+#[test]
+fn the_document_names_every_action_of_a_check() {
+    fn kind_name(action: &CheckAction) -> &'static str {
+        match action {
+            CheckAction::Calls { .. } => "calls",
+            CheckAction::Local { .. } => "local",
+            CheckAction::Link { .. } => "link",
+            CheckAction::ShowLog { .. } => "show_log",
+            CheckAction::Copy { .. } => "copy",
+            CheckAction::Reveal { .. } => "reveal",
+        }
+    }
+    fn op_name(op: LocalOp) -> &'static str {
+        match op {
+            LocalOp::Trust => "trust",
+            LocalOp::UntrustStale => "untrust_stale",
+            LocalOp::AutostartOff => "autostart_off",
+            LocalOp::PathAdd => "path_add",
+            LocalOp::SystemInstall => "system_install",
+        }
+    }
+    let doctor = section("Respuestas");
+    let text = String::new;
+    let kinds = [
+        CheckAction::Calls { calls: vec![] },
+        CheckAction::Local { op: LocalOp::Trust },
+        CheckAction::Link { url: text() },
+        CheckAction::ShowLog { service: text() },
+        CheckAction::Copy { text: text() },
+        CheckAction::Reveal { path: text() },
+    ];
+    for action in &kinds {
+        let name = kind_name(action);
+        // What travels is what the document calls it.
+        assert_eq!(serde_json::to_value(action).unwrap()["kind"], name);
+        assert!(doctor.contains(&format!("`{name}`")), "no `{name}`");
+    }
+    for op in [
+        LocalOp::Trust,
+        LocalOp::UntrustStale,
+        LocalOp::AutostartOff,
+        LocalOp::PathAdd,
+        LocalOp::SystemInstall,
+    ] {
+        let name = op_name(op);
+        assert_eq!(serde_json::to_value(op).unwrap(), name);
+        assert!(doctor.contains(&format!("`{name}`")), "no `{name}`");
+    }
+}
+
 /// Review of phase 12, finding 5: the examples are messages this crate reads, so a renamed
 /// field or type does not leave a wrong example behind.
 #[test]

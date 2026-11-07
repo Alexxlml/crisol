@@ -17,12 +17,13 @@ use std::time::Duration;
 
 use crisol_client::{
     clean_env, connect, credential_services, current_terminal_options, fetch_credentials,
-    fetch_log, fetch_sites, fetch_versions, log_services, open_site as open_in_browser,
-    run_version_act, suggested_site_name, Act, Context, CredentialsView, GuiSettings, Language,
+    fetch_doctor, fetch_log, fetch_sites, fetch_versions, log_services,
+    open_site as open_in_browser, run_doctor_action, run_version_act, suggested_site_name,
+    trust_preview, Act, ActionDone, Context, CredentialsView, DoctorView, GuiSettings, Language,
     LeaveAction, LiveConfig, LiveState, LiveView, LogUpdate, Opened, Place, SitesView, Summary,
-    TerminalOptions, VersionAct, VersionsView,
+    TerminalOptions, TrustPreview, VersionAct, VersionsView,
 };
-use crisol_protocol::{Call, Reply, RpcError};
+use crisol_protocol::{Call, CheckAction, Reply, RpcError};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
@@ -298,6 +299,38 @@ async fn version_act(app: AppHandle, act: VersionAct) -> Result<Reply, Failure> 
     Ok(reply)
 }
 
+/// What `doctor` found, with the button each finding offers (ADR-0021 §5).
+#[tauri::command]
+async fn doctor() -> Result<DoctorView, Failure> {
+    blocking(|context| fetch_doctor(context).map_err(Failure::from)).await
+}
+
+/// What the CA is and what Windows will ask about it, before the second click of the trust
+/// button. It makes the CA if there is none, as `crisol trust` does; nothing is added to the
+/// store.
+#[tauri::command]
+async fn doctor_trust_preview() -> Result<TrustPreview, Failure> {
+    blocking(|context| trust_preview(context).map_err(Failure::from)).await
+}
+
+/// A button of the diagnostic screen. The action is the one the screen was given, checked again
+/// here (`run_doctor_action`); the dialogs of Windows and the permission prompt come up from
+/// this process. An installation tells the page how far it is, as in the versions screen.
+#[tauri::command]
+async fn doctor_act(app: AppHandle, action: CheckAction) -> Result<ActionDone, Failure> {
+    let progress_to = app.clone();
+    let done = blocking(move |context| {
+        run_doctor_action(context, &action, &mut |progress| {
+            let _ = progress_to.emit("install_progress", progress);
+        })
+        .map_err(Failure::from)
+    })
+    .await?;
+    // Trusting, the PATH, the sign-in entry or a version change files, not events.
+    publish(&app);
+    Ok(done)
+}
+
 /// The logs the viewer offers: the services the daemon knows, and the daemon's own.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -431,6 +464,9 @@ fn main() {
             sites,
             versions,
             version_act,
+            doctor,
+            doctor_trust_preview,
+            doctor_act,
             log_choices,
             log_read,
             credential_choices,

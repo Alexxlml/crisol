@@ -23,7 +23,7 @@ use crisol_core::setup::suffix_of;
 use crisol_core::shimsetup::{describe_shadows, path_status};
 use crisol_core::trust::status as trust_status;
 use crisol_core::web::TcpConfigProbe;
-use crisol_protocol::{Check, CheckStatus};
+use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
 use crate::{
     FileHosts, HelperLocation, JobObjectSupervisor, PowerShellNrpt, RegistryAutostart,
@@ -58,11 +58,33 @@ pub struct WindowsSystemChecks;
 
 fn check(name: &str, status: CheckStatus, detail: impl Into<String>, fix: Option<&str>) -> Check {
     Check {
+        action: None,
         name: name.to_owned(),
         status,
         detail: detail.into(),
         fix: fix.map(str::to_owned),
     }
+}
+
+/// A check with a button: `fix` is the command the button is equivalent to, so the two cannot
+/// say different things (ADR-0021 section 5).
+fn check_do(
+    name: &str,
+    status: CheckStatus,
+    detail: impl Into<String>,
+    action: CheckAction,
+) -> Check {
+    Check {
+        fix: action.command(),
+        action: Some(action),
+        name: name.to_owned(),
+        status,
+        detail: detail.into(),
+    }
+}
+
+fn local(op: LocalOp) -> CheckAction {
+    CheckAction::Local { op }
 }
 
 impl SystemChecks for WindowsSystemChecks {
@@ -110,6 +132,10 @@ impl SystemChecks for WindowsSystemChecks {
         Some(crate::diagnose::slow_start_hint(&paths.data_dir()))
     }
 
+    fn slow_start_command(&self, paths: &CrisolPaths) -> Option<String> {
+        Some(crate::diagnose::slow_start_command(&paths.data_dir()))
+    }
+
     fn missing_runtime(&self, install_dir: &std::path::Path) -> Option<(String, String)> {
         crate::diagnose::missing_runtime(install_dir)
     }
@@ -153,11 +179,11 @@ fn path_check(paths: &CrisolPaths) -> Check {
                     shadows.join("; ")
                 );
             }
-            check(
+            check_do(
                 "PATH",
                 CheckStatus::Warning,
                 detail,
-                Some("crisol path add"),
+                local(LocalOp::PathAdd),
             )
         }
     }
@@ -175,17 +201,17 @@ fn helper_check() -> Check {
             ),
             None,
         ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => check(
+        Err(error) if error.kind() == io::ErrorKind::NotFound => check_do(
             name,
             CheckStatus::Warning,
             "not installed: the names of the local sites cannot be set up automatically",
-            Some("crisol system install"),
+            local(LocalOp::SystemInstall),
         ),
-        Err(error) => check(
+        Err(error) => check_do(
             name,
             CheckStatus::Problem,
             error.to_string(),
-            Some("crisol system install"),
+            local(LocalOp::SystemInstall),
         ),
     }
 }
@@ -212,17 +238,20 @@ fn nrpt_check(tld: &str, daemon_running: bool) -> Check {
                     rule.namespace, rule.name_server
                 ),
                 Some("ipconfig /flushdns, then crisol doctor again"),
-            ),
+            )
+            .with_action(CheckAction::Copy {
+                text: "ipconfig /flushdns".to_owned(),
+            }),
         },
         // Without the daemon nobody answers: programs wait and then give up.
-        Ok(NrptStatus::Ours(rule)) => check(
+        Ok(NrptStatus::Ours(rule)) => check_do(
             name,
             CheckStatus::Warning,
             format!(
                 "{} goes to {}, which does not answer while the daemon is stopped, so the names do not resolve",
                 rule.namespace, rule.name_server
             ),
-            Some("crisol start"),
+            CheckAction::start(),
         ),
         Ok(NrptStatus::Absent) => check(
             name,
@@ -329,7 +358,7 @@ fn trust_check(paths: &CrisolPaths) -> Check {
         }
     };
     match trust_status(&store, &ca) {
-        Ok(state) if !state.trusted => check(
+        Ok(state) if !state.trusted => check_do(
             name,
             CheckStatus::Warning,
             format!(
@@ -337,10 +366,10 @@ fn trust_check(paths: &CrisolPaths) -> Check {
                  (`file_get_contents`) refuse them although cURL in PHP accepts them",
                 ca.info().common_name
             ),
-            Some("crisol trust"),
+            local(LocalOp::Trust),
         ),
         // A CA that was replaced is still trusted until it is taken out (ADR-0013).
-        Ok(state) if !state.stale.is_empty() => check(
+        Ok(state) if !state.stale.is_empty() => check_do(
             name,
             CheckStatus::Warning,
             format!(
@@ -353,7 +382,7 @@ fn trust_check(paths: &CrisolPaths) -> Check {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Some("crisol untrust --stale"),
+            local(LocalOp::UntrustStale),
         ),
         Ok(_) => check(
             name,
@@ -395,6 +424,10 @@ mod tests {
             ]
         );
         for check in &checks {
+            assert!(
+                check.action_agrees_with_fix(),
+                "the button and the fix differ: {check:?}"
+            );
             assert!(!check.detail.contains("  "), "{check:?}");
         }
         // Nothing was made in the home by looking.

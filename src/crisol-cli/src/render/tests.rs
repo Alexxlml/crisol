@@ -171,18 +171,21 @@ fn doctor_marks_each_check_and_puts_the_fix_under_it() {
     let text = reply(&Reply::Doctor {
         checks: vec![
             Check {
+                action: None,
                 name: "PATH".to_owned(),
                 status: CheckStatus::Ok,
                 detail: "fine".to_owned(),
                 fix: None,
             },
             Check {
+                action: None,
                 name: "home permissions".to_owned(),
                 status: CheckStatus::Problem,
                 detail: "open".to_owned(),
                 fix: Some("icacls x".to_owned()),
             },
             Check {
+                action: None,
                 name: "shims".to_owned(),
                 status: CheckStatus::Warning,
                 detail: "missing".to_owned(),
