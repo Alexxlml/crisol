@@ -915,6 +915,8 @@ function take(payload) {
     const now = serviceStateOf(creds.service);
     if (now !== creds.serviceState) {
       creds.serviceState = now;
+      // A second click armed in the old state does not carry over to the new one.
+      creds.confirming = false;
       loadCredentials();
     }
   }
