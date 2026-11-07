@@ -1,6 +1,6 @@
 # ADR-0021 — `doctor` diagnostica y no cambia nada
 
-- **Estado:** aceptada (2026-10-29, F11.1). El propietario confirmó la sección 3 (Defender) el mismo día y pidió `crisol trust` de una vez (sección 4).
+- **Estado:** aceptada (2026-10-29, F11.1). El propietario confirmó la sección 3 (Defender) el mismo día y pidió `crisol trust` de una vez (sección 4). **Sección 5 (acciones para la GUI, F13.7): borrador del 2026-11-06, pendiente de aprobación.**
 - **Fecha:** 2026-10-29
 
 ## Contexto
@@ -83,6 +83,121 @@ Pedidos por el propietario el 2026-10-29. `doctor` los sugiere: `crisol trust` c
 - Ninguno de los dos borra `certs/`: los sitios siguen con sus certificados, y el navegador avisa hasta el siguiente `crisol trust`.
 - **Dónde se ejecutan:** en el proceso del CLI, no en el daemon, para que el diálogo salga delante del usuario. El CLI solo encadena `trust::prepare_trust` (muestra el plan) y `trust::trust_ca`; `trust::untrust_local` hace el resto. La GUI llamará a las mismas funciones.
 - La parte manual, con el almacén real, la hace el propietario (ver «Verificación manual»).
+
+### 5. Acciones de `doctor` para la GUI (F13.7) — **BORRADOR, pendiente de aprobación**
+
+> Estado: borrador de Opus (2026-11-06) para que el propietario lo apruebe antes de implementarlo (`docs/plan.md`, F13.7). Decididas por el propietario: **(1)** `crisol system install` es un botón con el UAC; **(4)** el núcleo manda el tipo y los datos, y `crisol-client` pone la etiqueta traducida. Quedan por decidir: **(2)** reinstalar con dos llamadas o con una, y **(3)** si hay acción para abrir un archivo o una carpeta. En las dos va la recomendación.
+
+Sustituye la idea de «Para la GUI» de la sección 3. Allí se proponía `AdminCommand { program, args }`, y eso ya no existe: la GUI nunca ejecuta un programa que le diga una respuesta (ADR-0026 §6).
+
+#### 5.1 La forma
+
+`Check` gana un campo opcional. Es un cambio compatible: el protocolo no cambia de versión y un cliente viejo lo ignora.
+
+```rust
+pub struct Check {
+    pub name: String,
+    pub status: CheckStatus,
+    pub detail: String,
+    pub fix: Option<String>,
+    /// What a button can do for `fix`. The CLI does not show it; `--json` carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub action: Option<CheckAction>,
+}
+
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckAction {
+    /// Calls to the daemon, one after another; the first that fails stops the rest.
+    Calls { calls: Vec<Call> },
+    /// An operation of the core that runs in the client's process, so that the dialogs of
+    /// Windows (and the UAC) show in front of the person.
+    Local { op: LocalOp },
+    /// A web page (https only).
+    Link { url: String },
+    /// The log viewer on this service.
+    ShowLog { service: String },
+    /// A command to copy. Never run.
+    Copy { text: String },
+    // Decision 3: `Reveal { path }`, if it is approved.
+}
+
+#[serde(rename_all = "snake_case")]
+pub enum LocalOp { Trust, UntrustStale, AutostartOff, PathAdd, SystemInstall }
+```
+
+- **Una lista cerrada.** `LocalOp` nombra operaciones que ya existen en el núcleo y en `crisol-platform` (`trust::prepare_trust` + `trust_ca`, `trust::untrust_local`, `autostart`, `userpath`, `helper_install::install_self`). Las llama `crisol-client`, igual que el CLI, que ya las ejecuta en su propio proceso. No hay ningún tipo «ejecuta este programa».
+- **Lectura tolerante.** Si una GUI más vieja recibe de un daemon más nuevo una acción que no conoce (un `LocalOp` o una `Call` nuevos), se queda sin acción, no sin `doctor`: `lenient` convierte el error en `None`. Hay una prueba que lo comprueba.
+- **`fix` y `action` salen del mismo sitio.** El núcleo arma los dos en la misma función, así que no se pueden separar. Una prueba recorre cada `Check` con acción y comprueba que el comando que equivale a la acción es el que dice `fix` (por ejemplo, `Calls [Install { service: "php", version: "8.4.27" }]` y `crisol install php 8.4.27`).
+- **El CLI no cambia.** El texto sale igual que hoy, y `--json` trae el campo nuevo. `docs/protocolo.md` y su prueba lo documentan.
+
+#### 5.2 Qué `Check` lleva qué acción
+
+| Comprobación | `fix` de hoy | Acción |
+|---|---|---|
+| `installed` | `crisol install X` | `Calls [Install]` (con la barra de progreso de Versiones) |
+| `known vulnerabilities` | `crisol install php 8.4.x` | `Calls [Install]`. Sin versión que lo arregle (el texto con `--from <zip>`), ninguna |
+| `end of life` | `crisol install X` | `Calls [Install]` |
+| `unverified installs` (problema) | `crisol uninstall X && crisol install X` | según la decisión 2 |
+| `unverified installs` (aviso) | «cuando un crisol.exe más nuevo…» | ninguna |
+| `services` (alguno falló) | `crisol logs X` | `ShowLog { service: X }` |
+| `services` (falta el runtime de Visual C++) | el enlace | `Link` |
+| `Visual C++ runtime` | `install it from <url>` | `Link` |
+| DNS (regla de Crisol con el daemon parado), `autostart` | `crisol start` | `Calls [Start]` |
+| DNS (el nombre no resolvió) | `ipconfig /flushdns, then crisol doctor again` | `Copy { "ipconfig /flushdns" }` |
+| `PATH` | `crisol path add` | `Local PathAdd` |
+| ayudante | `crisol system install` | `Local SystemInstall` (UAC, decisión 1) |
+| `local CA` | `crisol trust` / `crisol untrust --stale` | `Local Trust` / `Local UntrustStale` (diálogo de Windows) |
+| `autostart` (entrada rota o ajena) | `crisol autostart off` | `Local AutostartOff` |
+| `database startup` (lenta por Defender) | `Add-MpPreference …` | `Copy` (ADR-0026 §6: de administrador y ajeno a Crisol) |
+| `configuration`, `ports` | `edit crisol.toml`, «set `port = N`» | según la decisión 3 |
+| `log leftovers` | «léelos y bórralos» | según la decisión 3 |
+| `site names` (`hosts`), `IPv6` | cambiar `hosts` o el registro | ninguna: es de administrador y no hay un comando exacto |
+| el resto | sin `fix` | ninguna |
+
+#### 5.3 Qué hace el botón en la GUI
+
+- **Antes de hacer nada, dice qué va a hacer.** La etiqueta la pone `crisol-client` a partir de la acción («Instalar php 8.4.27», «Confiar en la CA local…», «Instalar el ayudante (pide permiso de administrador)»), y debajo va el `fix` exacto, que es lo que haría el CLI.
+- **Hace falta un segundo clic** cuando la acción borra algo (`Uninstall` en la lista) o pide un permiso de Windows (`Trust`, `UntrustStale`, `SystemInstall`). En `Trust`, el segundo paso muestra lo mismo que imprime `crisol trust` antes del diálogo: el nombre, para qué vale, hasta cuándo, la SHA-256 y la SHA-1.
+- **`SystemInstall`** (decisión 1) cumple las condiciones de la sección 3: el botón muestra el comando exacto, el UAC es el consentimiento y `uninstall --all` ya quita el ayudante (ADR-0022), así que no hay nada nuevo que anotar en `state/`. Si se dice que no en el UAC, es un resultado y no un error: «no se cambió nada».
+- **`Copy`** es un botón *Copiar*, el mismo de Credenciales. **`Link`** abre el navegador con `Desktop::open_url`, que ya existe. **`ShowLog`** cambia a Registros con ese servicio.
+- **Al terminar**, la GUI vuelve a pedir `doctor`, y la fila muestra el resultado nuevo.
+- **Qué acción se ofrece, la etiqueta y si pide segundo clic** se deciden en `crisol-client` (`doctor_view`, `doctor_actions`), con pruebas. La página solo dibuja.
+
+#### 5.4 Seguridad
+
+- Las respuestas llegan por la tubería del daemon, que solo acepta la misma cuenta (ADR-0008). Aun así, la GUI no confía en el contenido más de lo necesario:
+  - `Calls` son llamadas del protocolo, que el daemon valida igual que si vinieran del CLI;
+  - `Local` es una lista cerrada, sin argumentos libres;
+  - `Link` solo `https://` y que pase `is_web_address` (que por sí sola admite también `http://`, para los sitios locales);
+  - `Copy` nunca se ejecuta.
+- Nada se ejecuta sin un clic, y lo que borra o eleva pide dos.
+
+#### 5.5 Decisión 2: reinstalar con dos llamadas o con una (por decidir)
+
+Solo la usa `unverified installs` cuando el hash de lo instalado no es el del catálogo: lo que hay **no es la compilación oficial**.
+
+- **Dos llamadas (`Calls [Uninstall, Install]`).** Es lo que dice `fix` hoy.
+  - A favor: no hay nada nuevo en el núcleo, el protocolo ni el CLI. Lo sospechoso se quita primero, aunque después falle la descarga. Si un programa de esa versión está corriendo, `uninstall` se niega («is in use; nothing was removed») y no se toca nada.
+  - En contra: si la descarga falla (sin red), la versión se queda sin instalar. Los sitios que la fijan fallan con un error claro hasta que se repita, y los shims caen a la recomendada.
+- **Una llamada (`install` con `replace: true` y `crisol install X --replace`).**
+  - A favor: descarga y verifica en la carpeta temporal y solo entonces cambia la vieja por la nueva. Si algo falla, todo queda como estaba.
+  - En contra: es otra opción del protocolo y del CLI, el `fix` cambia de texto y el reemplazo en Windows también se niega si un programa de la carpeta está corriendo. Y «como estaba» es una compilación que no es la oficial.
+- **Recomendación: dos llamadas.** Es un caso raro, quitar primero lo que no es oficial es lo prudente, y no agrega superficie. `Calls` ya admite una lista, así que no cuesta nada.
+
+#### 5.6 Decisión 3: abrir un archivo o una carpeta (por decidir)
+
+Lo usarían `configuration` y `ports` (`crisol.toml`) y `log leftovers` (la carpeta de logs).
+
+- **Con una acción `Reveal { path }`:** abre el Explorador con el archivo seleccionado (`explorer /select,`).
+  - A favor: un clic lleva al archivo que hay que tocar, y los errores de `crisol.toml` son los más comunes en `doctor`. Seleccionarlo en el Explorador evita que Windows pregunte con qué abrir un `.toml`, si no hay programa asociado.
+  - En contra: es un método más en `Desktop` (`reveal`) y otra validación: la GUI solo abre rutas **dentro de la home**, comprobadas con `CrisolPaths`, para que una respuesta no pueda llevar a otro sitio. No edita nada; la persona hace el cambio.
+- **Sin acción (solo texto):** nada nuevo, pero la persona tiene que ir sola hasta `crisol.toml` o `logs\`. La ruta ya sale en el detalle.
+- **Recomendación: `Reveal`, limitado a la home.** Es poco código, el Explorador es lo que espera un usuario de Herd o Laragon, y deja para más adelante una llamada que escriba el puerto libre en `crisol.toml` (necesitaría su propia orden explícita, por la regla de no reescribir la configuración del usuario).
+
+#### 5.7 Lo que F13.7 también recoge
+
+- La GUI dibuja los avisos de `status` (`LiveState.warnings`), que hoy no se ven y solo se actualizan al conectar (revisión de F13.4).
+- Cuando falta la versión por defecto, el aviso sale una sola vez y no una por cada sitio (revisión de F13.5).
 
 ## Consecuencias
 
