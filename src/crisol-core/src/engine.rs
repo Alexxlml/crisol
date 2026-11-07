@@ -1315,12 +1315,14 @@ fn read_log(path: &Path, lines: usize, from: Option<u64>) -> std::io::Result<Log
     if skip_first && !all.is_empty() {
         all.remove(0);
     }
-    // For a continuation, a last line without its newline is not finished: wait for it.
+    // For a continuation, a last line without its newline is not finished: wait for it. Where it
+    // starts is counted in bytes: the text has a replacement character, three bytes long, for
+    // each byte that is not UTF-8 (a log in the system's code page, or a character cut by the
+    // window), so its length is not the file's.
     let mut next = end;
-    if from.is_some() && !text.ends_with('\n') {
-        if let Some(partial) = all.pop() {
-            next -= partial.len() as u64;
-        }
+    if from.is_some() && !bytes.ends_with(b"\n") && all.pop().is_some() {
+        let finished = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        next = start + finished as u64;
     }
     let keep = if from.is_some() { all.len() } else { lines };
     let tail = all.len().saturating_sub(keep);

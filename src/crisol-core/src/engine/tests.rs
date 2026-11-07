@@ -720,6 +720,30 @@ fn logs_give_the_end_and_then_only_what_was_added() {
 }
 
 #[test]
+fn an_unfinished_line_that_is_not_utf8_is_waited_for_from_where_it_starts() {
+    let rig = Rig::new(&[]);
+    let path = write_log(&rig, "mysql", "one\n");
+    let call = |from| Call::Logs {
+        service: "mysql".to_owned(),
+        lines: 5,
+        from: Some(from),
+    };
+    // "café" in Windows-1252, as a server that writes in the code page of the system does,
+    // and the line is not finished yet.
+    let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    file.write_all(b"caf\xe9 par").unwrap();
+    let first = chunk(rig.call(&call(4)).unwrap());
+    assert_eq!(first.lines, Vec::<String>::new());
+    assert_eq!(
+        first.next, 4,
+        "the unfinished line starts right after `one`"
+    );
+    writeln!(file, "tial").unwrap();
+    let rest = chunk(rig.call(&call(first.next)).unwrap());
+    assert_eq!(rest.lines, ["caf\u{fffd} partial"]);
+}
+
+#[test]
 fn a_big_log_gives_whole_lines_from_its_end() {
     let rig = Rig::new(&[]);
     let mut text = String::new();
