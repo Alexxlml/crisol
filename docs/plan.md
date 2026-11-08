@@ -266,6 +266,13 @@ Reglas de toda la fase:
   - `docs/instalacion.md` actualizado.
   - *Aceptación:* `winget install --manifest` en Windows Sandbox → `crisol setup` crea el acceso directo → la GUI abre desde el menú Inicio → `uninstall --all` lo quita → el sistema queda como al inicio.
 - **Revisión de la Fase 13** (Opus), con el resumen para la revisión en `claude/revisiones/`, como en las fases anteriores. Se puede pedir una revisión intermedia después de F13.3.
+- **F13.10** Mensajes del núcleo traducibles, **antes del primer release** (decisión del propietario, 2026-11-08, tras la verificación en Windows Sandbox: los resultados de los pasos y el detalle de Diagnóstico salían en inglés en una ventana en español). Primero una ADR. Lo ya decidido:
+  - Tarea aparte, después de la revisión de la Fase 13.
+  - **Formato:** archivos JSON de clave y valor por idioma, como los de la ventana (`ui/i18n/*.json`), para que una traducción nueva sea copiar un archivo y abrir un PR. Plurales con claves `_one` y `_other`.
+  - **Idioma:** la CLI y la ventana usan el idioma de Windows del usuario (`GetUserPreferredUILanguages`, como ya hace la ventana) si hay traducción; si no, **inglés**.
+  - El núcleo devuelve clave más datos en lugar de frases; los diccionarios quedan en un lugar común para la CLI y la GUI; el protocolo añade la clave como campo opcional junto al texto (compatible).
+  - Por partes: primero lo que se ve en la ventana (pasos de `setup` y `uninstall --all`, detalle y arreglo de Diagnóstico, errores de las acciones), después el resto de la CLI.
+  - *Aceptación:* una prueba falla si a un idioma le falta una clave o le sobra un dato; la ventana en español ya no muestra frases del núcleo en inglés; `crisol doctor` sale en español en un Windows en español y en inglés en uno en otro idioma sin traducción; `--json` no cambia.
 
 ---
 
