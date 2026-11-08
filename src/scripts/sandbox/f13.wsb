@@ -1,0 +1,40 @@
+<!--
+  Windows Sandbox for the manual check of F13.7, F13.8 and F13.9 (the window, its first run, its
+  Start menu entry and the uninstall), steps in PRUEBA-F13.md.
+  No double hyphen may appear inside this comment: XML refuses it.
+  With network: winget is installed inside from the PowerShell Gallery, and the page of the
+  Visual C++ runtime opens in the browser. Windows adds root certificates by itself then;
+  comparar-fotos.ps1 tells those apart from Crisol's.
+  Before opening it: build the release programs (cargo build, release profile, in src), make the
+  ZIP and the manifest in D:\scratch\sandbox-pkg, and create D:\scratch\sandbox-out.
+-->
+<Configuration>
+  <Networking>Enable</Networking>
+  <vGPU>Disable</vGPU>
+  <MemoryInMB>6144</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\inkis\dev\Crisol\src\scripts\sandbox</HostFolder>
+      <SandboxFolder>C:\sandbox\scripts</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\inkis\dev\Crisol\src\target\release</HostFolder>
+      <SandboxFolder>C:\sandbox\bin</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\scratch\sandbox-pkg</HostFolder>
+      <SandboxFolder>C:\sandbox\pkg</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\scratch\sandbox-out</HostFolder>
+      <SandboxFolder>C:\sandbox\out</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sandbox\scripts\preparar.ps1</Command>
+  </LogonCommand>
+</Configuration>

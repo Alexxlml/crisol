@@ -7,11 +7,14 @@
 Start-Transcript -Path 'C:\sandbox\out\00-preparar.txt' -Force | Out-Null
 $bin = Join-Path $env:USERPROFILE 'crisol-bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
-foreach ($name in 'crisol.exe', 'crisold.exe', 'crisol-shim.exe', 'crisol-elevate.exe') {
-    Copy-Item (Join-Path 'C:\sandbox\bin' $name) $bin -Force
+foreach ($name in 'crisol.exe', 'crisold.exe', 'crisol-shim.exe', 'crisol-elevate.exe', 'crisol-gui.exe') {
+    $source = Join-Path 'C:\sandbox\bin' $name
+    if (Test-Path $source) { Copy-Item $source $bin -Force }
 }
 # The steps, where they can be opened and copied from.
-Copy-Item 'C:\sandbox\scripts\COMANDOS.txt' ([Environment]::GetFolderPath('Desktop')) -Force
+foreach ($steps in 'COMANDOS.txt', 'PRUEBA-F13.md') {
+    Copy-Item (Join-Path 'C:\sandbox\scripts' $steps) ([Environment]::GetFolderPath('Desktop')) -Force
+}
 
 $defender = $false
 foreach ($attempt in 1..36) {

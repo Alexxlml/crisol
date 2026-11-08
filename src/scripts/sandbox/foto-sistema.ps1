@@ -49,4 +49,20 @@ if (Test-Path $helper) {
     Save 'program-files.txt' 'absent'
 }
 
+# The window (F13.9): its Start menu entry, the profile of its web view, and what winget keeps.
+$programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+Save 'start-menu.txt' (Get-ChildItem $programs -Filter '*.lnk' -ErrorAction SilentlyContinue |
+    Sort-Object Name | ForEach-Object { $_.Name })
+Save 'local-appdata.txt' (Get-ChildItem $env:LOCALAPPDATA -Force -ErrorAction SilentlyContinue |
+    Where-Object Name -match 'crisol' | ForEach-Object { $_.Name })
+$winget = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet'
+Save 'winget.txt' (@('Packages', 'Links') | ForEach-Object {
+        $kind = $_
+        Get-ChildItem (Join-Path $winget $kind) -Force -ErrorAction SilentlyContinue |
+            Sort-Object Name | ForEach-Object { "$kind $($_.Name)" }
+    })
+
+# The home: a purge must leave it absent.
+if (Test-Path 'C:\Crisol') { Save 'home.txt' 'C:\Crisol present' } else { Save 'home.txt' 'C:\Crisol absent' }
+
 Write-Host "Picture '$Name' saved in $dir"
