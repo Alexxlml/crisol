@@ -234,6 +234,7 @@
   "step.shims": "The commands (php, node, npm…)",
   "step.path": "Crisol in your PATH",
   "step.startmenu": "Crisol in the Start menu",
+  "step.window": "Close the Crisol window",
   "step.gui_data": "What the window keeps (web view)",
   "step.trust": "Trust the local certificate authority",
   "step.helper": "The administrator helper and the DNS rule",

@@ -3,7 +3,8 @@
 //!
 //! - The tray shows the general state and offers Start/Stop all, Open, Quit, and Stop all and
 //!   quit. Closing the window hides it; the daemon is independent of this program.
-//! - One instance per user: opening it again shows the window that exists.
+//! - One instance per user: opening it again shows the window that exists, and opening it
+//!   again with `--quit` closes it (what `crisol uninstall --all` does before deleting it).
 //! - The page (`ui/`) has no bundler: plain HTML, CSS and JavaScript over the global `__TAURI__`.
 
 // No console window: this is a program of the tray.
@@ -22,11 +23,12 @@ use crisol_client::{
     run_version_act, suggested_site_name, trust_preview, Act, ActionDone, Context, CredentialsView,
     DoctorView, GuiSettings, Language, LeaveAction, LiveConfig, LiveState, LiveView, LogUpdate,
     Opened, Place, SetupDone, SetupView, SitesView, Summary, TerminalOptions, TrustPreview,
-    UninstallDone, UninstallView, VersionAct, VersionsView,
+    UninstallDone, UninstallView, VersionAct, VersionsView, QUIT_ARG,
 };
 use crisol_protocol::{Call, CheckAction, Reply, RpcError};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::plugin::TauriPlugin;
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
 
 use crate::i18n::Dictionary;
 use crate::tray::{id, Tray};
@@ -500,7 +502,36 @@ fn quit_confirmed(app: AppHandle) {
     app.exit(0);
 }
 
+/// One instance per user. A second run shows the window of the first, or, with `--quit`, ends
+/// it: the first plugin, so that a second run is answered before anything else starts.
+fn single_instance() -> TauriPlugin<Wry> {
+    tauri_plugin_single_instance::init(|app, args, _cwd| {
+        if args.iter().any(|arg| arg == QUIT_ARG) {
+            app.exit(0);
+        } else {
+            show_main(app);
+        }
+    })
+}
+
+/// `crisol-gui.exe --quit`: the plugin hands it to the window that runs, and this process ends
+/// there. With none running it ends too, without a window or a tray.
+fn quit_running(mut tauri_context: tauri::Context) {
+    tauri_context.config_mut().app.windows.clear();
+    tauri::Builder::default()
+        .plugin(single_instance())
+        .setup(|_app| std::process::exit(0))
+        .run(tauri_context)
+        .expect("the application runs");
+}
+
 fn main() {
+    let tauri_context = tauri::generate_context!();
+    if std::env::args().skip(1).any(|arg| arg == QUIT_ARG) {
+        quit_running(tauri_context);
+        return;
+    }
+
     let words = Dictionary::of(Language::from_preferences(crisol_platform::ui_languages()));
 
     // Without WebView2 there is no window to say anything in. Asked the way Tauri asks
@@ -521,10 +552,7 @@ fn main() {
     let live = LiveConfig::for_context(&context);
 
     tauri::Builder::default()
-        // The first plugin, so that a second run is answered before anything else starts.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
-        }))
+        .plugin(single_instance())
         .manage(words.clone())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
@@ -578,6 +606,6 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(tauri_context)
         .expect("the application runs");
 }

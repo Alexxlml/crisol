@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crisol_core::appwindow::{AppWindow, NoAppWindow};
 use crisol_core::programs::{is_winget_package, winget_package_folders, GUI_IDENTIFIER};
 use crisol_core::trust::TrustStore;
 use crisol_platform::{
     connect_to_daemon, default_deps, pipe_name_for_user, resolve_paths, spawn_daemon,
-    RegistryAutostart, RegistryUserPath, WindowsDesktop, WindowsPrivateDirs, WindowsSetup,
-    WindowsStartMenu, WindowsTrustStore,
+    RegistryAutostart, RegistryUserPath, WindowsAppWindow, WindowsDesktop, WindowsPrivateDirs,
+    WindowsSetup, WindowsStartMenu, WindowsTrustStore,
 };
 
 use crate::context::Context;
@@ -53,6 +54,10 @@ impl Context {
             )
         });
         let reserved_name = crisol_platform::path_program_guard(&paths);
+        let gui_exe = folder
+            .as_ref()
+            .map(|dir| dir.join("crisol-gui.exe"))
+            .filter(|path| path.is_file());
         let connect: Connector = Arc::new(move || {
             let client = connect_to_daemon(&pipe)?;
             Ok(Box::new(Remote(client)) as Box<dyn Link>)
@@ -95,10 +100,11 @@ impl Context {
             winget,
             remove_programs: Box::new(crisol_platform::schedule_delete),
             start_menu: Box::new(WindowsStartMenu::current_user()),
-            gui_exe: folder
-                .as_ref()
-                .map(|dir| dir.join("crisol-gui.exe"))
-                .filter(|path| path.is_file()),
+            gui_exe: gui_exe.clone(),
+            app_window: match gui_exe {
+                Some(exe) => Box::new(WindowsAppWindow::new(exe)),
+                None => Box::new(NoAppWindow) as Box<dyn AppWindow>,
+            },
             // The profile of the window's web view: Crisol's even when winget owns the programs.
             gui_data: std::env::var_os("LOCALAPPDATA")
                 .filter(|base| !base.is_empty())

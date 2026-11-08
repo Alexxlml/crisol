@@ -371,6 +371,7 @@ impl Env {
             start_menu: Box::new(crisol_core::startmenu::FakeStartMenu::new()),
             gui_exe: None,
             gui_data: None,
+            app_window: Box::new(crisol_core::appwindow::NoAppWindow),
             remove_programs: {
                 let removed = Arc::clone(&self.removed_programs);
                 Box::new(move |files| {

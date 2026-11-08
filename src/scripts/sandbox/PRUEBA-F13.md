@@ -299,7 +299,7 @@ Esperado: nada que hacer salvo el inicio al abrir sesión, y «Crisol is in your
 
 Inicio → `Crisol` → abre la ventana. Comprueba en las propiedades del acceso directo que el destino es el `crisol-gui.exe` de la carpeta de winget. La pantalla de servicios debe conectar con el daemon. No debe salir el aviso «no está del todo configurado».
 
-### B8. Desinstalar con la ventana abierta en la bandeja (hallazgo 1 de la revisión)
+### B8. Desinstalar con la ventana abierta en la bandeja (hallazgo 1 de la revisión, corregido)
 
 Deja la ventana abierta (o en la bandeja). **[usuario]**
 
@@ -318,15 +318,17 @@ Diálogo del certificado → Sí; UAC → Sí. Espera **30 s**:
 } *>&1 | Tee-Object C:\sandbox\out\45-tras-uninstall.txt
 ```
 
-Con el código actual espero `perfil: True` (la ventana sigue abierta y lo tiene en uso) y `crisol-gui` todavía corriendo. **Anota** también si `home` volvió a `True`.
+Esperado:
 
-Ahora cierra la ventana del todo (bandeja → *Salir*) y repite:
+- en `43-lista.json`, el primer paso es `"step": "window"` (*Close the Crisol window…*);
+- en `44-…`, la primera línea del resultado dice *Closed the Crisol window*, y el icono desaparece de la bandeja antes de que Windows pregunte por el certificado;
+- en `45-…`, `perfil: False`, `home: False` y ningún `crisol-gui` en la lista (los programas siguen: son de winget).
+
+Si el perfil sigue ahí, guarda qué procesos de la vista web quedaban:
 
 ```powershell
-crisol uninstall --all --yes *>&1 | Tee-Object C:\sandbox\out\46-uninstall-otra-vez.txt
+Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Format-Table Id, Path *>&1 | Tee-Object C:\sandbox\out\46-perfil-sigue.txt
 ```
-
-Espera 15 s y comprueba `Test-Path "$env:LOCALAPPDATA\dev.crisol.gui"`: esperado `False`.
 
 ### B9. `winget uninstall` y la foto final
 

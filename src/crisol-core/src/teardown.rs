@@ -3,8 +3,9 @@
 //! What Crisol changes outside its home is undone here, after it is listed: the sign-in entry,
 //! the shims folder in the user `PATH`, every Crisol CA in the trust store, and, with one
 //! elevation prompt, the NRPT rule, the block of `hosts`, the antivirus exclusions inside the
-//! home and the helper itself. The daemon is stopped first, by whoever calls [`run`] (the
-//! command line, over IPC).
+//! home and the helper itself. A window of Crisol running in another process is asked to close
+//! first, since its program and its profile cannot be deleted while it runs; then the daemon is
+//! stopped, by whoever calls [`run`] (the command line, over IPC).
 //!
 //! Rules:
 //!
@@ -34,6 +35,7 @@ use std::time::Duration;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
+use crate::appwindow::AppWindow;
 use crate::autostart::Autostart;
 use crate::dbservice::DbKind;
 use crate::dns::RULE_COMMENT;
@@ -73,6 +75,9 @@ pub struct System<'a> {
     /// (`%LOCALAPPDATA%\dev.crisol.gui`), if it is there. It is Crisol's even when winget
     /// owns the programs, and it goes with them once the window has ended.
     pub gui_data: Option<PathBuf>,
+    /// The window of Crisol in another process: it holds its program and its profile while it
+    /// runs, so it is asked to close first.
+    pub app_window: &'a dyn AppWindow,
 }
 
 impl std::fmt::Debug for System<'_> {
@@ -87,6 +92,8 @@ impl std::fmt::Debug for System<'_> {
 /// One thing to undo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
+    /// Ask the window of Crisol, open in another process, to close.
+    CloseWindow,
     /// Stop the daemon and the services it runs.
     StopDaemon,
     /// Remove the sign-in entry, which runs `command`.
@@ -141,7 +148,8 @@ pub enum Step {
 }
 
 /// Every [`Step::id`], for the screens that name each step (a test checks the list is whole).
-pub const STEP_IDS: [&str; 10] = [
+pub const STEP_IDS: [&str; 11] = [
+    "window",
     "daemon",
     "autostart",
     "path",
@@ -159,6 +167,7 @@ impl Step {
     #[must_use]
     pub fn id(&self) -> &'static str {
         match self {
+            Self::CloseWindow => "window",
             Self::StopDaemon => "daemon",
             Self::Autostart { .. } => "autostart",
             Self::Path { .. } => "path",
@@ -176,6 +185,9 @@ impl Step {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
+            Self::CloseWindow => {
+                "Close the Crisol window, which is open (also when it is only in the tray): its program and what it keeps cannot be deleted while it runs".to_owned()
+            }
             Self::StopDaemon => "Stop the daemon and the services it runs".to_owned(),
             Self::Autostart { command } => {
                 format!("Remove the entry that starts Crisol when you sign in ({command})")
@@ -445,6 +457,11 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
     let paths = system.paths;
     let home = paths.home().to_path_buf();
     let mut plan = Plan::default();
+    // Asking a window that is not there to close does nothing: when the processes cannot be
+    // looked at, it is asked all the same.
+    if system.app_window.running().unwrap_or(true) {
+        plan.steps.push(Step::CloseWindow);
+    }
     if system.daemon_running {
         plan.steps.push(Step::StopDaemon);
     }
@@ -631,6 +648,7 @@ pub fn run(
     let mut outcomes: Vec<Outcome> = Vec::new();
     for step in &plan.steps {
         let (kind, message) = match step {
+            Step::CloseWindow => close_window(system),
             Step::StopDaemon => match stop_daemon() {
                 Ok(()) => (
                     OutcomeKind::Done,
@@ -753,6 +771,22 @@ pub fn run_if_agreed(
         Agreed::Ran(run(system, plan, stop_daemon))
     } else {
         Agreed::No
+    }
+}
+
+fn close_window(system: &System<'_>) -> (OutcomeKind, String) {
+    match system.app_window.close() {
+        Ok(true) => (OutcomeKind::Done, "Closed the Crisol window".to_owned()),
+        Ok(false) => (
+            OutcomeKind::Nothing,
+            "The Crisol window was not open".to_owned(),
+        ),
+        Err(error) => (
+            OutcomeKind::Failed,
+            format!(
+                "could not close the Crisol window ({error}); close it from its tray icon (Quit) and run this again"
+            ),
+        ),
     }
 }
 

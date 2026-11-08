@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crisol_core::appwindow::AppWindow;
 use crisol_core::autostart::Autostart;
 use crisol_core::engine::Deps;
 use crisol_core::paths::{CrisolPaths, PrivateDirs};
@@ -61,6 +62,8 @@ pub struct Context {
     pub gui_exe: Option<PathBuf>,
     /// Where the window keeps its web view profile, which `uninstall --all` deletes.
     pub gui_data: Option<PathBuf>,
+    /// That window when it runs in another process: `uninstall --all` asks it to close.
+    pub app_window: Box<dyn AppWindow>,
     /// Judges who can write to the programs before they are registered or launched.
     pub dirs: Arc<dyn PrivateDirs>,
     /// How long to wait for a daemon that was just started.

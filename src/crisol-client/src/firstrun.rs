@@ -251,6 +251,7 @@ pub fn with_teardown_system<R>(
         winget: context.winget,
         start_menu: context.start_menu.as_ref(),
         gui_data: context.gui_data.clone(),
+        app_window: context.app_window.as_ref(),
     };
     work(&system)
 }

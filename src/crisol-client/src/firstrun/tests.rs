@@ -77,6 +77,7 @@ impl World {
             winget: false,
             start_menu: &self.start_menu,
             gui_data: None,
+            app_window: &crisol_core::appwindow::NoAppWindow,
         }
     }
 

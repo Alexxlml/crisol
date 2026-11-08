@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use tempfile::TempDir;
 
 use super::*;
+use crate::appwindow::{FakeAppWindow, NoAppWindow};
 use crate::autostart::FakeAutostart;
 use crate::ca::ensure_ca;
 use crate::paths::fake::FakePrivateDirs;
@@ -65,6 +66,7 @@ impl World {
             winget: false,
             start_menu: &self.start_menu,
             gui_data: None,
+            app_window: &NoAppWindow,
         }
     }
 }
@@ -618,6 +620,7 @@ fn a_profile_that_is_not_there_is_not_listed_and_one_left_behind_a_no_stays() {
 fn step_ids_names_every_step_once() {
     let home = PathBuf::from(r"C:\Crisol");
     let steps = [
+        Step::CloseWindow,
         Step::StopDaemon,
         Step::Autostart {
             command: "crisold.exe".to_owned(),
@@ -646,7 +649,8 @@ fn step_ids_names_every_step_once() {
     for step in &steps {
         // No wildcard: a new step does not compile here until it is in `steps` and `STEP_IDS`.
         match step {
-            Step::StopDaemon
+            Step::CloseWindow
+            | Step::StopDaemon
             | Step::Autostart { .. }
             | Step::Path { .. }
             | Step::StartMenu { .. }
@@ -679,4 +683,83 @@ fn a_start_menu_entry_that_cannot_be_read_is_deleted_and_holds_nothing_back() {
     assert!(outcomes
         .iter()
         .any(|o| o.step == "startmenu" && o.kind == OutcomeKind::Done));
+}
+
+#[test]
+fn a_window_open_in_another_process_is_closed_first_and_then_its_files_go() {
+    let world = World::everything();
+    let setup = FakeSetup::new();
+    let local = TempDir::new().unwrap();
+    let profile = local.path().join("dev.crisol.gui");
+    fs::create_dir_all(&profile).unwrap();
+    let window = FakeAppWindow::open();
+    let removed = std::sync::Mutex::new(Vec::<PathBuf>::new());
+    let remove = |files: &[PathBuf]| {
+        removed.lock().unwrap().extend(files.iter().cloned());
+        Ok(())
+    };
+    let mut system = world.system(&setup, true);
+    system.app_window = &window;
+    system.gui_data = Some(profile.clone());
+    system.programs = vec![PathBuf::from(r"C:\Crisol\crisol-gui.exe")];
+    system.remove_programs = &remove;
+
+    let plan = plan(&system, false);
+    assert_eq!(ids(&plan)[..2], ["window", "daemon"]);
+    assert_eq!(window.closes(), 0, "looking closes nothing");
+
+    let outcomes = run(&system, &plan, &mut || Ok(()));
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert_eq!(window.closes(), 1);
+    assert_eq!(
+        *removed.lock().unwrap(),
+        [profile, PathBuf::from(r"C:\Crisol\crisol-gui.exe")]
+    );
+}
+
+#[test]
+fn no_window_open_is_no_step_and_one_that_cannot_be_looked_for_is_asked_to_close() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let closed = FakeAppWindow::closed();
+    let mut system = world.system(&setup, false);
+    system.app_window = &closed;
+    assert!(!ids(&plan(&system, false)).contains(&"window"));
+
+    let unknown = FakeAppWindow::unreadable();
+    system.app_window = &unknown;
+    let plan = plan(&system, false);
+    assert_eq!(ids(&plan)[0], "window");
+    assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(all_done(&outcomes), "{outcomes:?}");
+}
+
+#[test]
+fn a_window_that_does_not_close_keeps_the_programs_and_the_profile() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let local = TempDir::new().unwrap();
+    let profile = local.path().join("dev.crisol.gui");
+    fs::create_dir_all(&profile).unwrap();
+    let window = FakeAppWindow::stuck();
+    let mut system = world.system(&setup, false);
+    system.app_window = &window;
+    system.gui_data = Some(profile);
+    system.programs = vec![PathBuf::from(r"C:\Crisol\crisol.exe")];
+    system.remove_programs = &|_| panic!("nothing is deleted while the window runs");
+
+    let plan = plan(&system, false);
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    let failed = &outcomes[0];
+    assert_eq!((failed.step, failed.kind), ("window", OutcomeKind::Failed));
+    assert!(failed.message.contains("tray"), "{}", failed.message);
+    for step in ["gui_data", "programs"] {
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| o.step == step && o.kind == OutcomeKind::Skipped),
+            "{outcomes:?}"
+        );
+    }
 }

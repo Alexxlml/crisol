@@ -35,6 +35,8 @@ pub use credentials::{
     credential_services, credentials_view, fetch_credentials, is_secret, reset_offer,
     CredentialLine, CredentialsView, ResetOffer,
 };
+/// The argument that closes the window that is running (`crisol-gui.exe --quit`).
+pub use crisol_core::appwindow::QUIT_ARG;
 /// The `id` of every step the setup and uninstall screens can name (the page translates each).
 pub use crisol_core::onboarding::STEP_IDS as SETUP_STEP_IDS;
 pub use crisol_core::teardown::STEP_IDS as UNINSTALL_STEP_IDS;

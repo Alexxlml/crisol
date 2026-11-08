@@ -234,6 +234,7 @@
   "step.shims": "Los comandos (php, node, npm…)",
   "step.path": "Crisol en tu PATH",
   "step.startmenu": "Crisol en el menú Inicio",
+  "step.window": "Cerrar la ventana de Crisol",
   "step.gui_data": "Lo que guarda la ventana (vista web)",
   "step.trust": "Confiar en la autoridad certificadora local",
   "step.helper": "El ayudante de administrador y la regla DNS",
