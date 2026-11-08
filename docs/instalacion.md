@@ -28,6 +28,8 @@ crisol setup
 
 Las primeras versiones **no están firmadas** con Authenticode (ADR-0024, sección 5). Windows puede mostrar SmartScreen («editor desconocido») y el aviso de administrador de `crisol setup` dirá lo mismo. La firma llegará más adelante.
 
+Con winget, Windows marca los programas como descargados de internet, y SmartScreen avisa **dos veces**, una por programa: al instalar el ayudante (`crisol-elevate.exe`, en `crisol setup` o en *Configurar*) y la primera vez que abres la ventana (`crisol-gui.exe`). Pulsa *Más información* → *Ejecutar de todas formas*; no vuelve a preguntar por ese programa. `crisol` y `crisold` no pasan por SmartScreen.
+
 ## Actualizar
 
 ```powershell

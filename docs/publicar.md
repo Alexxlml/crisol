@@ -57,13 +57,13 @@ Escribe `dist/winget/0.1.0/` con los tres archivos y corre `winget validate` (de
 
 ### Probar la instalación antes del PR (Windows Sandbox)
 
-Es la prueba de aceptación de P.3 y **todavía no se ha hecho**:
+Es la prueba de aceptación de P.3. **Hecha el 2026-11-08** con el ZIP servido desde el Sandbox (resultado en la ADR-0024 §4); se repite con el ZIP del release antes del PR:
 
 1. En un Windows Sandbox con red y winget disponible (si no trae `winget`, se instala dentro con `Repair-WinGetPackageManager`), y **dentro de él**: `winget settings --enable LocalManifestFiles` (administrador; el ajuste es del winget que instala, no del de tu equipo).
 2. Copiar `dist/winget/0.1.0/` y correr `winget install --manifest <carpeta>`. Antes del primer release, el ZIP se sirve desde el propio Sandbox: los pasos completos están en `src/scripts/sandbox/PRUEBA-F13.md` (parte B).
-3. `crisol --version`, `crisol setup`, abrir la ventana desde el menú Inicio, usar un sitio, `crisol uninstall --all`, `winget uninstall Alexxlml.Crisol`.
+3. `crisol --version`, `crisol setup`, abrir la ventana desde el menú Inicio, usar un sitio, `crisol uninstall --all`, `winget uninstall --product-code Alexxlml.Crisol__DefaultSource` (instalado desde un manifiesto local, el id `Alexxlml.Crisol` no corresponde a ningún origen y winget no lo encuentra).
 4. Comparar con las fotos de `src/scripts/sandbox/` (como en la ADR-0022): el sistema debe quedar como al inicio.
-5. Apuntar en la ADR-0024 lo que quedó «sin verificar»: si la carpeta del paquete lleva la versión, qué carpeta del ZIP deja winget (¿están `crisold.exe`, `crisol-shim.exe`, `crisol-elevate.exe` y `crisol-gui.exe` junto a `crisol.exe`?) y qué pasa si winget no puede crear el enlace.
+5. Apuntar en la ADR-0024 lo que cambie respecto a lo verificado. Queda sin verificar qué pasa si winget no puede crear el enlace.
 
 ### Abrir el PR a `microsoft/winget-pkgs`
 
