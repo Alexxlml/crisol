@@ -19,7 +19,7 @@ use serde::{Serialize, Serializer};
 
 use crate::autostart::{self, Autostart, AutostartChange, AutostartError, AutostartState};
 use crate::ca::load_ca;
-use crate::paths::{CrisolPaths, PrivateDirs};
+use crate::paths::{home_problems, CrisolPaths, HomeError, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::setup::{suffix_of, SystemSetup};
 use crate::shimsetup::{install_shims, path_add, path_status, shims_current, shims_present};
@@ -247,6 +247,10 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
     // will run with the user's rights, so a folder others can write to stops everything here
     // rather than at the last step.
     check_programs(system, &mut plan);
+    // The home too: the shims go in it and the PATH leads to them. One that is not there yet
+    // is made private by the first step.
+    plan.problems
+        .extend(home_problems(paths, system.dirs).iter().map(home_problem));
     if plan.is_blocked() {
         return plan;
     }
@@ -372,6 +376,22 @@ fn check_programs(system: &System<'_>, plan: &mut Plan) {
             }
             seen.push(error);
         }
+    }
+}
+
+fn home_problem(error: &HomeError) -> Problem {
+    match error {
+        HomeError::Exposed { path, fix } => Problem {
+            message: format!(
+                "`{}` can be modified by other accounts of this computer, and your PATH would lead to the commands Crisol keeps in it, so it will not set anything up",
+                path.display()
+            ),
+            fix: Some(fix.clone()),
+        },
+        other => Problem {
+            message: other.to_string(),
+            fix: None,
+        },
     }
 }
 

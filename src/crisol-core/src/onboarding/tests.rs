@@ -409,3 +409,33 @@ fn step_ids_names_every_step_once() {
     let ids: Vec<_> = steps.iter().map(Step::id).collect();
     assert_eq!(ids, STEP_IDS);
 }
+
+#[test]
+fn a_home_open_to_other_accounts_stops_everything_before_the_path_is_touched() {
+    let world = World::new();
+    world.dirs.expose(world.paths.home());
+    let setup = FakeSetup::not_installed();
+    let plan = plan(&world.system(&setup), SystemTime::now());
+
+    assert!(plan.is_blocked());
+    assert!(plan.steps.is_empty(), "{:?}", ids(&plan));
+    assert!(plan.problems[0].message.contains("other accounts"));
+    assert!(plan.problems[0].fix.as_deref().unwrap().contains("icacls"));
+}
+
+#[test]
+fn a_home_that_is_not_there_yet_is_made_private_by_the_first_step() {
+    let tmp = TempDir::new().unwrap();
+    let mut world = World::new();
+    // Below a folder that does not exist either, as `C:\Crisol` is on a clean machine.
+    world.paths = CrisolPaths::new(tmp.path().join("nothing").join("home")).unwrap();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup);
+    let plan = plan(&system, SystemTime::now());
+    assert!(!plan.is_blocked(), "{:?}", plan.problems);
+
+    let outcomes = run(&system, &plan, &mut |_| false, SystemTime::now());
+    assert_eq!(outcomes[0].step, "shims");
+    assert_eq!(outcomes[0].kind, OutcomeKind::Done, "{outcomes:?}");
+    assert_eq!(world.dirs.created(), [world.paths.home().to_path_buf()]);
+}
