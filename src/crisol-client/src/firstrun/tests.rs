@@ -6,6 +6,7 @@ use crisol_core::autostart::{Autostart, FakeAutostart};
 use crisol_core::paths::fake::FakePrivateDirs;
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::{FakeSetup, SystemSetup};
+use crisol_core::startmenu::FakeStartMenu;
 use crisol_core::teardown::OutcomeKind;
 use crisol_core::trust::fake::FakeTrustStore;
 use crisol_core::userpath::fake::FakeUserPath;
@@ -22,6 +23,7 @@ struct World {
     autostart: FakeAutostart,
     user_path: FakeUserPath,
     trust: FakeTrustStore,
+    start_menu: FakeStartMenu,
 }
 
 impl World {
@@ -31,7 +33,7 @@ impl World {
         paths.ensure_layout().unwrap();
         let programs = tmp.path().join("programs");
         fs::create_dir(&programs).unwrap();
-        for name in ["crisol-shim.exe", "crisold.exe"] {
+        for name in ["crisol-shim.exe", "crisold.exe", "crisol-gui.exe"] {
             fs::write(programs.join(name), name).unwrap();
         }
         Self {
@@ -42,6 +44,7 @@ impl World {
             autostart: FakeAutostart::new(),
             user_path: FakeUserPath::with_user(r"C:\Tools"),
             trust: FakeTrustStore::new(),
+            start_menu: FakeStartMenu::new(),
         }
     }
 
@@ -55,6 +58,8 @@ impl World {
             setup,
             shim_exe: Some(self.programs.join("crisol-shim.exe")),
             daemon_exe: Some(self.programs.join("crisold.exe")),
+            start_menu: &self.start_menu,
+            gui_exe: Some(self.programs.join("crisol-gui.exe")),
             reserved_name: &|_| false,
         }
     }
@@ -70,6 +75,8 @@ impl World {
             programs: Vec::new(),
             remove_programs: &|_| Ok(()),
             winget: false,
+            start_menu: &self.start_menu,
+            gui_data: None,
         }
     }
 
@@ -98,7 +105,7 @@ fn a_fresh_install_shows_every_step_and_which_switches_start_on() {
 
     assert_eq!(
         ids(&view),
-        ["shims", "path", "trust", "helper", "autostart"]
+        ["shims", "path", "startmenu", "trust", "helper", "autostart"]
     );
     let switch = |id: &str| {
         let step = view.steps.iter().find(|s| s.id == id).unwrap();
@@ -130,6 +137,7 @@ fn only_the_switches_that_are_on_are_done_and_a_no_is_a_result() {
         [
             ("shims", OutcomeKind::Done),
             ("path", OutcomeKind::Done),
+            ("startmenu", OutcomeKind::Done),
             ("trust", OutcomeKind::Declined),
             ("helper", OutcomeKind::Done),
             ("autostart", OutcomeKind::Declined),

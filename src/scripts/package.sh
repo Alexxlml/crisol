@@ -12,12 +12,15 @@ name="crisol-$version-windows-x64"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
-for exe in crisol crisold crisol-shim crisol-elevate; do
+for exe in crisol crisold crisol-shim crisol-elevate crisol-gui; do
   [ -f "$release/$exe.exe" ] || { echo "missing $release/$exe.exe: run cargo build --release first" >&2; exit 1; }
   cp "$release/$exe.exe" "$stage/"
 done
 cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/THIRD-PARTY-NOTICES.md" "$stage/"
 cp "$root/src/scripts/release/LEEME.txt" "$stage/"
+# The fonts inside crisol-gui.exe and the PHP license need their license texts shipped with them
+# (THIRD-PARTY-NOTICES.md points at this folder).
+cp -r "$root/licenses" "$stage/licenses"
 
 # The licenses of the Rust dependencies compiled into the programs (src/about.toml fails on a license
 # that has not been reviewed). CRISOL_LICENSES_FILE lets a caller without cargo-about supply the file.

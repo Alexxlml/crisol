@@ -1,26 +1,28 @@
 //! The real context: this is where Windows is wired in, once, for every program.
 
+use crisol_core::paths::PathsError;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crisol_core::paths::PathsError;
-use crisol_core::programs::{is_winget_package, winget_package_folders};
+use crisol_core::programs::{is_winget_package, winget_package_folders, GUI_IDENTIFIER};
 use crisol_core::trust::TrustStore;
 use crisol_platform::{
     connect_to_daemon, default_deps, pipe_name_for_user, resolve_paths, spawn_daemon,
     RegistryAutostart, RegistryUserPath, WindowsDesktop, WindowsPrivateDirs, WindowsSetup,
-    WindowsTrustStore,
+    WindowsStartMenu, WindowsTrustStore,
 };
 
 use crate::context::Context;
 use crate::link::{Connector, Link, Remote};
 
 /// The programs that come together in one folder, in the order they are deleted.
-const PROGRAMS: [&str; 4] = [
+const PROGRAMS: [&str; 5] = [
     "crisol.exe",
     "crisold.exe",
     "crisol-shim.exe",
     "crisol-elevate.exe",
+    "crisol-gui.exe",
 ];
 
 /// Why the context could not be built.
@@ -92,6 +94,15 @@ impl Context {
                 .unwrap_or_default(),
             winget,
             remove_programs: Box::new(crisol_platform::schedule_delete),
+            start_menu: Box::new(WindowsStartMenu::current_user()),
+            gui_exe: folder
+                .as_ref()
+                .map(|dir| dir.join("crisol-gui.exe"))
+                .filter(|path| path.is_file()),
+            // The profile of the window's web view: Crisol's even when winget owns the programs.
+            gui_data: std::env::var_os("LOCALAPPDATA")
+                .filter(|base| !base.is_empty())
+                .map(|base| PathBuf::from(base).join(GUI_IDENTIFIER)),
             dirs: Arc::new(WindowsPrivateDirs::new()),
             spawn_daemon: Box::new(move || match &daemon {
                 Some(path) if path.is_file() => spawn_daemon(path),

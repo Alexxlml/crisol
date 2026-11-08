@@ -105,6 +105,10 @@ pub fn program_error(error: &ProgramError) -> RpcError {
 /// The winget package that installs Crisol (ADR-0024).
 pub const WINGET_ID: &str = "Alexxlml.Crisol";
 
+/// The identifier of the window (`tauri.conf.json`): the folder where its web view keeps its
+/// profile is named after it, under `%LOCALAPPDATA%`.
+pub const GUI_IDENTIFIER: &str = "dev.crisol.gui";
+
 /// The folders winget unpacks packages in: the user's, and the one for all users.
 /// `env` reads an environment variable.
 #[must_use]

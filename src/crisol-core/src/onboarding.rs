@@ -23,6 +23,7 @@ use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::setup::{suffix_of, SystemSetup};
 use crate::shimsetup::{install_shims, path_add, path_status, shims_current, shims_present};
+use crate::startmenu::{same_path, StartMenu};
 use crate::teardown::{Outcome, OutcomeKind};
 use crate::trust::{prepare_trust, status, trust_ca, AddOutcome, TrustStore};
 use crate::userpath::{PathChange, UserPath};
@@ -45,6 +46,11 @@ pub struct System<'a> {
     pub shim_exe: Option<PathBuf>,
     /// The `crisold` the sign-in entry would start, if it is next to this program.
     pub daemon_exe: Option<PathBuf>,
+    /// The Start menu folder of the user.
+    pub start_menu: &'a dyn StartMenu,
+    /// The `crisol-gui` the Start menu entry opens, if it is next to this program (a package
+    /// without the window has none, and then there is nothing to add).
+    pub gui_exe: Option<PathBuf>,
     /// Whether a program with that name is in the `PATH` already (a shim would hide it).
     pub reserved_name: &'a dyn Fn(&str) -> bool,
 }
@@ -74,6 +80,15 @@ pub enum Step {
         /// The shims folder.
         folder: PathBuf,
     },
+    /// Add the entry that opens the window to the user's Start menu.
+    StartMenu {
+        /// The shortcut.
+        path: PathBuf,
+        /// The window it opens.
+        target: PathBuf,
+        /// There is one already, but it opens another `crisol-gui` (the one before an update).
+        refresh: bool,
+    },
     /// Make the local CA if there is none and ask Windows to trust it.
     Trust,
     /// Install the helper and the DNS rule for the sites' suffix (one administrator prompt).
@@ -95,6 +110,7 @@ impl Step {
         match self {
             Self::Shims { .. } => "shims",
             Self::Path { .. } => "path",
+            Self::StartMenu { .. } => "startmenu",
             Self::Trust => "trust",
             Self::Helper { .. } => "helper",
             Self::Autostart { .. } => "autostart",
@@ -130,6 +146,20 @@ impl Step {
                 "Put {} first in your user PATH (only yours; open a new terminal afterwards)",
                 folder.display()
             ),
+            Self::StartMenu {
+                path,
+                target,
+                refresh: true,
+            } => format!(
+                "Point the Start menu entry {} to this version of the window ({})",
+                path.display(),
+                target.display()
+            ),
+            Self::StartMenu { path, target, .. } => format!(
+                "Add Crisol to your Start menu ({}) so the window opens from there ({}); only yours",
+                path.display(),
+                target.display()
+            ),
             Self::Trust => "Make Crisol's local certificate authority, which vouches only for .test, .localhost and this computer, and ask Windows to trust it so browsers open your https sites without a warning (Windows asks you to confirm; `crisol trust` shows its fingerprints first)".to_owned(),
             Self::Helper { suffix } => format!(
                 "With administrator rights (one prompt): install the helper in Program Files and make the DNS rule that sends .{suffix} to this computer"
@@ -150,7 +180,7 @@ impl Step {
                 "Install the helper and the DNS rule (asks for administrator rights)?"
             }
             Self::Autostart { .. } => "Start Crisol when you sign in?",
-            Self::Shims { .. } | Self::Path { .. } => "Do it?",
+            Self::Shims { .. } | Self::Path { .. } | Self::StartMenu { .. } => "Do it?",
         }
         .to_owned()
     }
@@ -246,6 +276,8 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
         }),
     }
 
+    start_menu_step(system, &mut plan);
+
     trust_step(system, now, &mut plan);
 
     match system.setup.installed() {
@@ -280,6 +312,35 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
         }
     }
     plan
+}
+
+fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
+    let Some(target) = system.gui_exe.as_ref().filter(|exe| exe.is_file()) else {
+        return;
+    };
+    let path = match system.start_menu.path() {
+        Ok(path) => path,
+        Err(error) => {
+            plan.notes.push(format!(
+                "cannot find your Start menu ({error}); the window opens from {}",
+                target.display()
+            ));
+            return;
+        }
+    };
+    match system.start_menu.target() {
+        Ok(Some(current)) if same_path(&current, target) => {
+            plan.done.push("Crisol is in your Start menu".to_owned());
+        }
+        Ok(current) => plan.steps.push(Step::StartMenu {
+            path,
+            target: target.clone(),
+            refresh: current.is_some(),
+        }),
+        Err(error) => plan.notes.push(format!(
+            "cannot read your Start menu entry ({error}); `crisol setup` cannot replace it"
+        )),
+    }
 }
 
 fn check_programs(system: &System<'_>, plan: &mut Plan) {
@@ -389,7 +450,9 @@ fn declined_message(step: &Step) -> String {
         Step::Trust => "Left as it was; `crisol trust` does it later".to_owned(),
         Step::Helper { .. } => "Left as it was; `crisol system install` does it later".to_owned(),
         Step::Autostart { .. } => "Left as it was; `crisol autostart on` does it later".to_owned(),
-        Step::Shims { .. } | Step::Path { .. } => "Left as it was".to_owned(),
+        Step::Shims { .. } | Step::Path { .. } | Step::StartMenu { .. } => {
+            "Left as it was".to_owned()
+        }
     }
 }
 
@@ -411,6 +474,16 @@ fn do_step(system: &System<'_>, step: &Step, now: SystemTime) -> (OutcomeKind, S
             Err(error) => (
                 OutcomeKind::Failed,
                 format!("could not change your user PATH: {error}"),
+            ),
+        },
+        Step::StartMenu { path, target, .. } => match system.start_menu.create(target) {
+            Ok(()) => (
+                OutcomeKind::Done,
+                format!("Added Crisol to your Start menu ({})", path.display()),
+            ),
+            Err(error) => (
+                OutcomeKind::Failed,
+                format!("could not make the Start menu entry: {error}"),
             ),
         },
         Step::Trust => trust(system, now),

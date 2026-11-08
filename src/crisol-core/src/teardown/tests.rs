@@ -9,6 +9,7 @@ use crate::ca::ensure_ca;
 use crate::paths::fake::FakePrivateDirs;
 use crate::setup::{FakeSetup, Leftovers};
 use crate::shimsetup::path_add;
+use crate::startmenu::FakeStartMenu;
 use crate::trust::fake::FakeTrustStore;
 use crate::userpath::fake::FakeUserPath;
 
@@ -19,6 +20,7 @@ struct World {
     autostart: FakeAutostart,
     user_path: FakeUserPath,
     trust: FakeTrustStore,
+    start_menu: FakeStartMenu,
     ca_der: Vec<u8>,
 }
 
@@ -37,6 +39,7 @@ impl World {
             autostart: FakeAutostart::new(),
             user_path: FakeUserPath::with_user(r"C:\Tools"),
             trust: FakeTrustStore::with(&[&ca_der]),
+            start_menu: FakeStartMenu::new(),
             ca_der,
         }
     }
@@ -60,6 +63,8 @@ impl World {
             programs: Vec::new(),
             remove_programs: &|_| Ok(()),
             winget: false,
+            start_menu: &self.start_menu,
+            gui_data: None,
         }
     }
 }
@@ -553,4 +558,58 @@ fn programs_that_winget_installed_are_not_deleted_and_the_last_line_says_how_win
         plan.kept
     );
     assert!(!plan.kept.iter().any(|k| k.contains("delete them yourself")));
+}
+
+#[test]
+fn the_start_menu_entry_goes_and_so_does_the_web_view_profile_even_when_winget_owns_the_programs() {
+    let world = World::new();
+    world
+        .start_menu
+        .create(Path::new(r"C:\Crisol\crisol-gui.exe"))
+        .unwrap();
+    // Outside the home, as it is on a real machine (`%LOCALAPPDATA%`).
+    let local = TempDir::new().unwrap();
+    let profile = local.path().join("dev.crisol.gui");
+    fs::create_dir_all(profile.join("EBWebView")).unwrap();
+    let setup = FakeSetup::new();
+    let removed = std::sync::Mutex::new(Vec::<PathBuf>::new());
+    let remove = |files: &[PathBuf]| {
+        removed.lock().unwrap().extend(files.iter().cloned());
+        Ok(())
+    };
+    let mut system = world.system(&setup, false);
+    system.winget = true;
+    system.gui_data = Some(profile.clone());
+    system.remove_programs = &remove;
+
+    let plan = plan(&system, false);
+    assert!(ids(&plan).contains(&"startmenu"));
+    assert!(ids(&plan).contains(&"gui_data"));
+    assert!(!ids(&plan).contains(&"programs"));
+
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert_eq!(world.start_menu.target().unwrap(), None);
+    assert_eq!(*removed.lock().unwrap(), [profile]);
+}
+
+#[test]
+fn a_profile_that_is_not_there_is_not_listed_and_one_left_behind_a_no_stays() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let local = TempDir::new().unwrap();
+    let profile = local.path().join("dev.crisol.gui");
+    let mut system = world.system(&setup, false);
+    system.gui_data = Some(profile.clone());
+    assert!(!ids(&plan(&system, false)).contains(&"gui_data"));
+
+    world.trust.decline_removals();
+    fs::create_dir_all(&profile).unwrap();
+    system.gui_data = Some(profile);
+    system.remove_programs = &|_| panic!("the profile must stay");
+    let plan = plan(&system, false);
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(outcomes
+        .iter()
+        .any(|o| o.step == "gui_data" && o.kind == OutcomeKind::Skipped));
 }

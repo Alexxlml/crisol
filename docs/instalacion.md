@@ -16,7 +16,8 @@ crisol setup
 `crisol setup` hace, una vez, lo que winget no puede:
 
 1. Pone los comandos `php`, `node`, `npm`, `composer`… en tu PATH (solo el tuyo), cada uno con la versión que pida tu proyecto.
-2. Pregunta por separado, y puedes decir que no a cada una:
+2. Agrega **Crisol al menú Inicio** (solo el tuyo, sin administrador): desde ahí se abre la ventana, que vive en la bandeja. winget no crea ese acceso directo porque instala el paquete como portable, y `crisol setup` lo hace por él. Si una actualización cambia la carpeta del paquete, el acceso directo apuntaría a un programa que ya no está; volver a ejecutar `crisol setup` lo corrige.
+3. Pregunta por separado, y puedes decir que no a cada una:
    - **Confiar en la CA local de Crisol**, para abrir tus sitios `https` sin avisos del navegador. Windows te lo vuelve a preguntar. Para comparar las huellas antes del diálogo, usa `crisol trust` en vez de `setup`.
    - **Instalar el ayudante** y la regla DNS que hace funcionar `.test` (un aviso de administrador).
    - **Arrancar Crisol al iniciar sesión.**
@@ -35,7 +36,7 @@ winget upgrade Alexxlml.Crisol
 crisol setup
 ```
 
-Hay que parar el daemon antes: Windows no deja reemplazar un `.exe` que está en uso. `crisol setup` actualiza los comandos (`php`, `node`…), que son copias del programa anterior, y corrige el arranque al iniciar sesión si apuntaba a una ruta que cambió. `crisol doctor` avisa si el daemon que corre es de otra versión que el programa instalado.
+Hay que parar el daemon antes (y cerrar la ventana con «Detener todo y salir» del menú de la bandeja): Windows no deja reemplazar un `.exe` que está en uso. `crisol setup` actualiza los comandos (`php`, `node`…), que son copias del programa anterior, corrige el acceso directo del menú Inicio si apuntaba a una ruta que cambió, y corrige el arranque al iniciar sesión si pasó lo mismo. `crisol doctor` avisa si el daemon que corre es de otra versión que el programa instalado.
 
 ## Desinstalar
 
@@ -44,7 +45,7 @@ crisol uninstall --all
 winget uninstall Alexxlml.Crisol
 ```
 
-El primero lista todo lo que Crisol cambió en Windows, pregunta, y lo revierte (PATH, certificados, regla DNS, bloque de `hosts`, ayudante, arranque…). **Conserva tus bases de datos, sus contraseñas, tu configuración y tus proyectos**; `--purge` borra también eso, después de preguntarte si ya respaldaste. Como winget instaló los programas, `uninstall --all` no los borra: el segundo comando lo hace.
+El primero lista todo lo que Crisol cambió en Windows, pregunta, y lo revierte (PATH, acceso directo del menú Inicio, certificados, regla DNS, bloque de `hosts`, ayudante, arranque…). **Conserva tus bases de datos, sus contraseñas, tu configuración y tus proyectos**; `--purge` borra también eso, después de preguntarte si ya respaldaste. Como winget instaló los programas, `uninstall --all` no los borra: el segundo comando lo hace. Lo que la ventana guarda para su vista web (`%LOCALAPPDATA%\dev.crisol.gui`, unas decenas de MB) no es de winget, así que `uninstall --all` sí lo borra, unos segundos después de terminar. La misma pantalla existe en la ventana («Instalación»); al terminar bien, la ventana se cierra sola.
 
 ## Sin winget (avanzado)
 

@@ -300,7 +300,8 @@ fn schedule_removal(folder: &Path) -> io::Result<()> {
 /// How many times `schedule_delete` tries, about two seconds apart.
 const DELETE_ATTEMPTS: u32 = 5;
 
-/// Deletes `files` a moment after this program has ended, for `uninstall --all` (ADR-0022):
+/// Deletes `files` (programs, or folders such as the profile of the window's web view) a
+/// moment after this program has ended, for `uninstall --all` (ADR-0022):
 /// `crisol.exe` cannot delete itself while it runs. A detached `cmd` waits and deletes them,
 /// and tries again every two seconds while any is left (a daemon still closing), up to
 /// [`DELETE_ATTEMPTS`] times. A path `cmd` would read as something else (`%`, `!`, a quote)
@@ -331,8 +332,14 @@ pub fn schedule_delete(files: &[PathBuf]) -> io::Result<()> {
         let _ = write!(out, "if not exist {f} ");
         out
     });
+    // A folder goes too: `del` empties it and `rmdir` removes what is left (on a file `rmdir`
+    // fails and says nothing).
+    let rmdirs = quoted.iter().fold(String::new(), |mut out, f| {
+        let _ = write!(out, "& rmdir /S /Q {f} 2>nul ");
+        out
+    });
     let command = format!(
-        "for /L %i in (1,1,{DELETE_ATTEMPTS}) do @(\"{}\" -n 3 127.0.0.1 >nul & del /F /Q {} & {all_gone}exit)",
+        "for /L %i in (1,1,{DELETE_ATTEMPTS}) do @(\"{}\" -n 3 127.0.0.1 >nul & del /F /Q {} 2>nul {rmdirs}& {all_gone}exit)",
         system.join("PING.EXE").display(),
         quoted.join(" ")
     );

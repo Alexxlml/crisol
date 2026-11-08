@@ -258,7 +258,7 @@ Reglas de toda la fase:
   - **La pantalla de `uninstall --all`:** con el `Plan` de `teardown`, muestra todo lo que el CLI lista y pide la confirmación, con la pregunta de los respaldos cuando se borra la home. Cierra la GUI al terminar.
   - Los dos usan `run_if_agreed`, en el proceso de la GUI (no en el daemon), para que los diálogos de Windows y el UAC salgan delante.
   - *Aceptación:* verificación manual completa en Windows Sandbox: el asistente en una máquina limpia, y la desinstalación que deja el sistema como al inicio (scripts de `src/scripts/sandbox/`, como la ADR-0022).
-- **F13.9** Empaquetado de la GUI (ADR-0024 §6 y ADR-0026 §6). Incluye:
+- **F13.9** Empaquetado de la GUI (ADR-0024 §6 y ADR-0026 §6). **Implementada el 2026-11-07** (ADR-0026 «Empaquetado de la GUI»; falta la verificación manual en Windows Sandbox con el paquete real, y la revisión). Incluye:
   - `crisol-gui.exe` en el ZIP (`package.sh`) y en el flujo de publicación (y su build web si es Tauri);
   - el manifiesto de winget, sin alias de comando para la GUI;
   - un paso de `setup` que crea el acceso directo en el menú Inicio del usuario (`.lnk`, detrás de un trait de `crisol-platform`), y su contraparte en `uninstall --all`;

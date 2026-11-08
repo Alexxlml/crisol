@@ -41,6 +41,7 @@ pub mod shell;
 pub mod shims;
 pub mod shimsetup;
 pub mod sites;
+pub mod startmenu;
 pub mod teardown;
 pub mod tls;
 pub mod trouble;

@@ -38,7 +38,7 @@ Es el quinto programa del paquete (ADR-0024 §6, ADR-0026) y va **dentro del wor
 - **`build.rs` copia `assets/brand/tokens.css` y `symbol.svg` a `ui/`** antes de compilar (son la única copia de la identidad, ADR-0027); las copias no se versionan.
 - **Los iconos** (`src/crisol-gui/icons/`) salen de `assets/brand/` con `src/scripts/gui-icons.sh` (necesita `resvg`, `cargo install resvg --locked`, y Python con Pillow) y **sí se versionan**: el script solo se corre cuando cambian los SVG.
 - **WebView2** debe estar en el equipo del usuario (viene con Windows 11 y con Windows 10 actualizado). El ZIP no lo instala: `crisol-gui.exe` lo comprueba al arrancar y, si falta, dice dónde descargarlo.
-- **Pendiente para F13.9** (empaquetado): meter `crisol-gui.exe` en `package.sh` y en `release.yml`. La licencia MPL-2.0 de `cssparser`, `selectors`, `dtoa-short` y `option-ext`, que trae Tauri, ya está aceptada en `src/about.toml`.
+- **En el paquete** (F13.9): `package.sh` mete `crisol-gui.exe` y la carpeta `licenses/` (los textos de la OFL de las fuentes y de la licencia de PHP, que `THIRD-PARTY-NOTICES.md` cita). `release.yml` no cambia: ya compila todo el workspace con `cargo build --release --workspace`, GUI incluida. El manifiesto de winget **no** lleva alias para la GUI (`PortableCommandAlias` es solo de `crisol`): la ventana se abre desde el menú Inicio, que crea `crisol setup`. La licencia MPL-2.0 de `cssparser`, `selectors`, `dtoa-short` y `option-ext`, que trae Tauri, ya está aceptada en `src/about.toml`.
 
 ## winget
 
@@ -61,9 +61,9 @@ Es la prueba de aceptación de P.3 y **todavía no se ha hecho**:
 
 1. En el equipo: `winget settings --enable LocalManifestFiles` (administrador, una vez).
 2. En un Windows Sandbox con red y winget disponible (si no trae `winget`, instala «App Installer» dentro): copiar `dist/winget/0.1.0/` y correr `winget install --manifest <carpeta>`.
-3. `crisol --version`, `crisol setup`, usar un sitio, `crisol uninstall --all`, `winget uninstall Alexxlml.Crisol`.
+3. `crisol --version`, `crisol setup`, abrir la ventana desde el menú Inicio, usar un sitio, `crisol uninstall --all`, `winget uninstall Alexxlml.Crisol`.
 4. Comparar con las fotos de `src/scripts/sandbox/` (como en la ADR-0022): el sistema debe quedar como al inicio.
-5. Apuntar en la ADR-0024 lo que quedó «sin verificar»: si la carpeta del paquete lleva la versión, qué carpeta del ZIP deja winget (¿están `crisold.exe`, `crisol-shim.exe` y `crisol-elevate.exe` junto a `crisol.exe`?) y qué pasa si winget no puede crear el enlace.
+5. Apuntar en la ADR-0024 lo que quedó «sin verificar»: si la carpeta del paquete lleva la versión, qué carpeta del ZIP deja winget (¿están `crisold.exe`, `crisol-shim.exe`, `crisol-elevate.exe` y `crisol-gui.exe` junto a `crisol.exe`?) y qué pasa si winget no puede crear el enlace.
 
 ### Abrir el PR a `microsoft/winget-pkgs`
 

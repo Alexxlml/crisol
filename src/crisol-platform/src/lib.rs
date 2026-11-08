@@ -40,6 +40,8 @@ mod real_exe;
 #[cfg(windows)]
 mod root_certs;
 #[cfg(windows)]
+mod start_menu;
+#[cfg(windows)]
 mod system;
 #[cfg(windows)]
 mod system_paths;
@@ -94,6 +96,8 @@ pub use private_dir::WindowsPrivateDirs;
 pub use real_exe::{real_current_exe, real_program_folder};
 #[cfg(windows)]
 pub use root_certs::WindowsRootCertificates;
+#[cfg(windows)]
+pub use start_menu::WindowsStartMenu;
 #[cfg(windows)]
 pub use system::{default_deps, WindowsSystemChecks};
 #[cfg(windows)]

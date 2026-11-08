@@ -368,6 +368,9 @@ impl Env {
                 vec![self.daemon_exe.clone(), self.shim_exe.clone()]
             },
             winget: self.winget,
+            start_menu: Box::new(crisol_core::startmenu::FakeStartMenu::new()),
+            gui_exe: None,
+            gui_data: None,
             remove_programs: {
                 let removed = Arc::clone(&self.removed_programs);
                 Box::new(move |files| {

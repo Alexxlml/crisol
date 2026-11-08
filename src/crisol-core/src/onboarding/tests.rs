@@ -8,6 +8,7 @@ use crate::autostart::FakeAutostart;
 use crate::paths::fake::FakePrivateDirs;
 use crate::setup::FakeSetup;
 use crate::shimsetup::path_status;
+use crate::startmenu::FakeStartMenu;
 use crate::trust::fake::FakeTrustStore;
 use crate::userpath::fake::FakeUserPath;
 
@@ -20,6 +21,7 @@ struct World {
     autostart: FakeAutostart,
     user_path: FakeUserPath,
     trust: FakeTrustStore,
+    start_menu: FakeStartMenu,
 }
 
 impl World {
@@ -29,7 +31,7 @@ impl World {
         paths.ensure_layout().unwrap();
         let programs = tmp.path().join("programs");
         fs::create_dir(&programs).unwrap();
-        for name in ["crisol-shim.exe", "crisold.exe"] {
+        for name in ["crisol-shim.exe", "crisold.exe", "crisol-gui.exe"] {
             fs::write(programs.join(name), name).unwrap();
         }
         Self {
@@ -40,6 +42,7 @@ impl World {
             autostart: FakeAutostart::new(),
             user_path: FakeUserPath::with_user(r"C:\Tools"),
             trust: FakeTrustStore::new(),
+            start_menu: FakeStartMenu::new(),
         }
     }
 
@@ -53,6 +56,8 @@ impl World {
             setup,
             shim_exe: Some(self.programs.join("crisol-shim.exe")),
             daemon_exe: Some(self.programs.join("crisold.exe")),
+            start_menu: &self.start_menu,
+            gui_exe: Some(self.programs.join("crisol-gui.exe")),
             reserved_name: &|_| false,
         }
     }
@@ -74,7 +79,7 @@ fn a_fresh_install_lists_every_step_in_order_and_changes_nothing() {
 
     assert_eq!(
         ids(&plan),
-        ["shims", "path", "trust", "helper", "autostart"]
+        ["shims", "path", "startmenu", "trust", "helper", "autostart"]
     );
     assert!(plan.problems.is_empty() && plan.done.is_empty());
     let asked: Vec<_> = plan
@@ -110,6 +115,7 @@ fn running_it_all_sets_everything_up_and_a_second_look_finds_nothing_left() {
         [
             ("shims", OutcomeKind::Done),
             ("path", OutcomeKind::Done),
+            ("startmenu", OutcomeKind::Done),
             ("trust", OutcomeKind::Done),
             ("helper", OutcomeKind::Done),
             ("autostart", OutcomeKind::Done),
@@ -129,7 +135,7 @@ fn running_it_all_sets_everything_up_and_a_second_look_finds_nothing_left() {
     let installed = FakeSetup::new();
     let again = plan(&world.system(&installed), SystemTime::now());
     assert!(again.is_empty(), "{:?}", ids(&again));
-    assert_eq!(again.done.len(), 5, "{:?}", again.done);
+    assert_eq!(again.done.len(), 6, "{:?}", again.done);
 }
 
 #[test]
@@ -155,6 +161,7 @@ fn what_is_asked_alone_can_be_refused_and_the_rest_still_happens() {
         [
             ("shims", OutcomeKind::Done),
             ("path", OutcomeKind::Done),
+            ("startmenu", OutcomeKind::Done),
             ("trust", OutcomeKind::Declined),
             ("helper", OutcomeKind::Declined),
             ("autostart", OutcomeKind::Done),
@@ -164,7 +171,7 @@ fn what_is_asked_alone_can_be_refused_and_the_rest_still_happens() {
     assert!(!world.paths.ca_cert().exists());
     assert_eq!(world.trust.changes(), (0, 0));
     assert_eq!(setup.calls(), Vec::<String>::new());
-    assert!(outcomes[2].message.contains("crisol trust"));
+    assert!(outcomes[3].message.contains("crisol trust"));
 }
 
 #[test]
@@ -316,7 +323,52 @@ fn the_plan_and_its_steps_are_json_the_gui_can_read() {
 
     assert_eq!(json["steps"][0]["step"], "shims");
     assert_eq!(json["steps"][0]["optional"], false);
-    assert_eq!(json["steps"][2]["step"], "trust");
-    assert_eq!(json["steps"][2]["optional"], true);
+    assert_eq!(json["steps"][3]["step"], "trust");
+    assert_eq!(json["steps"][3]["optional"], true);
     assert_eq!(json["problems"], serde_json::json!([]));
+}
+
+#[test]
+fn the_start_menu_entry_is_made_once_and_remade_when_it_opens_another_window() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let gui = world.programs.join("crisol-gui.exe");
+
+    // None yet: it is a step that is not asked alone (it only touches the user's own folder).
+    let first = plan(&world.system(&setup), SystemTime::now());
+    let step = first.steps.iter().find(|s| s.id() == "startmenu").unwrap();
+    assert!(!step.optional());
+    assert!(matches!(step, Step::StartMenu { refresh: false, target, .. } if *target == gui));
+
+    run(
+        &world.system(&setup),
+        &first,
+        &mut |_| true,
+        SystemTime::now(),
+    );
+    assert_eq!(world.start_menu.target().unwrap(), Some(gui.clone()));
+    let again = plan(&world.system(&setup), SystemTime::now());
+    assert!(!ids(&again).contains(&"startmenu"));
+    assert!(again.done.iter().any(|d| d.contains("Start menu")));
+
+    // An update moved the window: the old entry opens a program that is not there any more.
+    world
+        .start_menu
+        .create(Path::new(r"C:\old\crisol-gui.exe"))
+        .unwrap();
+    let moved = plan(&world.system(&setup), SystemTime::now());
+    assert!(moved
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::StartMenu { refresh: true, .. })));
+}
+
+#[test]
+fn a_package_without_the_window_has_no_start_menu_step() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    fs::remove_file(world.programs.join("crisol-gui.exe")).unwrap();
+    let plan = plan(&world.system(&setup), SystemTime::now());
+    assert!(!ids(&plan).contains(&"startmenu"));
+    assert_eq!(plan.problems, []);
 }

@@ -137,6 +137,8 @@ pub fn with_setup_system<R>(
         setup: context.setup.as_ref(),
         shim_exe: context.shim_exe.clone(),
         daemon_exe: context.daemon_exe.clone(),
+        start_menu: context.start_menu.as_ref(),
+        gui_exe: context.gui_exe.clone(),
         reserved_name: context.reserved_name.as_ref(),
     };
     work(&system)
@@ -247,6 +249,8 @@ pub fn with_teardown_system<R>(
         programs: context.programs.clone(),
         remove_programs: context.remove_programs.as_ref(),
         winget: context.winget,
+        start_menu: context.start_menu.as_ref(),
+        gui_data: context.gui_data.clone(),
     };
     work(&system)
 }

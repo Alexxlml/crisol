@@ -1,16 +1,19 @@
 Crisol - suite de desarrollo web local (PHP + Node)
 
-Este ZIP trae los cuatro programas de Crisol:
+Este ZIP trae los cinco programas de Crisol:
 
   crisol.exe          la linea de comandos
   crisold.exe         el daemon
   crisol-shim.exe     el lanzador de php, node, npm y composer
   crisol-elevate.exe  el ayudante de los pasos que piden administrador
+  crisol-gui.exe      la ventana y el icono de la bandeja
 
 Instalacion recomendada (sin administrador):
 
   winget install Alexxlml.Crisol
   crisol setup
+
+`crisol setup` agrega Crisol al menu Inicio; desde ahi se abre la ventana.
 
 Uso sin winget (avanzado): descomprime este ZIP dentro de tu perfil de usuario,
 por ejemplo en %LOCALAPPDATA%\Crisol\bin, y usa la ruta completa de crisol.exe o

@@ -42,6 +42,7 @@ use crate::paths::CrisolPaths;
 use crate::programs::WINGET_ID;
 use crate::setup::{remove_exclusion_command, suffix_of, SystemSetup};
 use crate::shimsetup::{path_remove, path_status};
+use crate::startmenu::StartMenu;
 use crate::trust::{crisol_cas, RemoveOutcome, TrustStore};
 use crate::userpath::{PathChange, UserPath};
 
@@ -66,6 +67,12 @@ pub struct System<'a> {
     /// The programs were installed by winget, which owns them: they are not deleted here
     /// (`programs` is empty then) and the last line says how winget removes them.
     pub winget: bool,
+    /// The Start menu folder of the user.
+    pub start_menu: &'a dyn StartMenu,
+    /// The folder where the window keeps its web view profile
+    /// (`%LOCALAPPDATA%\dev.crisol.gui`), if it is there. It is Crisol's even when winget
+    /// owns the programs, and it goes with them once the window has ended.
+    pub gui_data: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for System<'_> {
@@ -92,6 +99,11 @@ pub enum Step {
         /// The shims folder.
         folder: PathBuf,
     },
+    /// Delete the Start menu entry that opens the window.
+    StartMenu {
+        /// The shortcut.
+        path: PathBuf,
+    },
     /// Take a Crisol CA out of the trust store.
     Ca {
         /// Its common name.
@@ -116,6 +128,11 @@ pub enum Step {
         /// The home.
         home: PathBuf,
     },
+    /// Delete what the window keeps for its web view, once this command has ended.
+    GuiData {
+        /// The folder.
+        folder: PathBuf,
+    },
     /// Delete Crisol's programs, once this command has ended.
     Programs {
         /// The files.
@@ -131,10 +148,12 @@ impl Step {
             Self::StopDaemon => "daemon",
             Self::Autostart { .. } => "autostart",
             Self::Path { .. } => "path",
+            Self::StartMenu { .. } => "startmenu",
             Self::Ca { .. } => "ca",
             Self::Helper { .. } => "helper",
             Self::Clean { .. } => "clean",
             Self::Purge { .. } => "purge",
+            Self::GuiData { .. } => "gui_data",
             Self::Programs { .. } => "programs",
         }
     }
@@ -150,6 +169,13 @@ impl Step {
             Self::Path { folder } => {
                 format!("Take {} out of your user PATH", folder.display())
             }
+            Self::StartMenu { path } => {
+                format!("Delete the Start menu entry that opens the window ({})", path.display())
+            }
+            Self::GuiData { folder } => format!(
+                "Delete what the window keeps for its web view when this command ends: {}",
+                folder.display()
+            ),
             Self::Ca { name, .. } => format!(
                 "Take {name} out of the certificates Windows trusts (Windows asks you to confirm)"
             ),
@@ -424,7 +450,8 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             .problems
             .push(format!("cannot read your user PATH: {error}")),
     }
-    let by_hand_cas = "open `certmgr.msc`, go to Trusted Root Certification Authorities > Certificates, and delete the ones named `Crisol Local CA …`";
+    start_menu_step(system, &mut plan);
+    let by_hand_cas ="open `certmgr.msc`, go to Trusted Root Certification Authorities > Certificates, and delete the ones named `Crisol Local CA …`";
     match &system.trust {
         Ok(store) => match crisol_cas(*store) {
             Ok(cas) => plan.steps.extend(cas.into_iter().map(|ca| Step::Ca {
@@ -489,8 +516,29 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             .problems
             .push(format!("cannot read {}: {error}", home.display())),
     }
+    if let Some(folder) = system.gui_data.as_ref().filter(|f| f.is_dir()) {
+        plan.steps.push(Step::GuiData {
+            folder: folder.clone(),
+        });
+    }
     programs_notice(system, &mut plan);
     plan
+}
+
+/// The Start menu entry that opens the window, if there is one.
+fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
+    match system.start_menu.target() {
+        Ok(Some(_)) => match system.start_menu.path() {
+            Ok(path) => plan.steps.push(Step::StartMenu { path }),
+            Err(error) => plan
+                .problems
+                .push(format!("cannot find your Start menu: {error}")),
+        },
+        Ok(None) => {}
+        Err(error) => plan
+            .problems
+            .push(format!("cannot read your Start menu entry: {error}")),
+    }
 }
 
 /// What happens to Crisol's programs: deleted, left to winget, or left to the user.
@@ -604,6 +652,7 @@ pub fn run(
                     format!("could not change your user PATH: {error}"),
                 ),
             },
+            Step::StartMenu { .. } => remove_start_menu(system),
             Step::Ca { name, der } => remove_ca(system, name, der),
             Step::Helper { suffix, home } => match system.setup.uninstall(suffix, home) {
                 Ok(report) => (OutcomeKind::Done, report.steps.join("; ")),
@@ -634,6 +683,14 @@ pub fn run(
             }
             Step::Clean { .. } => clean(system.paths),
             Step::Purge { .. } => purge(system.paths),
+            Step::GuiData { .. } if unchecked || !all_done(&outcomes) => (
+                OutcomeKind::Skipped,
+                format!(
+                    "What the window keeps for its web view was kept, because {}, so that this can be run again",
+                    why_kept(&outcomes)
+                ),
+            ),
+            Step::GuiData { folder } => delete_gui_data(system, folder),
             Step::Programs { .. } if unchecked || !all_done(&outcomes) => (
                 OutcomeKind::Skipped,
                 format!(
@@ -679,6 +736,40 @@ pub fn run_if_agreed(
         Agreed::Ran(run(system, plan, stop_daemon))
     } else {
         Agreed::No
+    }
+}
+
+fn remove_start_menu(system: &System<'_>) -> (OutcomeKind, String) {
+    match system.start_menu.remove() {
+        Ok(true) => (OutcomeKind::Done, "Deleted the Start menu entry".to_owned()),
+        Ok(false) => (
+            OutcomeKind::Nothing,
+            "There was no Start menu entry any more".to_owned(),
+        ),
+        Err(error) => (
+            OutcomeKind::Failed,
+            format!("could not delete the Start menu entry: {error}"),
+        ),
+    }
+}
+
+fn delete_gui_data(system: &System<'_>, folder: &Path) -> (OutcomeKind, String) {
+    // The window is probably the one running this: its web view holds the folder until it ends.
+    match (system.remove_programs)(&[folder.to_path_buf()]) {
+        Ok(()) => (
+            OutcomeKind::Done,
+            format!(
+                "{} is deleted a few seconds after this command ends",
+                folder.display()
+            ),
+        ),
+        Err(error) => (
+            OutcomeKind::Failed,
+            format!(
+                "{} could not be deleted ({error}); delete it yourself",
+                folder.display()
+            ),
+        ),
     }
 }
 
