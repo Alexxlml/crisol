@@ -38,10 +38,15 @@ Step '16-doctor.txt' @('doctor')
 & (Join-Path $scripts 'comparar-fotos.ps1') -Before '1-antes' -After '2-instalado' *> (Join-Path $out '17-comparar-instalado.txt')
 
 # 3. Taking it all out. The list first (the question and its "yes" are covered by the
-# automated tests), then the removal itself, then the list again, which must be empty.
+# automated tests), then the removal itself. Since F13.9 it also deletes the programs a few
+# seconds after it ends (they are not winget's here), so instead of asking again, what is left
+# of them is written down: nothing.
 Step '20-lista.json' @('--json', 'uninstall', '--all', '--purge')
 Step '21-uninstall.txt' @('uninstall', '--all', '--purge', '--yes')
-Step '22-otra-vez.json' @('--json', 'uninstall', '--all')
+Start-Sleep -Seconds 15
+$left = @(Get-ChildItem (Split-Path $crisol) -ErrorAction SilentlyContinue | ForEach-Object Name)
+"programs left in $(Split-Path $crisol): $($left.Count) $($left -join ', ')" |
+    Set-Content (Join-Path $out '22-programas.txt')
 
 # 4. The picture after, against the one before.
 & (Join-Path $scripts 'foto-sistema.ps1') -Name '3-despues'

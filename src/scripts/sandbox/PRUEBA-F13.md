@@ -10,7 +10,10 @@ Todo lo que se guarda va a `C:\sandbox\out` (en tu equipo, `D:\scratch\sandbox-o
 Convenciones de este documento:
 
 - **[admin]** es la terminal de administrador: clic derecho en Inicio → *Terminal (administrador)* o *Windows PowerShell (administrador)*. Ahí se toman las fotos, porque Defender solo muestra sus exclusiones a un administrador.
-- **[usuario]** es una terminal sin elevar: `Win+R` → `powershell` → Enter. Ahí corren Crisol y winget. En el Sandbox tu cuenta es administrador y el UAC está apagado: nada pide elevación, y lo que la necesita (el ayudante) se hace sin preguntar.
+- **[usuario]** es donde corren Crisol y winget. En el Sandbox tu cuenta es administrador y el UAC está apagado: **toda terminal abre elevada** y no hay forma útil de abrir una normal (`runas /trustlevel` da una sin manera de elevar, y el ayudante fallaría). Usa cualquier terminal; el usuario normal con UAC se prueba en tu equipo.
+- **Las líneas rojas `NativeCommandError`** con `*>&1 | Tee-Object` no son errores: Windows PowerShell 5 pinta así lo que un programa escribe por `stderr`, como las preguntas de `crisol`. Por eso también salen fuera de orden.
+- **No uses `COMANDOS.txt`** (también está en el Escritorio): es la prueba de la ADR-0022, la de `uninstall --all` desde la terminal, y borra los programas al terminar.
+- **Diagnóstico no tiene botón *Volver a comprobar*:** revisa al entrar a la pantalla. Después de cambiar algo desde la terminal, ve a otra pantalla y vuelve.
 - **Anota** quiere decir: escribe en el chat lo que viste (o pega una captura) con el número del paso.
 
 ---
@@ -105,7 +108,7 @@ Esperado como Crisol: `user-path.txt` (la carpeta `shims`), `start-menu.txt` (`C
 
 1. Abre Inicio, escribe `Crisol`. Debe salir **Crisol** con el icono de la aplicación. Ábrelo: con la ventana ya abierta, solo la trae al frente (instancia única).
 2. Clic derecho en la entrada → *Abrir ubicación del archivo* → clic derecho en `Crisol.lnk` → *Propiedades*. **Destino:** `C:\Users\WDAGUtilityAccount\crisol-bin\crisol-gui.exe`; **Iniciar en:** esa carpeta.
-3. Cierra la app del todo: icono de la bandeja → *Salir* (acepta el aviso). Vuelve a abrirla **desde el menú Inicio**. Esperado: abre en la pantalla de siempre, no en *Instalación* (el asistente se abre solo una vez).
+3. Cierra la app del todo: icono de la bandeja → *Salir* (el aviso de servicios corriendo solo sale si hay alguno; en el Sandbox no hay, así que cierra sin preguntar). Vuelve a abrirla **desde el menú Inicio**. Esperado: abre en la pantalla de siempre, no en *Instalación* (el asistente se abre solo una vez).
 4. **[usuario]** `& "$env:USERPROFILE\crisol-bin\crisol.exe" setup` y responde **n** a todo. Esperado: el menú Inicio sale en lo ya hecho («Crisol is in your Start menu») y no como paso.
 
 **Anota** lo que veas en 2 (destino) y 3.
@@ -130,9 +133,12 @@ Para tener una CA vieja confiada, se fuerza una CA nueva:
 ```powershell
 & "$env:USERPROFILE\crisol-bin\crisol.exe" stop
 Remove-Item C:\Crisol\certs\ca.pem, C:\Crisol\certs\ca.key
+& "$env:USERPROFILE\crisol-bin\crisol.exe" trust
 ```
 
-En la ventana, **Diagnóstico** → *Confiar* en la CA (se crea una nueva) → Sí. Ahora debe salir una fila con la CA anterior y el botón *Quitar las CA viejas* → segundo clic → diálogo de Windows → **Sí**.
+Sin CA, *Diagnóstico* no ofrece *Confiar* (la CA se crea al asegurar un sitio o con `crisol trust`): por eso la nueva se hace desde la terminal. Diálogo de Windows → **Sí** (su SHA-1 es la que imprime la terminal).
+
+En la ventana, **Diagnóstico** (entra de nuevo a la pantalla). Debe decir que Windows también confía en CA viejas, con el botón *Quitar las CA viejas* → segundo clic → diálogo de Windows → **Sí**.
 
 Esperado: queda **una** sola `Crisol Local CA` confiada.
 
@@ -142,7 +148,7 @@ Esperado: queda **una** sola `Crisol Local CA` confiada.
 
 **[usuario]** `& "$env:USERPROFILE\crisol-bin\crisol.exe" path remove`
 
-**Diagnóstico** → *Volver a comprobar* → fila `PATH` → *Añadir Crisol al PATH*. Esperado: hecho.
+**Diagnóstico** (entra de nuevo a la pantalla) → fila `PATH` → *Añadir Crisol al PATH*. Esperado: hecho.
 
 **[usuario]** `& "$env:USERPROFILE\crisol-bin\crisol.exe" path status`: los shims están primero.
 
@@ -152,7 +158,7 @@ Una entrada rota del inicio:
 
 **[usuario]** `reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Crisol /d "C:\no-existe\crisold.exe" /f`
 
-**Diagnóstico** → *Volver a comprobar* → fila `autostart` → *Desactivar el inicio al abrir sesión*. Esperado: hecho.
+**Diagnóstico** (entra de nuevo a la pantalla) → fila `autostart` → *Desactivar el inicio al abrir sesión*. Esperado: hecho.
 
 **[usuario]** `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Crisol` debe decir que no encuentra el valor.
 
@@ -167,7 +173,7 @@ if ($existed) { Copy-Item $toml "$env:TEMP\crisol.toml.bak" }
 Add-Content $toml 'esto no es toml ['
 ```
 
-**Diagnóstico** → *Volver a comprobar* → fila `configuration` → *Mostrar en el Explorador*. Esperado: abre el Explorador en `C:\Crisol` con `crisol.toml` **seleccionado**.
+**Diagnóstico** (entra de nuevo a la pantalla) → fila `configuration` → *Mostrar en el Explorador*. Esperado: abre el Explorador en `C:\Crisol` con `crisol.toml` **seleccionado**.
 
 Deja el archivo como estaba (en la misma terminal):
 
@@ -264,15 +270,16 @@ winget install --manifest C:\sandbox\pkg\winget\0.1.0 --scope user --accept-pack
   Tee-Object C:\sandbox\out\40-winget-install.txt
 ```
 
-Esperado: el servidor imprime `200 crisol-0.1.0-windows-x64.zip`, el hash cuadra y winget dice que añadió el alias `crisol`.
+Esperado: el servidor imprime cada petición (`200`, o `206` si winget pide por partes), el hash cuadra y winget dice que añadió el alias `crisol`. Verificado el 2026-11-08: winget acepta `http` en un manifiesto local. Que winget corte una conexión a medias sale como `dropped …` y el servidor sigue.
 
 **Si winget rechaza la descarga por `http`** o por otra razón, el error queda en `40-winget-install.txt`: detente ahí y avisa.
 
 ### B5. Lo que dejó winget
 
-Abre una terminal **[usuario] nueva** (para que tome el `PATH`):
+Una pestaña nueva de Windows Terminal hereda el entorno de cuando arrancó Terminal, de antes de winget. Carga el `PATH` nuevo en la terminal que uses:
 
 ```powershell
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
 & {
   crisol --version
   (Get-Command crisol).Source
@@ -294,6 +301,8 @@ crisol setup
 
 Responde: CA → **s** (diálogo de Windows → Sí), ayudante → **s** (sin UAC en el Sandbox), inicio al abrir sesión → **n**.
 
+Al instalar el ayudante sale **SmartScreen** («Aplicación: crisol-elevate.exe, Editor: desconocido»): winget marca como descargados los cinco `.exe` y no están firmados (ADR-0024 §5). *Más información* → *Ejecutar de todas formas*; eso le quita la marca a ese programa y no vuelve a preguntar.
+
 Esperado: el paso del menú Inicio apunta a `...\WinGet\Packages\Alexxlml.Crisol_...\crisol-gui.exe` y sale hecho. Después:
 
 ```powershell
@@ -304,7 +313,9 @@ Esperado: nada que hacer salvo el inicio al abrir sesión, y «Crisol is in your
 
 ### B7. La ventana desde el menú Inicio
 
-Inicio → `Crisol` → abre la ventana. Comprueba en las propiedades del acceso directo que el destino es el `crisol-gui.exe` de la carpeta de winget. La pantalla de servicios debe conectar con el daemon. No debe salir el aviso «no está del todo configurado».
+Inicio → `Crisol` → abre la ventana. Sale **SmartScreen** otra vez, ahora para `crisol-gui.exe` (*Ejecutar de todas formas*). Comprueba en las propiedades del acceso directo que el destino es el `crisol-gui.exe` de la carpeta de winget.
+
+Esperado: abre en *Instalación* (A11 borró lo que la ventana recordaba, así que para esta home es la primera vez), con lo de B6 entre lo hecho y solo el inicio al abrir sesión como interruptor. Dice «Sin daemon»: nadie lo arrancó, y la ventana no lo arranca sola. No debe salir el aviso «no está del todo configurado».
 
 ### B8. Desinstalar con la ventana abierta en la bandeja (hallazgo 1 de la revisión, corregido)
 
@@ -342,16 +353,18 @@ Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Format-Table Id, Path
 Cierra la terminal del servidor (Ctrl+C). **[usuario]**
 
 ```powershell
-winget uninstall Alexxlml.Crisol *>&1 | Tee-Object C:\sandbox\out\47-winget-uninstall.txt
+winget uninstall --product-code Alexxlml.Crisol__DefaultSource *>&1 | Tee-Object C:\sandbox\out\47-winget-uninstall.txt
 ```
+
+Instalado desde un manifiesto local, winget solo lo tiene en *Agregar o quitar programas* (`winget list --name Crisol` lo muestra como `ARP\User\X64\Alexxlml.Crisol__DefaultSource`): `winget uninstall Alexxlml.Crisol` busca el id en los orígenes, no lo encuentra y no quita nada. Con el paquete publicado, el id sí corresponderá. Si winget pregunta por las condiciones del origen `msstore`, responde **Y** (solo envía la región) o quítalo antes con `winget source remove msstore`.
 
 **[admin]**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-sistema.ps1 -Name 5-despues-winget
-powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\comparar-fotos.ps1 -Before 4-antes-winget -After 5-despues-winget |
+powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\comparar-fotos.ps1 -Before 4-antes-winget -After 5-despues-winget *>&1 |
   Tee-Object C:\sandbox\out\48-comparar-winget.txt
-powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\comparar-fotos.ps1 -Before 1-antes -After 5-despues-winget |
+powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\comparar-fotos.ps1 -Before 1-antes -After 5-despues-winget *>&1 |
   Tee-Object C:\sandbox\out\49-comparar-todo.txt
 ```
 

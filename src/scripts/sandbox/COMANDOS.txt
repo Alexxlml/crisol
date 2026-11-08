@@ -1,6 +1,9 @@
 PRUEBA DE crisol uninstall --all EN WINDOWS SANDBOX (ADR-0022)
 ================================================================
 
+Esta es la prueba de crisol.wsb. Si abriste f13.wsb, la prueba es PRUEBA-F13.md
+(también en el Escritorio), no esta: esta borra los programas al terminar.
+
 Copia y pega dentro del Sandbox (el portapapeles funciona dentro de él).
 Todo lo que imprime cada paso se guarda en C:\sandbox\out, que es
 D:\scratch\sandbox-out en tu equipo: si el Sandbox se cierra, no se pierde
