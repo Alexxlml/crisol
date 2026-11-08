@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Crisol",
-  "version": "0.1.0",
   "identifier": "dev.crisol.gui",
   "build": { "frontendDist": "./ui" },
   "app": {
