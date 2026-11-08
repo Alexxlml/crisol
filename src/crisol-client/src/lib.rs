@@ -35,6 +35,9 @@ pub use credentials::{
     credential_services, credentials_view, fetch_credentials, is_secret, reset_offer,
     CredentialLine, CredentialsView, ResetOffer,
 };
+/// The `id` of every step the setup and uninstall screens can name (the page translates each).
+pub use crisol_core::onboarding::STEP_IDS as SETUP_STEP_IDS;
+pub use crisol_core::teardown::STEP_IDS as UNINSTALL_STEP_IDS;
 pub use doctor::{
     doctor_button, doctor_view, fetch_doctor, inside_home, run_doctor_action, trust_preview,
     ActionDone, ButtonKind, DoctorButton, DoctorRow, DoctorView, TrustPreview, Words,
@@ -44,9 +47,6 @@ pub use firstrun::{
     setup_view, uninstall_view, with_setup_system, with_teardown_system, SetupDone, SetupProblem,
     SetupStep, SetupView, UninstallDone, UninstallView,
 };
-/// The `id` of every step the setup and uninstall screens can name (the page translates each).
-pub use crisol_core::onboarding::STEP_IDS as SETUP_STEP_IDS;
-pub use crisol_core::teardown::STEP_IDS as UNINSTALL_STEP_IDS;
 pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};
