@@ -10,7 +10,7 @@ Todo lo que se guarda va a `C:\sandbox\out` (en tu equipo, `D:\scratch\sandbox-o
 Convenciones de este documento:
 
 - **[admin]** es la terminal de administrador: clic derecho en Inicio → *Terminal (administrador)* o *Windows PowerShell (administrador)*. Ahí se toman las fotos, porque Defender solo muestra sus exclusiones a un administrador.
-- **[usuario]** es una terminal sin elevar: `Win+R` → `powershell` → Enter. Ahí corren Crisol y winget, para que el UAC salga de verdad.
+- **[usuario]** es una terminal sin elevar: `Win+R` → `powershell` → Enter. Ahí corren Crisol y winget. En el Sandbox tu cuenta es administrador y el UAC está apagado: nada pide elevación, y lo que la necesita (el ayudante) se hace sin preguntar.
 - **Anota** quiere decir: escribe en el chat lo que viste (o pega una captura) con el número del paso.
 
 ---
@@ -64,7 +64,7 @@ Abre `src\scripts\sandbox\f13.wsb` (doble clic). Tiene red: winget se instala de
 
 ### A1. Primer arranque: el asistente se abre solo
 
-`Win+R` → `%USERPROFILE%\crisol-bin\crisol-gui.exe` → Enter. **No la abras desde la terminal de administrador:** saldría elevada y no habría UAC.
+`Win+R` → `%USERPROFILE%\crisol-bin\crisol-gui.exe` → Enter.
 
 Esperado:
 
@@ -73,16 +73,25 @@ Esperado:
 - Interruptores: la CA y el ayudante **encendidos**; el inicio al abrir sesión **apagado**. El menú Inicio no tiene interruptor (no es opcional).
 - El texto del menú Inicio nombra `...\Start Menu\Programs\Crisol.lnk` y `...\crisol-bin\crisol-gui.exe`.
 
+Al abrirse, la ventana ya creó `C:\Crisol` (guarda que el asistente se abrió). **[admin]** comprueba que la creó privada:
+
+```powershell
+icacls C:\Crisol *>&1 | Tee-Object C:\sandbox\out\A1-home-permisos.txt
+```
+
+Esperado: **solo tres** líneas de permisos, sin `(I)`: `WDAGUtilityAccount`, `NT AUTHORITY\SYSTEM` y `BUILTIN\Administradores` (o `Administrators`), con `(OI)(CI)(F)`. **No debe** salir `Authenticated Users` ni `Usuarios`/`Users`. Si sale, detente y avisa: es el fallo del primer intento.
+
 **Anota** si algo no cuadra.
 
-### A2. Configurar diciendo «no» a los dos diálogos
+### A2. Configurar diciendo «no» al certificado
+
+En el Sandbox tu cuenta es administrador y **el UAC está apagado**: Windows no pregunta nada para instalar el ayudante, lo instala directamente. El «no» al UAC no se puede probar aquí; queda para tu equipo.
 
 Deja los interruptores como vienen y pulsa *Configurar*.
 
-- En el diálogo de Windows del certificado responde **No**.
-- En el UAC del ayudante responde **No**.
+- En el diálogo de Windows del certificado responde **No**. Ese diálogo sí sale: es de Windows para el almacén de certificados del usuario, no del UAC.
 
-Esperado: comandos, `PATH` y menú Inicio **hechos**; CA y ayudante **rechazados** («no se cambió nada», sin error); el inicio al abrir sesión no se toca. **No debe quedar** el aviso «Crisol no está del todo configurado» en las demás pantallas (solo faltan pasos opcionales).
+Esperado: comandos, `PATH` y menú Inicio **hechos**; CA **rechazada** («no se cambió nada», sin error); ayudante **hecho** sin preguntar; el inicio al abrir sesión no se toca. **No debe quedar** el aviso «Crisol no está del todo configurado» en las demás pantallas (solo falta un paso opcional).
 
 **[admin]**
 
@@ -90,7 +99,7 @@ Esperado: comandos, `PATH` y menú Inicio **hechos**; CA y ayudante **rechazados
 powershell -ExecutionPolicy Bypass -File C:\sandbox\scripts\foto-y-comparar.ps1 -Name 2a-asistente-no
 ```
 
-Esperado como Crisol: `user-path.txt` (la carpeta `shims`), `start-menu.txt` (`Crisol.lnk`), `local-appdata.txt` (`dev.crisol.gui`) y `home.txt` (`C:\Crisol present`). **Sin cambios** en `root-certs.txt`, `program-files.txt`, `nrpt.txt` ni `run-key.txt`.
+Esperado como Crisol: `user-path.txt` (la carpeta `shims`), `start-menu.txt` (`Crisol.lnk`), `local-appdata.txt` (`dev.crisol.gui`), `home.txt` (`C:\Crisol present`), y por el ayudante `program-files.txt` y `nrpt.txt`. **Sin cambios** en `root-certs.txt` ni `run-key.txt`.
 
 ### A3. El menú Inicio
 
@@ -108,9 +117,7 @@ En la ventana, pantalla **Diagnóstico**.
 1. Fila de la CA local → *Confiar*. El segundo clic muestra nombre, uso, vigencia, SHA-256 y **SHA-1**. Confirma.
    - En el diálogo de Windows, compara la huella (SHA-1) con la de la pantalla y responde **No**. Esperado: «no se cambió nada», sin error.
    - Repite y responde **Sí**. Esperado: la fila pasa a bien.
-2. Fila del ayudante → *Instalar el ayudante*. El segundo clic muestra el comando. Confirma.
-   - UAC → **No**. Esperado: «no se cambió nada».
-   - Repite → UAC → **Sí**. Esperado: hecho, y la fila del ayudante pasa a bien.
+2. El ayudante ya quedó instalado en A2, así que su fila debe estar bien y sin botón. El «no» al UAC no se puede probar en el Sandbox (no hay UAC); queda para tu equipo.
 
 **Anota** si la SHA-1 coincide.
 
@@ -189,7 +196,7 @@ Esperado como Crisol: `user-path`, `root-certs` (una `Crisol Local CA`), `nrpt`,
    - borrar la entrada del menú Inicio (`Crisol.lnk`);
    - borrar lo que guarda la vista web: `C:\Users\WDAGUtilityAccount\AppData\Local\dev.crisol.gui`;
    - borrar los programas: **cinco**, incluido `crisol-gui.exe`.
-3. Confirma con el segundo clic. Diálogo del certificado → **Sí**; UAC → **Sí**.
+3. Confirma con el segundo clic. Diálogo del certificado → **Sí** (el ayudante se quita sin UAC).
 4. Esperado: todo hecho, y la app **se cierra sola** a los 5 s.
 5. Espera **30 s** y en **[admin]**:
 
@@ -285,7 +292,7 @@ Esperado: `crisol 0.1.0`, el enlace en `WinGet\Links`, y en la carpeta del paque
 crisol setup
 ```
 
-Responde: CA → **s** (diálogo de Windows → Sí), ayudante → **s** (UAC → Sí), inicio al abrir sesión → **n**.
+Responde: CA → **s** (diálogo de Windows → Sí), ayudante → **s** (sin UAC en el Sandbox), inicio al abrir sesión → **n**.
 
 Esperado: el paso del menú Inicio apunta a `...\WinGet\Packages\Alexxlml.Crisol_...\crisol-gui.exe` y sale hecho. Después:
 
@@ -308,7 +315,7 @@ crisol --json uninstall --all --purge | Out-File C:\sandbox\out\43-lista.json
 crisol uninstall --all --purge --yes *>&1 | Tee-Object C:\sandbox\out\44-uninstall-gui-abierta.txt
 ```
 
-Diálogo del certificado → Sí; UAC → Sí. Espera **30 s**:
+Diálogo del certificado → Sí (el ayudante se quita sin UAC). Espera **30 s**:
 
 ```powershell
 & {
