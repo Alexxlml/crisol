@@ -173,6 +173,13 @@ mod tests {
         ] {
             used.insert(format!("action.{action}"));
         }
+        // The steps of the setup and uninstall screens, named by their `id` (`"step." + id`).
+        for id in crisol_client::SETUP_STEP_IDS
+            .iter()
+            .chain(&crisol_client::UNINSTALL_STEP_IDS)
+        {
+            used.insert(format!("step.{id}"));
+        }
         for kind in ["parked", "linked"] {
             used.insert(format!("sites.kind.{kind}"));
         }

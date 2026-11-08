@@ -44,6 +44,9 @@ pub use firstrun::{
     setup_view, uninstall_view, with_setup_system, with_teardown_system, SetupDone, SetupProblem,
     SetupStep, SetupView, UninstallDone, UninstallView,
 };
+/// The `id` of every step the setup and uninstall screens can name (the page translates each).
+pub use crisol_core::onboarding::STEP_IDS as SETUP_STEP_IDS;
+pub use crisol_core::teardown::STEP_IDS as UNINSTALL_STEP_IDS;
 pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};

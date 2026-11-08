@@ -233,6 +233,8 @@
   "outcome.skipped": "Not tried",
   "step.shims": "The commands (php, node, npm…)",
   "step.path": "Crisol in your PATH",
+  "step.startmenu": "Crisol in the Start menu",
+  "step.gui_data": "What the window keeps (web view)",
   "step.trust": "Trust the local certificate authority",
   "step.helper": "The administrator helper and the DNS rule",
   "step.autostart": "Start Crisol when you sign in",

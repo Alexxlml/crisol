@@ -613,3 +613,51 @@ fn a_profile_that_is_not_there_is_not_listed_and_one_left_behind_a_no_stays() {
         .iter()
         .any(|o| o.step == "gui_data" && o.kind == OutcomeKind::Skipped));
 }
+
+#[test]
+fn step_ids_names_every_step_once() {
+    let home = PathBuf::from(r"C:\Crisol");
+    let steps = [
+        Step::StopDaemon,
+        Step::Autostart {
+            command: "crisold.exe".to_owned(),
+        },
+        Step::Path {
+            folder: home.join("shims"),
+        },
+        Step::StartMenu {
+            path: PathBuf::from("Crisol.lnk"),
+        },
+        Step::Ca {
+            name: "Crisol Local CA".to_owned(),
+            der: Vec::new(),
+        },
+        Step::Helper {
+            suffix: "test".to_owned(),
+            home: home.clone(),
+        },
+        Step::Clean { home: home.clone() },
+        Step::Purge { home },
+        Step::GuiData {
+            folder: PathBuf::from("dev.crisol.gui"),
+        },
+        Step::Programs { files: Vec::new() },
+    ];
+    for step in &steps {
+        // No wildcard: a new step does not compile here until it is in `steps` and `STEP_IDS`.
+        match step {
+            Step::StopDaemon
+            | Step::Autostart { .. }
+            | Step::Path { .. }
+            | Step::StartMenu { .. }
+            | Step::Ca { .. }
+            | Step::Helper { .. }
+            | Step::Clean { .. }
+            | Step::Purge { .. }
+            | Step::GuiData { .. }
+            | Step::Programs { .. } => {}
+        }
+    }
+    let ids: Vec<_> = steps.iter().map(Step::id).collect();
+    assert_eq!(ids, STEP_IDS);
+}

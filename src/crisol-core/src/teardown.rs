@@ -140,6 +140,20 @@ pub enum Step {
     },
 }
 
+/// Every [`Step::id`], for the screens that name each step (a test checks the list is whole).
+pub const STEP_IDS: [&str; 10] = [
+    "daemon",
+    "autostart",
+    "path",
+    "startmenu",
+    "ca",
+    "helper",
+    "clean",
+    "purge",
+    "gui_data",
+    "programs",
+];
+
 impl Step {
     /// A short name, for JSON.
     #[must_use]

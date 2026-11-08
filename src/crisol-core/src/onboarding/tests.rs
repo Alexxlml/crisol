@@ -372,3 +372,40 @@ fn a_package_without_the_window_has_no_start_menu_step() {
     assert!(!ids(&plan).contains(&"startmenu"));
     assert_eq!(plan.problems, []);
 }
+
+#[test]
+fn step_ids_names_every_step_once() {
+    let folder = PathBuf::from(r"C:\Crisol\shims");
+    let steps = [
+        Step::Shims {
+            folder: folder.clone(),
+            refresh: false,
+        },
+        Step::Path { folder },
+        Step::StartMenu {
+            path: PathBuf::from("Crisol.lnk"),
+            target: PathBuf::from("crisol-gui.exe"),
+            refresh: false,
+        },
+        Step::Trust,
+        Step::Helper {
+            suffix: "test".to_owned(),
+        },
+        Step::Autostart {
+            daemon: PathBuf::from("crisold.exe"),
+        },
+    ];
+    for step in &steps {
+        // No wildcard: a new step does not compile here until it is in `steps` and `STEP_IDS`.
+        match step {
+            Step::Shims { .. }
+            | Step::Path { .. }
+            | Step::StartMenu { .. }
+            | Step::Trust
+            | Step::Helper { .. }
+            | Step::Autostart { .. } => {}
+        }
+    }
+    let ids: Vec<_> = steps.iter().map(Step::id).collect();
+    assert_eq!(ids, STEP_IDS);
+}
