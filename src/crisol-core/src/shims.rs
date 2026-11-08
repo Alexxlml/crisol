@@ -53,6 +53,9 @@ pub fn install_shim_files(
     shim_exe: &Path,
     dirs: &dyn PrivateDirs,
 ) -> io::Result<ShimFiles> {
+    // The first `crisol setup` writes the shims before anything else is in the home: the home
+    // is made here, private, or the `PATH` would lead to a folder every account can write.
+    paths.create_private_home(dirs)?;
     require_private_home(paths, dirs)
         .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
     let program = fs::read(shim_exe)?;

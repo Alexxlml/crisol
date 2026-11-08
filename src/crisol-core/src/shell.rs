@@ -25,7 +25,7 @@ use base64::Engine as _;
 
 use crate::config::Config;
 use crate::dbservice::{plan as db_plan, DbKind};
-use crate::paths::CrisolPaths;
+use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::shims::{shim_file_name, SHIM_COMMANDS};
 
 /// The variable that tells a process it runs inside `crisol shell`.
@@ -280,8 +280,16 @@ pub fn choose_terminal<'a>(
 /// `toml_edit`, so comments and order stay. Whether the file changed is returned.
 pub fn save_terminal_preference(
     paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
     terminal: Option<Terminal>,
 ) -> Result<bool, crate::edit::EditError> {
+    // It can be the first thing written (the window lets the terminal be chosen before setup).
+    paths
+        .create_private_home(dirs)
+        .map_err(|source| crate::edit::EditError::Write {
+            path: paths.config_file(),
+            source,
+        })?;
     let mut editor = crate::edit::TomlEditor::open_config(paths)?;
     match terminal {
         Some(terminal) => editor.set(&["shell", "terminal"], terminal.name())?,

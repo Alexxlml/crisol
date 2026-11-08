@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crisol_core::config::Config;
+use crisol_core::paths::PrivateDirs;
 use crisol_core::shell::{self, ShellError, Terminal};
 use crisol_core::CrisolPaths;
 use crisol_platform::Desktop;
@@ -102,7 +103,11 @@ pub fn current_terminal_options(context: &Context) -> Result<TerminalOptions, Rp
 /// Saves the terminal the user chose (`None`: automatic) in `[shell] terminal` of
 /// `crisol.toml`, keeping its comments and order. It is the only thing here that writes, and
 /// only because a person picked it. `name` is what [`TerminalOption::name`] says.
-pub fn choose_terminal(paths: &CrisolPaths, name: Option<&str>) -> Result<(), RpcError> {
+pub fn choose_terminal(
+    paths: &CrisolPaths,
+    dirs: &dyn PrivateDirs,
+    name: Option<&str>,
+) -> Result<(), RpcError> {
     let terminal = match name {
         Some(name) => Some(Terminal::from_name(name).ok_or_else(|| {
             RpcError::new(
@@ -112,7 +117,7 @@ pub fn choose_terminal(paths: &CrisolPaths, name: Option<&str>) -> Result<(), Rp
         })?),
         None => None,
     };
-    shell::save_terminal_preference(paths, terminal)
+    shell::save_terminal_preference(paths, dirs, terminal)
         .map(drop)
         .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))
 }

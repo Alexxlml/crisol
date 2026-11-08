@@ -501,6 +501,21 @@ impl CrisolPaths {
         self.home.join(names::WWW)
     }
 
+    /// Creates the home restricted to the current user if it is not there yet (the folders above
+    /// it as ordinary ones). A home that exists is left exactly as it is: whether it is open to
+    /// others is for [`require_private_home`] to say. Returns whether it was created.
+    ///
+    /// Whatever can be the first thing written into the home goes through this, or through
+    /// [`ensure_private_layout`](Self::ensure_private_layout): a home made by a plain
+    /// `create_dir_all` inherits the permissions of the drive, and the root of `C:` lets every
+    /// account modify what is created in it.
+    pub fn create_private_home(&self, private: &dyn PrivateDirs) -> io::Result<bool> {
+        if let Some(parent) = self.home.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        private.create_private_dir(&self.home)
+    }
+
     /// Like [`ensure_layout`](Self::ensure_layout), but a home that does not exist yet is
     /// created through `private`, so it (and everything below, by inheritance) is writable
     /// only by the current user. A home that already exists is never re-permissioned; the

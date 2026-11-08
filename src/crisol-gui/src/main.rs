@@ -351,7 +351,7 @@ async fn setup_plan(first: bool) -> Result<SetupScreen, Failure> {
         if open {
             settings.setup_offered = true;
             // A failure to remember only means it opens once more.
-            let _ = settings.save(&context.paths);
+            let _ = settings.save(&context.paths, context.dirs.as_ref());
         }
         Ok(SetupScreen { view, open })
     })
@@ -477,7 +477,8 @@ async fn terminal_options() -> Result<TerminalOptions, Failure> {
 #[tauri::command]
 async fn choose_terminal(name: Option<String>) -> Result<(), Failure> {
     blocking(move |context| {
-        crisol_client::choose_terminal(&context.paths, name.as_deref()).map_err(Failure::from)
+        crisol_client::choose_terminal(&context.paths, context.dirs.as_ref(), name.as_deref())
+            .map_err(Failure::from)
     })
     .await
 }
@@ -494,10 +495,10 @@ fn bootstrap(app: AppHandle, words: State<Dictionary>) -> Result<serde_json::Val
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn quit_confirmed(app: AppHandle) {
-    if let Ok(paths) = crisol_platform::resolve_paths() {
-        let mut settings = GuiSettings::load(&paths);
+    if let Ok(context) = Context::windows(CLIENT, VERSION) {
+        let mut settings = GuiSettings::load(&context.paths);
         settings.exit_notice_shown = true;
-        let _ = settings.save(&paths);
+        let _ = settings.save(&context.paths, context.dirs.as_ref());
     }
     app.exit(0);
 }

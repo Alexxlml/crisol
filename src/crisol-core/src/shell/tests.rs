@@ -3,6 +3,7 @@ use std::fs;
 use tempfile::TempDir;
 
 use super::*;
+use crate::paths::fake::FakePrivateDirs;
 
 /// A home with all the shims in place.
 fn home() -> (TempDir, CrisolPaths) {
@@ -392,7 +393,9 @@ fn the_preference_is_written_with_the_comments_kept_and_can_be_taken_out() {
     let original = "# my settings\n[sites]\ntld = \"test\" # keep me\n";
     fs::write(paths.config_file(), original).unwrap();
 
-    assert!(save_terminal_preference(&paths, Some(Terminal::Bash)).unwrap());
+    assert!(
+        save_terminal_preference(&paths, &FakePrivateDirs::new(), Some(Terminal::Bash)).unwrap()
+    );
     let text = fs::read_to_string(paths.config_file()).unwrap();
     assert!(text.starts_with(original), "{text}");
     assert!(
@@ -403,9 +406,11 @@ fn the_preference_is_written_with_the_comments_kept_and_can_be_taken_out() {
     assert_eq!(config.preferred_terminal(), Some(Terminal::Bash));
 
     // The same choice again changes nothing.
-    assert!(!save_terminal_preference(&paths, Some(Terminal::Bash)).unwrap());
+    assert!(
+        !save_terminal_preference(&paths, &FakePrivateDirs::new(), Some(Terminal::Bash)).unwrap()
+    );
     // Automatic takes the key out and leaves the rest.
-    assert!(save_terminal_preference(&paths, None).unwrap());
+    assert!(save_terminal_preference(&paths, &FakePrivateDirs::new(), None).unwrap());
     let text = fs::read_to_string(paths.config_file()).unwrap();
     assert!(!text.contains("terminal"), "{text}");
     assert!(text.contains("# keep me"));

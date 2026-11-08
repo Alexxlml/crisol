@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crisol_core::paths::CrisolPaths;
+use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use serde::{Deserialize, Serialize};
 
 /// The memory of the GUI.
@@ -46,8 +46,11 @@ impl GuiSettings {
             .unwrap_or_default()
     }
 
-    /// Writes it (next to the final file first, then renamed over it).
-    pub fn save(&self, paths: &CrisolPaths) -> std::io::Result<()> {
+    /// Writes it (next to the final file first, then renamed over it). The window opens before
+    /// anything is set up, so this can be the first thing written in the home: a home that is
+    /// not there yet is made private first.
+    pub fn save(&self, paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> std::io::Result<()> {
+        paths.create_private_home(dirs)?;
         let file = Self::file(paths);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
@@ -61,6 +64,7 @@ impl GuiSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crisol_core::paths::fake::FakePrivateDirs;
 
     fn paths(dir: &tempfile::TempDir) -> CrisolPaths {
         CrisolPaths::new(dir.path().join("home")).expect("a home")
@@ -81,8 +85,11 @@ mod tests {
             exit_notice_shown: true,
             setup_offered: true,
         };
-        settings.save(&paths).expect("saved");
+        let dirs = FakePrivateDirs::new();
+        settings.save(&paths, &dirs).expect("saved");
         assert_eq!(GuiSettings::load(&paths), settings);
+        // The home was not there: it was made private, not inherited from the folder above.
+        assert_eq!(dirs.created(), [paths.home().to_path_buf()]);
         assert!(!GuiSettings::file(&paths)
             .with_extension("json.tmp")
             .exists());

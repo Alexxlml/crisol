@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::sync::Mutex;
 
+use crisol_core::paths::fake::FakePrivateDirs;
 use crisol_core::shell::ShellLaunch;
 use crisol_core::shims::{shim_file_name, SHIM_COMMANDS};
 use tempfile::TempDir;
@@ -123,11 +124,11 @@ fn with_no_terminal_at_all_nothing_opens_and_it_is_said() {
 fn choosing_writes_one_key_and_automatic_takes_it_out() {
     let (_tmp, paths) = home();
     fs::write(paths.config_file(), "# mine\n[sites]\ntld = \"test\"\n").unwrap();
-    choose_terminal(&paths, Some("pwsh")).unwrap();
+    choose_terminal(&paths, &FakePrivateDirs::new(), Some("pwsh")).unwrap();
     let text = fs::read_to_string(paths.config_file()).unwrap();
     assert!(text.starts_with("# mine\n"), "{text}");
     assert!(text.contains("terminal = \"pwsh\""), "{text}");
-    choose_terminal(&paths, None).unwrap();
+    choose_terminal(&paths, &FakePrivateDirs::new(), None).unwrap();
     assert!(!fs::read_to_string(paths.config_file())
         .unwrap()
         .contains("terminal"));
@@ -136,7 +137,7 @@ fn choosing_writes_one_key_and_automatic_takes_it_out() {
 #[test]
 fn a_name_that_is_not_a_terminal_writes_nothing() {
     let (_tmp, paths) = home();
-    let error = choose_terminal(&paths, Some("wt")).unwrap_err();
+    let error = choose_terminal(&paths, &FakePrivateDirs::new(), Some("wt")).unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams);
     assert!(!paths.config_file().exists());
 }
