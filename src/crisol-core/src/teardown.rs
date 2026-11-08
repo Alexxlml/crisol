@@ -42,7 +42,7 @@ use crate::paths::CrisolPaths;
 use crate::programs::WINGET_ID;
 use crate::setup::{remove_exclusion_command, suffix_of, SystemSetup};
 use crate::shimsetup::{path_remove, path_status};
-use crate::startmenu::StartMenu;
+use crate::startmenu::{StartMenu, SHORTCUT_NAME};
 use crate::trust::{crisol_cas, RemoveOutcome, TrustStore};
 use crate::userpath::{PathChange, UserPath};
 
@@ -465,7 +465,7 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             .push(format!("cannot read your user PATH: {error}")),
     }
     start_menu_step(system, &mut plan);
-    let by_hand_cas ="open `certmgr.msc`, go to Trusted Root Certification Authorities > Certificates, and delete the ones named `Crisol Local CA …`";
+    let by_hand_cas = "open `certmgr.msc`, go to Trusted Root Certification Authorities > Certificates, and delete the ones named `Crisol Local CA …`";
     match &system.trust {
         Ok(store) => match crisol_cas(*store) {
             Ok(cas) => plan.steps.extend(cas.into_iter().map(|ca| Step::Ca {
@@ -539,19 +539,22 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
     plan
 }
 
-/// The Start menu entry that opens the window, if there is one.
+/// The Start menu entry that opens the window, if there is one. It is only a shortcut: one that
+/// cannot be read is deleted all the same, and not knowing where the folder is does not hold
+/// back the programs or the home (it is not one of the [`Plan::problems`]).
 fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
+    let path = match system.start_menu.path() {
+        Ok(path) => path,
+        Err(error) => {
+            plan.by_hand.push(format!(
+                "Cannot find your Start menu ({error}): if it has an entry named {SHORTCUT_NAME}, delete it"
+            ));
+            return;
+        }
+    };
     match system.start_menu.target() {
-        Ok(Some(_)) => match system.start_menu.path() {
-            Ok(path) => plan.steps.push(Step::StartMenu { path }),
-            Err(error) => plan
-                .problems
-                .push(format!("cannot find your Start menu: {error}")),
-        },
         Ok(None) => {}
-        Err(error) => plan
-            .problems
-            .push(format!("cannot read your Start menu entry: {error}")),
+        Ok(Some(_)) | Err(_) => plan.steps.push(Step::StartMenu { path }),
     }
 }
 

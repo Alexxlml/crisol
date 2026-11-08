@@ -661,3 +661,22 @@ fn step_ids_names_every_step_once() {
     let ids: Vec<_> = steps.iter().map(Step::id).collect();
     assert_eq!(ids, STEP_IDS);
 }
+
+#[test]
+fn a_start_menu_entry_that_cannot_be_read_is_deleted_and_holds_nothing_back() {
+    let world = World::new();
+    let setup = FakeSetup::new();
+    let broken = FakeStartMenu::unreadable();
+    let mut system = world.system(&setup, false);
+    system.start_menu = &broken;
+
+    let plan = plan(&system, false);
+    assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+    assert!(ids(&plan).contains(&"startmenu"));
+
+    let outcomes = run(&system, &plan, &mut || unreachable!());
+    assert!(all_done(&outcomes), "{outcomes:?}");
+    assert!(outcomes
+        .iter()
+        .any(|o| o.step == "startmenu" && o.kind == OutcomeKind::Done));
+}

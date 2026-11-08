@@ -36,6 +36,7 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 #[derive(Debug, Default)]
 pub struct FakeStartMenu {
     target: Mutex<Option<PathBuf>>,
+    unreadable: bool,
 }
 
 impl FakeStartMenu {
@@ -50,6 +51,16 @@ impl FakeStartMenu {
     pub fn with(target: impl Into<PathBuf>) -> Self {
         Self {
             target: Mutex::new(Some(target.into())),
+            unreadable: false,
+        }
+    }
+
+    /// With a shortcut that is there but cannot be read (a broken `.lnk`).
+    #[must_use]
+    pub fn unreadable() -> Self {
+        Self {
+            target: Mutex::new(Some(PathBuf::new())),
+            unreadable: true,
         }
     }
 }
@@ -60,6 +71,9 @@ impl StartMenu for FakeStartMenu {
     }
 
     fn target(&self) -> io::Result<Option<PathBuf>> {
+        if self.unreadable {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a shortcut"));
+        }
         Ok(self
             .target
             .lock()
