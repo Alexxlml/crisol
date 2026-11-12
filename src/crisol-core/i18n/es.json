@@ -3,9 +3,9 @@
   "i18n.sample.sites_one": "{count} sitio",
   "i18n.sample.sites_other": "{count} sitios",
 
-  "home.exposed": "`{path}` puede ser modificada por otras cuentas de este equipo, y Crisol ejecuta y da por buena lo que hay dentro, así que no continuará",
-  "home.exposed_fix": "`{path}` puede ser modificada por otras cuentas de este equipo, y Crisol ejecuta y da por buena lo que hay dentro, así que no continuará. Quita su permiso de escritura: {fix}",
-  "home.other_account": "`{path}` pertenece a otra cuenta de este equipo. Cada persona que usa Crisol necesita su propia carpeta de inicio: define la variable de entorno CRISOL_HOME con una carpeta tuya (en cmd: setx CRISOL_HOME \"%USERPROFILE%\\Crisol\") y abre una terminal nueva",
+  "home.exposed": "otras cuentas de este equipo pueden modificar `{path}`, y Crisol ejecuta lo que hay dentro y confía en ello, así que no continuará",
+  "home.exposed_fix": "otras cuentas de este equipo pueden modificar `{path}`, y Crisol ejecuta lo que hay dentro y confía en ello, así que no continuará. Quita su permiso de escritura: {fix}",
+  "home.other_account": "`{path}` pertenece a otra cuenta de este equipo. Cada persona que usa Crisol necesita su propia carpeta de inicio: define la variable de entorno CRISOL_HOME con una carpeta tuya (en cmd: {command}) y abre una terminal nueva",
   "home.check": "no se puede comprobar quién puede escribir en `{path}`: {error}",
 
   "doctor.name.services": "servicios",

@@ -74,10 +74,18 @@ pub enum PathsError {
     },
 }
 
+/// The command that gives the current account a home of its own, in cmd. A command, so it goes
+/// into the sentence as data and is never translated (ADR-0030 §1).
+const OWN_HOME_COMMAND: &str = r#"setx CRISOL_HOME "%USERPROFILE%\Crisol""#;
+
 /// The sentence for a home that is another person's. The default home (`C:\Crisol`) is the
 /// same for every account, so on a computer used by two people the second finds the first's.
 fn other_account_message(path: &Path) -> Message {
-    msg!("home.other_account", path = path.display())
+    msg!(
+        "home.other_account",
+        path = path.display(),
+        command = OWN_HOME_COMMAND
+    )
 }
 
 /// Creates folders that only the current user (and the system) can write to, and tells
