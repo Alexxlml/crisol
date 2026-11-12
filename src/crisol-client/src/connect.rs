@@ -178,7 +178,10 @@ pub fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
         detail: format!(
             "the daemon that is running is {daemon} and this program is {mine}: it was started before an update"
         ),
-        fix: Some("crisol shutdown, then any command starts the new one".to_owned()), name_text: None, detail_text: None, fix_text: None,
+        fix: Some("crisol shutdown, then any command starts the new one".to_owned()),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     })
 }
 

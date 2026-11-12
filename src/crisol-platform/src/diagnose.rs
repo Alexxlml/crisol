@@ -234,7 +234,10 @@ pub fn ipv6_check() -> Check {
             name,
             status: CheckStatus::Ok,
             detail: "programs can listen on [::1]".to_owned(),
-            fix: None, name_text: None, detail_text: None, fix_text: None,
+            fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         },
         Err(error) => Check {
             action: None,
@@ -246,7 +249,10 @@ pub fn ipv6_check() -> Check {
             fix: Some(
                 "turn IPv6 back on (Windows keeps [::1] working unless IPv6 is disabled in the registry)"
                     .to_owned(),
-            ), name_text: None, detail_text: None, fix_text: None,
+            ),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         },
     }
 }

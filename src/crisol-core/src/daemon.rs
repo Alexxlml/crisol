@@ -882,7 +882,10 @@ impl Daemon {
                 slow.join(", "),
                 self.engine.paths().data_dir().display()
             ),
-            fix: hint, name_text: None, detail_text: None, fix_text: None,
+            fix: hint,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 

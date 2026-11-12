@@ -947,7 +947,10 @@ impl Engine {
             fix: Some(format!(
                 "when a newer crisol.exe lists the version, `crisol install {}` with it verifies it",
                 waiting[0]
-            )), name_text: None, detail_text: None, fix_text: None,
+            )),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -979,7 +982,10 @@ impl Engine {
                 "{}; the series are kept apart and nothing is migrated, so the one in use is the one the version pinned in crisol.toml (or the newest installed) selects",
                 lines.join("; ")
             ),
-            fix: None, name_text: None, detail_text: None, fix_text: None,
+            fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -1233,7 +1239,10 @@ impl Engine {
             fix: Some(
                 "remove or change those lines of the hosts file (it needs an administrator), or rename the sites"
                     .to_owned(),
-            ), name_text: None, detail_text: None, fix_text: None,
+            ),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
