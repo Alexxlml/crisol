@@ -21,7 +21,7 @@ use crisol_core::hosts::{block_names, foreign_names, HostsFile};
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
 use crisol_core::shimsetup::{describe_shadows, path_status};
-use crisol_core::trust::status as trust_status;
+use crisol_core::trust::{crisol_cas, status as trust_status};
 use crisol_core::web::TcpConfigProbe;
 use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
@@ -336,13 +336,35 @@ fn trust_check(paths: &CrisolPaths) -> Check {
     let name = "local CA";
     let ca = match load_ca(paths, &WindowsPrivateDirs::new(), SystemTime::now()) {
         Ok(Some(ca)) => ca,
+        // With no CA in `certs/`, Windows may still trust one of an earlier home (deleted
+        // files, a new home on a computer that had Crisol): nothing signs with it any more,
+        // and `crisol untrust --stale` takes every Crisol CA out when there is no current one.
         Ok(None) => {
-            return check(
-                name,
-                CheckStatus::Ok,
-                "no local CA yet: it is made when a site is secured",
-                None,
-            )
+            let left = WindowsTrustStore::current_user_root()
+                .and_then(|store| crisol_cas(&store))
+                .unwrap_or_default();
+            return if left.is_empty() {
+                check(
+                    name,
+                    CheckStatus::Ok,
+                    "no local CA yet: it is made when a site is secured",
+                    None,
+                )
+            } else {
+                check_do(
+                    name,
+                    CheckStatus::Warning,
+                    format!(
+                        "no local CA in `certs/`, but Windows still trusts older Crisol CAs that \
+                         nothing uses: {}",
+                        left.iter()
+                            .map(|c| c.common_name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    local(LocalOp::UntrustStale),
+                )
+            };
         }
         Err(error) => return check(name, CheckStatus::Problem, error.to_string(), None),
     };
