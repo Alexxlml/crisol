@@ -340,6 +340,11 @@ function renderDoctor() {
   const box = document.getElementById("doctor-view");
   const empty = document.getElementById("doctor-empty");
   const summary = document.getElementById("doctor-summary");
+  // Checking again only asks `doctor` again: what is found and what each row offers is still
+  // the app's to say. What was fixed from a terminal shows without leaving the screen.
+  const again = document.getElementById("doctor-again");
+  again.textContent = pending.has("doctor") ? t("doctor.checking") : t("doctor.check_again");
+  again.disabled = pending.has("doctor");
   if (!doctorView) {
     box.replaceChildren();
     empty.hidden = false;
@@ -1410,6 +1415,7 @@ async function start() {
   document.getElementById("log-follow").addEventListener("change", (event) => {
     if (event.target.checked) logView().scrollTop = logView().scrollHeight;
   });
+  document.getElementById("doctor-again").addEventListener("click", refreshDoctor);
   document.getElementById("link-folder").addEventListener("click", pickAndLink);
   document.getElementById("park-folder").addEventListener("click", pickAndPark);
   document.getElementById("link-form").addEventListener("submit", submitLink);
