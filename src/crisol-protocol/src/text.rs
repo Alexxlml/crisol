@@ -13,9 +13,46 @@ use serde::{Deserialize, Serialize};
 pub struct Text {
     /// The key of the sentence (`doctor.ca.stale`).
     pub key: String,
-    /// Data by placeholder name. Always text already formatted: a path, a version, a number.
+    /// Data by placeholder name: text already formatted (a path, a version, a number), or a
+    /// sentence of its own, said in the same language (the error inside another sentence).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub args: BTreeMap<String, String>,
+    pub args: BTreeMap<String, TextArg>,
+}
+
+/// One datum of a [`Text`]. In the JSON, a string or a `Text`. A client older than nested texts
+/// cannot read the whole `Text` and shows the English sentence of the plain field instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TextArg {
+    /// Text that is never translated.
+    Plain(String),
+    /// A sentence of its own.
+    Text(Text),
+}
+
+impl From<String> for TextArg {
+    fn from(text: String) -> Self {
+        Self::Plain(text)
+    }
+}
+
+impl From<&str> for TextArg {
+    fn from(text: &str) -> Self {
+        Self::Plain(text.to_owned())
+    }
+}
+
+impl From<Text> for TextArg {
+    fn from(text: Text) -> Self {
+        Self::Text(text)
+    }
+}
+
+/// So a test or a client can compare a datum with the text it should be.
+impl PartialEq<&str> for TextArg {
+    fn eq(&self, other: &&str) -> bool {
+        matches!(self, Self::Plain(text) if text == other)
+    }
 }
 
 impl Text {
@@ -30,7 +67,7 @@ impl Text {
 
     /// With one more piece of data.
     #[must_use]
-    pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with(mut self, name: impl Into<String>, value: impl Into<TextArg>) -> Self {
         self.args.insert(name.into(), value.into());
         self
     }

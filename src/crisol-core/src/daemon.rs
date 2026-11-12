@@ -486,7 +486,7 @@ impl Daemon {
                 Ok(Reply::Done(info))
             }
             Err(error) if error.code == ErrorCode::NotAvailable && any_database => {
-                let not_started = msg!("done.databases_web_not_started", reason = &error.message);
+                let not_started = msg!("done.databases_web_not_started", reason => &error);
                 warnings.insert(0, not_started.to_string());
                 // The sentence that came first is the only one with a key.
                 let mut warnings_text = vec![None; warnings.len()];

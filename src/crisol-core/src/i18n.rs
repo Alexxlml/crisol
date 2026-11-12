@@ -8,11 +8,12 @@
 //! What is never translated goes in as data, not in the sentence: commands, paths, versions,
 //! names of services and sites, addresses and codes.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crisol_protocol::{ErrorCode, RpcError, Text};
+use crisol_protocol::{ErrorCode, RpcError, Text, TextArg};
 use serde::{Serialize, Serializer};
 
 include!(concat!(env!("OUT_DIR"), "/languages.rs"));
@@ -112,8 +113,40 @@ pub fn choose<S: AsRef<str>>(
 /// A sentence of the core: the key of the dictionary and its data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    key: &'static str,
-    args: Vec<(&'static str, String)>,
+    key: Cow<'static, str>,
+    args: Vec<(Cow<'static, str>, Arg)>,
+}
+
+/// One piece of data of a [`Message`]: text already formatted, or another sentence that is said
+/// in the same language (the error inside "could not change your user PATH: {error}").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Arg {
+    /// Text that is never translated: a path, a version, a number, a command.
+    Plain(String),
+    /// A sentence of its own.
+    Message(Message),
+}
+
+impl From<Message> for Arg {
+    fn from(message: Message) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&Message> for Arg {
+    fn from(message: &Message) -> Self {
+        Self::Message(message.clone())
+    }
+}
+
+/// An error that came as an answer: its key and data when it has them, else its sentence.
+impl From<&RpcError> for Arg {
+    fn from(error: &RpcError) -> Self {
+        error.text.as_deref().map_or_else(
+            || Self::Plain(error.message.clone()),
+            |text| Self::Message(Message::from(text)),
+        )
+    }
 }
 
 impl Message {
@@ -122,7 +155,7 @@ impl Message {
     #[must_use]
     pub fn new(key: &'static str) -> Self {
         Self {
-            key,
+            key: Cow::Borrowed(key),
             args: Vec::new(),
         }
     }
@@ -131,39 +164,68 @@ impl Message {
     #[doc(hidden)]
     #[must_use]
     pub fn arg(mut self, name: &'static str, value: impl fmt::Display) -> Self {
-        self.args.push((name, value.to_string()));
+        self.args
+            .push((Cow::Borrowed(name), Arg::Plain(value.to_string())));
+        self
+    }
+
+    /// With one piece of data that is a sentence of its own (`msg!("x", error => inner)`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn nest(mut self, name: &'static str, value: impl Into<Arg>) -> Self {
+        self.args.push((Cow::Borrowed(name), value.into()));
         self
     }
 
     /// The key.
     #[must_use]
-    pub fn key(&self) -> &'static str {
-        self.key
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
     /// The data, by placeholder name.
     #[must_use]
-    pub fn args(&self) -> &[(&'static str, String)] {
+    pub fn args(&self) -> &[(Cow<'static, str>, Arg)] {
         &self.args
     }
 
-    /// The sentence in `language`: the English one when that language lacks the key. A key that
-    /// no dictionary has (a bug the tests catch) shows as itself.
+    /// The sentence in `language`: the English one when that language lacks the key, and each
+    /// nested sentence in the same language. A key that no dictionary has (a bug the tests
+    /// catch) shows as itself.
     #[must_use]
     pub fn render(&self, language: Language) -> String {
-        let args: Vec<(&str, &str)> = self.args.iter().map(|(n, v)| (*n, v.as_str())).collect();
-        translate(language, self.key, &args).unwrap_or_else(|| self.key.to_owned())
+        let values: Vec<String> = self
+            .args
+            .iter()
+            .map(|(_, arg)| match arg {
+                Arg::Plain(text) => text.clone(),
+                Arg::Message(message) => message.render(language),
+            })
+            .collect();
+        let args: Vec<(&str, &str)> = self
+            .args
+            .iter()
+            .zip(&values)
+            .map(|((name, _), value)| (name.as_ref(), value.as_str()))
+            .collect();
+        translate(language, &self.key, &args).unwrap_or_else(|| self.key.to_string())
     }
 
     /// As the protocol carries it.
     #[must_use]
     pub fn to_text(&self) -> Text {
         Text {
-            key: self.key.to_owned(),
+            key: self.key.to_string(),
             args: self
                 .args
                 .iter()
-                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .map(|(name, arg)| {
+                    let value = match arg {
+                        Arg::Plain(text) => TextArg::Plain(text.clone()),
+                        Arg::Message(message) => TextArg::Text(message.to_text()),
+                    };
+                    (name.to_string(), value)
+                })
                 .collect(),
         }
     }
@@ -189,6 +251,26 @@ impl From<&Message> for Text {
     }
 }
 
+/// A text that came in the protocol, as a message.
+impl From<&Text> for Message {
+    fn from(text: &Text) -> Self {
+        Self {
+            key: Cow::Owned(text.key.clone()),
+            args: text
+                .args
+                .iter()
+                .map(|(name, value)| {
+                    let arg = match value {
+                        TextArg::Plain(text) => Arg::Plain(text.clone()),
+                        TextArg::Text(text) => Arg::Message(Self::from(text)),
+                    };
+                    (Cow::Owned(name.clone()), arg)
+                })
+                .collect(),
+        }
+    }
+}
+
 /// An error answer that says `message` in English in `message` and as a key and data in `text`.
 #[must_use]
 pub fn rpc_error(code: ErrorCode, message: &Message) -> RpcError {
@@ -201,16 +283,27 @@ pub trait Localized {
     fn message(&self) -> Message;
 }
 
-/// Makes a [`Message`]: `msg!("doctor.ca.stale", names = list)`. The key must be in
-/// `i18n/en.json` and the names must be exactly its placeholders; a test reads every use in the
-/// source and fails if not.
+/// Makes a [`Message`]: `msg!("doctor.ca.stale", names = list)`. A datum given with `=` is text
+/// (anything with `Display`); one given with `=>` is a sentence of its own, said in the same
+/// language: `msg!("setup.path_failed", error => error.message())` (a [`Message`], or an
+/// [`RpcError`] that came as an answer). The key must be in `i18n/en.json` and the names must be
+/// exactly its placeholders; a test reads every use in the source and fails if not.
 #[macro_export]
 macro_rules! msg {
+    (@args $message:expr;) => {
+        $message
+    };
+    (@args $message:expr; $name:ident = $value:expr $(, $($rest:tt)*)?) => {
+        $crate::msg!(@args $message.arg(stringify!($name), $value); $($($rest)*)?)
+    };
+    (@args $message:expr; $name:ident => $value:expr $(, $($rest:tt)*)?) => {
+        $crate::msg!(@args $message.nest(stringify!($name), $value); $($($rest)*)?)
+    };
     ($key:literal $(,)?) => {
         $crate::i18n::Message::new($key)
     };
-    ($key:literal, $($name:ident = $value:expr),+ $(,)?) => {
-        $crate::i18n::Message::new($key)$(.arg(stringify!($name), $value))+
+    ($key:literal, $($rest:tt)+) => {
+        $crate::msg!(@args $crate::i18n::Message::new($key); $($rest)+)
     };
 }
 
@@ -411,6 +504,52 @@ mod tests {
         assert_eq!(many.to_string(), "3 sites");
         assert_eq!(many.render(Language::SPANISH), "3 sitios");
         assert_eq!(one.render(Language::SPANISH), "1 sitio");
+    }
+
+    #[test]
+    fn a_nested_message_is_said_in_the_same_language() {
+        let inner = msg!("i18n.sample.sites", count = 2);
+        let outer = msg!("i18n.sample.running", services => &inner);
+        assert_eq!(outer.to_string(), "running: 2 sites");
+        assert_eq!(outer.render(Language::SPANISH), "corriendo: 2 sitios");
+        // English in JSON, as every message.
+        assert_eq!(
+            serde_json::to_value(&outer).expect("json"),
+            "running: 2 sites"
+        );
+    }
+
+    #[test]
+    fn a_nested_message_travels_as_a_nested_text_and_comes_back() {
+        let outer = msg!(
+            "i18n.sample.running",
+            services => msg!("i18n.sample.sites", count = 1)
+        );
+        let text = outer.to_text();
+        assert_eq!(
+            serde_json::to_value(&text).expect("json"),
+            serde_json::json!({
+                "key": "i18n.sample.running",
+                "args": {"services": {"key": "i18n.sample.sites", "args": {"count": "1"}}}
+            })
+        );
+        assert_eq!(Message::from(&text), outer.clone());
+        assert_eq!(
+            Message::from(&text).render(Language::SPANISH),
+            "corriendo: 1 sitio"
+        );
+    }
+
+    #[test]
+    fn an_answer_nests_its_text_or_else_its_sentence() {
+        let with_text = rpc_error(ErrorCode::Io, &msg!("i18n.sample.sites", count = 3));
+        let outer = msg!("i18n.sample.running", services => &with_text);
+        assert_eq!(outer.render(Language::SPANISH), "corriendo: 3 sitios");
+
+        // An error with no key yet is said as it came, in English.
+        let plain = RpcError::new(ErrorCode::Io, "disk full");
+        let outer = msg!("i18n.sample.running", services => &plain);
+        assert_eq!(outer.render(Language::SPANISH), "corriendo: disk full");
     }
 
     #[test]

@@ -88,6 +88,47 @@ fn warnings_are_said_one_by_one_when_the_texts_line_up() {
 }
 
 #[test]
+fn a_nested_text_is_said_in_the_same_language() {
+    let error = msg!("home.check", path = "C:\\Crisol", error = "denied");
+    let text = msg!("done.databases_web_not_started", reason => &error).to_text();
+    assert_eq!(
+        say(Language::SPANISH, Some(&text), "plain"),
+        "la pila web no se arrancó: no se puede comprobar quién puede escribir en `C:\\Crisol`: denied"
+    );
+}
+
+#[test]
+fn a_nested_text_no_dictionary_has_leaves_the_whole_sentence_of_the_daemon() {
+    // Half a sentence in Spanish and half a key would be worse than the English one.
+    let text = Text::new("done.databases_web_not_started")
+        .with("reason", Text::new("done.from_the_future"));
+    assert_eq!(
+        say(Language::SPANISH, Some(&text), "The English sentence"),
+        "The English sentence"
+    );
+}
+
+#[test]
+fn a_client_that_knows_no_nested_texts_reads_the_reply_in_english() {
+    // A client of before nested texts expected only strings in `args`: the whole text reads as
+    // absent there, so it shows the English sentence. Here, as that client would read it.
+    #[derive(serde::Deserialize)]
+    struct OldText {
+        #[allow(dead_code)]
+        key: String,
+        #[allow(dead_code)]
+        args: BTreeMap<String, String>,
+    }
+    let nested = msg!(
+        "done.databases_web_not_started",
+        reason => msg!("done.databases_starting")
+    )
+    .to_text();
+    let json = serde_json::to_value(&nested).expect("json");
+    assert!(serde_json::from_value::<OldText>(json).is_err());
+}
+
+#[test]
 fn warnings_whose_texts_do_not_line_up_are_left_alone() {
     let mut info = done("x", &["one", "two"]);
     info.warnings_text = vec![Some(Text::new("done.databases_starting"))];

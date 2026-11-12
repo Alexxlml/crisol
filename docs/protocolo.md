@@ -57,7 +57,7 @@ Para distinguirlas al leer: una notificación tiene `method` y `params`; una res
 
 ## Textos traducibles
 
-El daemon **siempre escribe sus frases en inglés**, en los campos de siempre (`message`, `detail`, `fix`, `warnings`…), y no sabe en qué idioma lee el cliente. Junto a cada frase que se puede traducir (ADR-0030) manda, en un campo opcional `*_text`, un `Text`: `{"key": "doctor.services.running", "args": {"list": "nginx"}}`. `key` es la clave del diccionario del núcleo y `args` son los datos que rellenan los `{marcadores}` de la frase. `args` falta si no hay datos, y los datos son siempre texto ya formateado (una ruta, una versión, un número). Lo que no se traduce (comandos, rutas, versiones, nombres de servicios y de sitios) va como dato, nunca dentro de la frase.
+El daemon **siempre escribe sus frases en inglés**, en los campos de siempre (`message`, `detail`, `fix`, `warnings`…), y no sabe en qué idioma lee el cliente. Junto a cada frase que se puede traducir (ADR-0030) manda, en un campo opcional `*_text`, un `Text`: `{"key": "doctor.services.running", "args": {"list": "nginx"}}`. `key` es la clave del diccionario del núcleo y `args` son los datos que rellenan los `{marcadores}` de la frase. `args` falta si no hay datos. Cada dato es texto ya formateado (una ruta, una versión, un número) u otro `Text`, cuando la frase lleva dentro otra frase (el error en «no se pudo cambiar tu PATH: {error}»): `{"key": "done.databases_web_not_started", "args": {"reason": {"key": "home.check", "args": {…}}}}`. El cliente dice la frase de dentro en el mismo idioma. Lo que no se traduce (comandos, rutas, versiones, nombres de servicios y de sitios) va como dato, nunca dentro de la frase.
 
 | Dónde | Campos |
 |---|---|
@@ -68,7 +68,7 @@ El daemon **siempre escribe sus frases en inglés**, en los campos de siempre (`
 
 - `warnings_text` es una lista de `Text` o `null`, vacía o del mismo largo que `warnings`; si el largo no coincide, el cliente la ignora entera.
 - `name` de una comprobación sigue siendo el identificador inglés de la fila; `name_text` es su nombre para mostrar.
-- **Cómo lo lee el cliente:** dice el `Text` en su idioma. Si el diccionario de ese idioma no tiene la clave, la dice en inglés; si ningún diccionario la tiene (un daemon más nuevo que el cliente), muestra la frase inglesa del campo de siempre. Nunca muestra una clave. Un `*_text` que no entiende se lee como ausente.
+- **Cómo lo lee el cliente:** dice el `Text` en su idioma. Si el diccionario de ese idioma no tiene la clave, la dice en inglés; si ningún diccionario la tiene (un daemon más nuevo que el cliente), muestra la frase inglesa del campo de siempre. Si falta la clave de un `Text` de dentro, muestra la frase inglesa entera, no media. Nunca muestra una clave. Un `*_text` que no entiende se lee como ausente; un cliente anterior a los `Text` de dentro no lee un `Text` que los lleva y muestra el inglés.
 - **Plurales:** la clave `x` se escribe como `x_one` y `x_other`, y se elige con el dato `count` (`one` si vale `1`).
 - **Compatibilidad:** los campos son opcionales y el protocolo sigue en la versión 4. Un cliente que no los conoce los ignora y muestra el inglés; un daemon que no los manda da inglés.
 - **`--json` no los lleva.** La CLI los quita antes de imprimir (`strip_texts`), así que su salida es la de siempre: inglés y sin campos nuevos.

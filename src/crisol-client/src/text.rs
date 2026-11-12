@@ -3,24 +3,38 @@
 //! The daemon writes its sentences in English and adds, next to each, a [`Text`]: a key and its
 //! data. Here each sentence is replaced by the one of the user's language and the `*_text`
 //! fields are emptied (all but `name_text` of a check, which names the row), so whoever
-//! receives the reply (the CLI, the page) reads plain sentences and nothing else changes for it. A key this language lacks is said in English; one that no
-//! dictionary has (a daemon newer than this client) leaves the sentence the daemon sent.
+//! receives the reply (the CLI, the page) reads plain sentences and nothing else changes for it.
+//! A key this language lacks is said in English; one that no dictionary has (a daemon newer than
+//! this client) leaves the sentence the daemon sent, and so does a nested text with such a key.
 
 use crisol_core::i18n::{translate, Language};
-use crisol_protocol::{text_at, Check, DoneInfo, Reply, RpcError, StatusInfo, Text};
+use crisol_protocol::{text_at, Check, DoneInfo, Reply, RpcError, StatusInfo, Text, TextArg};
 
 /// `text` said in `language`, or `plain` when there is no text or no dictionary has its key.
 #[must_use]
 pub fn say(language: Language, text: Option<&Text>, plain: &str) -> String {
-    let Some(text) = text else {
-        return plain.to_owned();
-    };
+    text.and_then(|text| render(language, text))
+        .unwrap_or_else(|| plain.to_owned())
+}
+
+/// `text` said in `language`, with each nested text said too. `None` when a dictionary lacks
+/// any of the keys: then the whole English sentence is better than half of one.
+fn render(language: Language, text: &Text) -> Option<String> {
+    let values = text
+        .args
+        .values()
+        .map(|value| match value {
+            TextArg::Plain(plain) => Some(plain.clone()),
+            TextArg::Text(nested) => render(language, nested),
+        })
+        .collect::<Option<Vec<String>>>()?;
     let args: Vec<(&str, &str)> = text
         .args
-        .iter()
+        .keys()
+        .zip(&values)
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    translate(language, &text.key, &args).unwrap_or_else(|| plain.to_owned())
+    translate(language, &text.key, &args)
 }
 
 /// The sentences of `warnings`, each said in `language`.

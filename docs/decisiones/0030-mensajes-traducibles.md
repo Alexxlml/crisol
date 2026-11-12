@@ -3,6 +3,7 @@
 - **Estado:** aceptada (propietario, 2026-11-12). Propuesta por Opus; el propietario decidió tres puntos: `--json` idéntico, `CRISOL_LANG` para forzar el idioma y `--help` en inglés.
 - **Contexto de fase:** Fase 13, tarea F13.10, antes del primer release
 - **Enmienda:** ADR-0026 §4 (los mensajes del núcleo dejan de ir siempre en inglés)
+- **Enmendada** en la revisión de F13.10a (2026-11-12, decisión del propietario): un dato puede ser otra frase («Mensajes dentro de mensajes», al final de §1 y §4)
 - **Archivos:** `src/crisol-core/src/i18n.rs` (nuevo) e `i18n/` (nuevo), `src/crisol-core/build.rs` (nuevo), `src/crisol-protocol/src/text.rs` (nuevo), `src/crisol-client/src/language.rs`, `src/crisol-gui/build.rs`, `docs/protocolo.md`
 
 ## Contexto
@@ -20,6 +21,7 @@ La ventana ya traduce sus propios textos: `ui/i18n/{en,es}.json`, el `Dictionary
 - **Tipo `Message`** en `crisol_core::i18n`: `key: &'static str` más `args: Vec<(&'static str, String)>`. Se arma con una macro: `msg!("doctor.ca.stale", names = list)`. Los datos son siempre texto ya formateado: rutas con `display()`, versiones, nombres y números en decimal.
 - **El inglés no se escribe dos veces.** `Message` implementa `Display` con el diccionario inglés incrustado. Los errores pasan de `#[error("texto")]` a `#[error("{}", self.message())]` con un método `message(&self) -> Message` por enum (trait `Localized`). Así el texto en inglés de hoy pasa a `en.json` tal cual, y `to_string()` sigue dando lo mismo que antes.
 - **No se traducen:** comandos (`crisol untrust --stale`, `icacls …`), rutas, versiones, nombres de servicios y de sitios, direcciones ni códigos. Van como datos (`{command}`, `{path}`). Tampoco se traducen los logs de `tracing`, las líneas `CLAVE=valor` de `db credentials`, el contenido de los logs de los servicios ni `--help` (decisión del propietario: clap no trae traducción y duplicaría cada ayuda).
+- **Mensajes dentro de mensajes** (enmienda, 2026-11-12): un dato puede ser otro `Message`, que se dice en el mismo idioma. Sin esto, «no se pudo cambiar tu PATH: {error}» saldría con la frase en español y el error en inglés. Se escribe con `=>` en lugar de `=`: `msg!("setup.path_failed", error => error.message())`. También acepta un `RpcError` que llegó como respuesta: si trae `text`, se anida ese; si no, va su `message` como texto. `Message` lleva sus datos como `Arg` (`Plain` o `Message`).
 - **Plurales:** dos claves, `x_one` y `x_other`, elegidas por el dato `count` (`one` si `count` es `1`, `other` en los demás casos). Basta para el inglés y el español. Un idioma con más formas (el polaco, por ejemplo) necesitará reglas en el código: eso queda fuera de esta ADR.
 
 ### 2. Los diccionarios
@@ -45,6 +47,7 @@ Lo decide `crisol_core::i18n::choose(env, preferred) -> Language`, una función 
   - `Check`: `name_text`, `detail_text` y `fix_text`. `name` sigue siendo el identificador inglés de la fila.
   - `DoneInfo` y `StatusInfo`: `message_text` y `warnings_text`. `warnings_text` es `Vec<Option<Text>>`, vacío o del mismo largo que `warnings`; si el largo no coincide, el cliente lo ignora.
   - Los eventos no cambian en esta tarea.
+  - **Un dato de `Text` es texto u otro `Text`** (`TextArg`, enmienda de 2026-11-12). El cliente dice el de dentro en su idioma; si alguna clave de dentro no está en ningún diccionario, muestra la frase inglesa entera. Un cliente anterior a esto no puede leer un `Text` con otro dentro y, como lo lee con tolerancia, muestra el inglés: sigue siendo compatible.
 - **`crisol-client` convierte cada `Text` en frase** con el idioma del `Context`, antes de dárselo a la CLI o a la página. La página recibe frases ya traducidas y su diccionario no cambia. Si falta la clave en ese idioma, se usa el inglés del diccionario; si falta también ahí (un daemon más nuevo), se usa el texto inglés que vino en el campo de siempre. Nunca se muestra una clave cruda.
 - **Lo que corre en el proceso del cliente** (`setup`, `uninstall --all`, las acciones locales de Diagnóstico) usa `Message` directamente, sin pasar por el protocolo.
 

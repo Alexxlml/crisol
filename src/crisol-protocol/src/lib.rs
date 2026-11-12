@@ -32,7 +32,7 @@ pub use reply::{
     InstalledInfo, LocalOp, LogChunk, RemovedInfo, Reply, ServiceInfo, SiteInfo, StatusInfo,
     UsedInfo, VersionInfo, VersionList,
 };
-pub use text::{text_at, Text};
+pub use text::{text_at, Text, TextArg};
 
 use serde::{Deserialize, Serialize};
 
