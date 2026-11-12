@@ -1,6 +1,6 @@
 # ADR-0030: Mensajes del núcleo traducibles
 
-- **Estado:** propuesta (Opus, 2026-11-12). El propietario ya decidió tres puntos: `--json` idéntico, `CRISOL_LANG` para forzar el idioma y `--help` en inglés.
+- **Estado:** aceptada (propietario, 2026-11-12). Propuesta por Opus; el propietario decidió tres puntos: `--json` idéntico, `CRISOL_LANG` para forzar el idioma y `--help` en inglés.
 - **Contexto de fase:** Fase 13, tarea F13.10, antes del primer release
 - **Enmienda:** ADR-0026 §4 (los mensajes del núcleo dejan de ir siempre en inglés)
 - **Archivos:** `src/crisol-core/src/i18n.rs` (nuevo) e `i18n/` (nuevo), `src/crisol-core/build.rs` (nuevo), `src/crisol-protocol/src/text.rs` (nuevo), `src/crisol-client/src/language.rs`, `src/crisol-gui/build.rs`, `docs/protocolo.md`
