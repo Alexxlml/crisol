@@ -246,14 +246,14 @@ Reglas de toda la fase:
   - **Logs:** un visor por servicio, con las últimas líneas y el seguimiento con `from`, como `logs -f`, o el evento `log` si ya hay suscripción. Debe aguantar logs grandes sin cargar el archivo entero.
   - **Credenciales:** las líneas `.env` de cada base, con un botón para copiar y `reset_password` con confirmación (y el aviso de Garnet y Meilisearch si corren).
   - *Aceptación:* verificación manual; la lógica de seguimiento está en `crisol-client` y tiene pruebas.
-- **F13.7** `doctor` con acciones. **Implementada el 2026-11-07** (ADR-0021 §5.8; verificada en Windows Sandbox el 2026-11-08; falta la revisión de la Fase 13). Primero se diseña: una ampliación de la ADR-0021 con el campo opcional `action` en `Check`, que es compatible (se añade un campo, sin cambiar la versión del protocolo). Las acciones tienen este alcance:
+- **F13.7** `doctor` con acciones. **Implementada el 2026-11-07** (ADR-0021 §5.8; verificada en Windows Sandbox el 2026-11-08; revisada con la Fase 13 el 2026-11-11). Primero se diseña: una ampliación de la ADR-0021 con el campo opcional `action` en `Check`, que es compatible (se añade un campo, sin cambiar la versión del protocolo). Las acciones tienen este alcance:
   - una llamada del protocolo;
   - una operación local del núcleo (`trust`, `setup`, `untrust --stale`, `autostart off`);
   - un enlace.
 
   Los comandos de administrador ajenos a Crisol (Defender) se muestran para copiar y **no se ejecutan** (ADR-0026 §6). El texto que ve el CLI no cambia. **El diseño lo aprueba el propietario antes de implementarlo.** **Aprobado el 2026-11-06: ADR-0021 §5.** Además de los tres alcances, hay `ShowLog` (ir a Registros), `Copy` (comandos para copiar) y `Reveal` (abrir en el Explorador una ruta de la home). `system install` es una operación local con UAC. La reinstalación son dos llamadas, y la GUI dibuja también los avisos de `status`.
   - *Aceptación:* `docs/protocolo.md` y su prueba lo documentan; cada `Check` con acción tiene una prueba que la comprueba; en la GUI, el botón muestra lo que va a hacer antes de hacerlo.
-- **F13.8** Primer arranque y desinstalación. **Implementada el 2026-11-07** (ADR-0026 «Primer arranque y desinstalación»; verificada en Windows Sandbox el 2026-11-08; falta la revisión de la Fase 13).
+- **F13.8** Primer arranque y desinstalación. **Implementada el 2026-11-07** (ADR-0026 «Primer arranque y desinstalación»; verificada en Windows Sandbox el 2026-11-08; revisada con la Fase 13 el 2026-11-11).
   - **El asistente:** con el `Plan` de `onboarding` muestra los pasos, lo hecho, los problemas y las notas, y pregunta cada paso opcional. Se abre solo cuando el plan no está vacío.
   - **La pantalla de `uninstall --all`:** con el `Plan` de `teardown`, muestra todo lo que el CLI lista y pide la confirmación, con la pregunta de los respaldos cuando se borra la home. Cierra la GUI al terminar.
   - Los dos usan `run_if_agreed`, en el proceso de la GUI (no en el daemon), para que los diálogos de Windows y el UAC salgan delante.
