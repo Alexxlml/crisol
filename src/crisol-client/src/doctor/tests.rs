@@ -56,6 +56,28 @@ fn an_install_says_what_it_installs_and_asks_for_no_second_click() {
 }
 
 #[test]
+fn an_install_from_an_archive_of_ones_own_is_never_a_button() {
+    let from = |from: Option<&str>, sha256: Option<&str>| CheckAction::Calls {
+        calls: vec![Call::Install {
+            service: "php".to_owned(),
+            version: Some("7.4.33".to_owned()),
+            from: from.map(str::to_owned),
+            sha256: sha256.map(str::to_owned),
+        }],
+    };
+    let (_tmp, paths) = home();
+    for action in [
+        from(Some(r"C:\Downloads\php.zip"), Some(&"a".repeat(64))),
+        from(Some(r"C:\Downloads\php.zip"), None),
+        from(None, Some(&"a".repeat(64))),
+    ] {
+        assert!(doctor_button(&paths, &action).is_none(), "{action:?}");
+    }
+    // Not offered, so not carried out either, whatever the page sends.
+    assert!(doctor_button(&paths, &from(None, None)).is_some());
+}
+
+#[test]
 fn removing_a_version_asks_for_a_second_click_and_says_it_reinstalls() {
     let reinstall = button(&CheckAction::reinstall("php", "8.4.28")).unwrap();
     assert_eq!(reinstall.label.key, "doctor.act.reinstall");

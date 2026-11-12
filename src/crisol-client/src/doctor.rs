@@ -154,12 +154,19 @@ fn calls_words(calls: &[Call]) -> Words {
     }
 }
 
+/// An installation from an archive the person vouches for, not from the catalog.
+fn own_archive(call: &Call) -> bool {
+    matches!(call, Call::Install { from, sha256, .. } if from.is_some() || sha256.is_some())
+}
+
 /// The button an action becomes, or `None` when it must not be offered: a link that is not
 /// `https`, a path outside the home, an action with nothing in it.
 #[must_use]
 pub fn doctor_button(paths: &CrisolPaths, action: &CheckAction) -> Option<DoctorButton> {
     let (label, kind, confirm, text) = match action {
-        CheckAction::Calls { calls } if !calls.is_empty() => {
+        // An archive of one's own (`install --from`) stays a command of the terminal (F13.5):
+        // the core never offers it here, so a button that asks for one is not offered either.
+        CheckAction::Calls { calls } if !calls.is_empty() && !calls.iter().any(own_archive) => {
             let removes = calls.iter().any(|c| matches!(c, Call::Uninstall { .. }));
             (calls_words(calls), ButtonKind::Run, removes, None)
         }
