@@ -273,9 +273,14 @@ Reglas de toda la fase:
   - El núcleo devuelve clave más datos en lugar de frases; los diccionarios quedan en un lugar común para la CLI y la GUI; el protocolo añade la clave como campo opcional junto al texto (compatible).
   - Por partes: primero lo que se ve en la ventana (pasos de `setup` y `uninstall --all`, detalle y arreglo de Diagnóstico, errores de las acciones), después el resto de la CLI.
   - *Aceptación:* una prueba falla si a un idioma le falta una clave o le sobra un dato; la ventana en español ya no muestra frases del núcleo en inglés; `crisol doctor` sale en español en un Windows en español y en inglés en uno en otro idioma sin traducción; `--json` no cambia.
+  - **Diseño: ADR-0030** (2026-11-12). Decidido por el propietario: `--json` idéntico, sin campos nuevos; `CRISOL_LANG` fuerza el idioma; `--help` sigue en inglés. Se hace en tres partes, una a la vez y en este orden, cada una con su revisión:
+    - **F13.10a** La base: `crisol_core::i18n` (`Message`, `msg!`, `Localized`, `Language`, `choose`), diccionarios en `crisol-core/i18n/` con la lista de idiomas generada por `build.rs` (también en `crisol-gui`), `Text` y los campos `*_text` en el protocolo con `strip_texts()` para `--json`, la traducción en `crisol-client` y `docs/protocolo.md`. Pruebas 1, 2, 4, 5, 6 y 7 de la ADR.
+    - **F13.10b** Lo que se ve en la ventana: pasos y resultados de `setup` y `uninstall --all`, todas las comprobaciones de `doctor` y los errores de las órdenes de la ventana (lista en la ADR-0030 §6). Prueba 3.
+    - **F13.10c** El resto de la CLI: los demás errores, `DoneInfo` y `warnings` del daemon, las frases de `crisol-cli` y los encabezados de `render.rs`.
+  - Las pruebas a mano (prueba 8) se hacen antes del empaquetado, con las demás pendientes.
 
 ---
 
 ## Fuera de alcance de este plan
 
-Soporte Linux/macOS (solo se garantiza que el diseño lo permita), túneles/compartir sitios, bases de datos remotas, actualizaciones automáticas de Crisol y la traducción de los mensajes del núcleo. Se planifican después de la Fase 13.
+Soporte Linux/macOS (solo se garantiza que el diseño lo permita), túneles/compartir sitios, bases de datos remotas, actualizaciones automáticas de Crisol y la traducción de `--help` de la CLI. Se planifican después de la Fase 13.
