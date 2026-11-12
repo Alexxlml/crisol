@@ -63,6 +63,9 @@ fn check(name: &str, status: CheckStatus, detail: impl Into<String>, fix: Option
         status,
         detail: detail.into(),
         fix: fix.map(str::to_owned),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
 }
 
@@ -80,6 +83,9 @@ fn check_do(
         name: name.to_owned(),
         status,
         detail: detail.into(),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
 }
 

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::text::{lenient_boxed_text, Text};
+
 /// What went wrong, as a number a client can act on (JSON-RPC style: the negative ones are the
 /// standard codes, the positive ones are Crisol's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +92,22 @@ pub struct RpcError {
     /// What to do about it, when there is an exact thing to do (the `icacls` command, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// `message` as a key and data, for a client to say in its language (ADR-0030). Boxed so an
+    /// `Err(RpcError)` stays small. Absent
+    /// from `--json` and from a daemon older than the field.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_boxed_text"
+    )]
+    pub text: Option<Box<Text>>,
+    /// `fix` as a key and data.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_boxed_text"
+    )]
+    pub fix_text: Option<Box<Text>>,
 }
 
 impl RpcError {
@@ -100,7 +118,29 @@ impl RpcError {
             code,
             message: message.into(),
             fix: None,
+            text: None,
+            fix_text: None,
         }
+    }
+
+    /// With the sentence also as a key and data (the `message` stays in English).
+    #[must_use]
+    pub fn with_text(mut self, text: Text) -> Self {
+        self.text = Some(Box::new(text));
+        self
+    }
+
+    /// With the fix also as a key and data.
+    #[must_use]
+    pub fn with_fix_text(mut self, text: Text) -> Self {
+        self.fix_text = Some(Box::new(text));
+        self
+    }
+
+    /// Takes out the `*_text` fields, which `--json` does not show (ADR-0030 §5).
+    pub fn strip_texts(&mut self) {
+        self.text = None;
+        self.fix_text = None;
     }
 
     /// With the exact thing to do about it.

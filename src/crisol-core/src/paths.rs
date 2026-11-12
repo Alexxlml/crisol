@@ -11,6 +11,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
+
 /// Environment variable that overrides the Crisol home directory.
 pub const HOME_ENV_VAR: &str = "CRISOL_HOME";
 
@@ -73,13 +76,8 @@ pub enum PathsError {
 
 /// The sentence for a home that is another person's. The default home (`C:\Crisol`) is the
 /// same for every account, so on a computer used by two people the second finds the first's.
-fn other_account_message(path: &Path) -> String {
-    format!(
-        "`{}` belongs to another account of this computer. Each person who uses Crisol needs \
-         their own home: set the CRISOL_HOME environment variable to a folder of yours (in cmd: \
-         setx CRISOL_HOME \"%USERPROFILE%\\Crisol\") and open a new terminal",
-        path.display()
-    )
+fn other_account_message(path: &Path) -> Message {
+    msg!("home.other_account", path = path.display())
 }
 
 /// Creates folders that only the current user (and the system) can write to, and tells
@@ -122,11 +120,6 @@ pub trait PrivateDirs: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum HomeError {
     /// The home, or a folder of it that Crisol runs or trusts, can be written by other accounts.
-    #[error(
-        "`{}` can be modified by other accounts of this computer, and Crisol runs and trusts \
-         what is inside it, so it will not go on. Remove their write access: {fix}",
-        path.display()
-    )]
     Exposed {
         /// The folder that is open.
         path: PathBuf,
@@ -134,19 +127,37 @@ pub enum HomeError {
         fix: String,
     },
     /// The home, or a folder in it, belongs to another account of this computer.
-    #[error("{}", other_account_message(path))]
     OtherAccount {
         /// The folder that is not this user's.
         path: PathBuf,
     },
     /// The permissions of a folder could not be read.
-    #[error("cannot check who can write to `{}`: {source}", path.display())]
     Check {
         /// The folder.
         path: PathBuf,
         /// What failed.
         source: io::Error,
     },
+}
+
+impl Localized for HomeError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Exposed { path, fix } => {
+                msg!("home.exposed_fix", path = path.display(), fix = fix)
+            }
+            Self::OtherAccount { path } => other_account_message(path),
+            Self::Check { path, source } => {
+                msg!("home.check", path = path.display(), error = source)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for HomeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message().fmt(f)
+    }
 }
 
 /// The common check before anything that runs or establishes trust (ADR-0008, corrected

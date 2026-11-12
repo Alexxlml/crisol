@@ -11,6 +11,8 @@ fn done_prints_the_sentence_and_each_warning_on_its_own_line() {
         message: "Everything is stopped".to_owned(),
         changed: true,
         warnings: vec!["names stop resolving".to_owned(), "another".to_owned()],
+        message_text: None,
+        warnings_text: Vec::new(),
     }));
     assert_eq!(
         text,
@@ -37,6 +39,7 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
         seq: None,
         blocked: None,
         reload_error: None,
+        warnings_text: Vec::new(),
     }));
     assert_eq!(
         text,
@@ -48,6 +51,7 @@ fn status_is_a_table_with_the_reason_of_a_failure() {
         seq: None,
         blocked: None,
         reload_error: None,
+        warnings_text: Vec::new(),
     }));
     assert!(empty.contains("crisol install nginx"), "{empty}");
 }
@@ -176,6 +180,9 @@ fn doctor_marks_each_check_and_puts_the_fix_under_it() {
                 status: CheckStatus::Ok,
                 detail: "fine".to_owned(),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Check {
                 action: None,
@@ -183,6 +190,9 @@ fn doctor_marks_each_check_and_puts_the_fix_under_it() {
                 status: CheckStatus::Problem,
                 detail: "open".to_owned(),
                 fix: Some("icacls x".to_owned()),
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Check {
                 action: None,
@@ -190,6 +200,9 @@ fn doctor_marks_each_check_and_puts_the_fix_under_it() {
                 status: CheckStatus::Warning,
                 detail: "missing".to_owned(),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
         ],
     });

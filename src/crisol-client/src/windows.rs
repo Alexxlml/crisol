@@ -62,7 +62,14 @@ impl Context {
             let client = connect_to_daemon(&pipe)?;
             Ok(Box::new(Remote(client)) as Box<dyn Link>)
         });
+        let language = crisol_core::i18n::choose(
+            std::env::var(crisol_core::i18n::LANGUAGE_VARIABLE)
+                .ok()
+                .as_deref(),
+            crisol_platform::ui_languages(),
+        );
         Ok(Self {
+            language,
             client: client.to_owned(),
             version: version.to_owned(),
             paths,

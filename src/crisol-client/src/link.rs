@@ -74,6 +74,8 @@ impl Link for Local {
                 message: "Nothing was running (the daemon is not running)".to_owned(),
                 changed: false,
                 warnings: Vec::new(),
+                message_text: None,
+                warnings_text: Vec::new(),
             }));
         }
         let local_ok =

@@ -144,6 +144,8 @@ where
                     message: "Subscribed to events".to_owned(),
                     changed: forwarder.is_some(),
                     warnings: Vec::new(),
+                    message_text: None,
+                    warnings_text: Vec::new(),
                 });
                 out.respond(&Response::ok(request.id, done));
             }

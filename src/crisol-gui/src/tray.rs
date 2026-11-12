@@ -208,10 +208,10 @@ mod tests {
 
     #[test]
     fn the_tooltip_names_the_state_in_the_language_of_the_user() {
-        let es = Dictionary::of(crisol_client::Language::Spanish);
+        let es = Dictionary::of(crisol_client::Language::SPANISH);
         assert_eq!(tooltip(&es, Overall::NoDaemon), "Crisol: Sin daemon");
         assert_eq!(tooltip(&es, Overall::Failed), "Crisol: Algo falló");
-        let en = Dictionary::of(crisol_client::Language::English);
+        let en = Dictionary::of(crisol_client::Language::ENGLISH);
         assert_eq!(tooltip(&en, Overall::Running), "Crisol: Running");
     }
 }

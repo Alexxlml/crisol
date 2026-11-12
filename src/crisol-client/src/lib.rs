@@ -18,7 +18,6 @@ mod context;
 mod credentials;
 mod doctor;
 mod firstrun;
-mod language;
 mod link;
 mod live;
 mod logs;
@@ -26,6 +25,7 @@ mod settings;
 mod sites;
 mod summary;
 mod terminal;
+mod text;
 mod versions;
 #[cfg(windows)]
 mod windows;
@@ -37,6 +37,7 @@ pub use credentials::{
 };
 /// The argument that closes the window that is running (`crisol-gui.exe --quit`).
 pub use crisol_core::appwindow::QUIT_ARG;
+pub use crisol_core::i18n::Language;
 /// The `id` of every step the setup and uninstall screens can name (the page translates each).
 pub use crisol_core::onboarding::STEP_IDS as SETUP_STEP_IDS;
 pub use crisol_core::teardown::STEP_IDS as UNINSTALL_STEP_IDS;
@@ -49,7 +50,6 @@ pub use firstrun::{
     setup_view, uninstall_view, with_setup_system, with_teardown_system, SetupDone, SetupProblem,
     SetupStep, SetupView, UninstallDone, UninstallView,
 };
-pub use language::Language;
 pub use link::{Connector, Link, Local, Remote};
 pub use live::{Connection, LiveConfig, LiveState, LiveView};
 pub use logs::{
@@ -69,6 +69,7 @@ pub use terminal::{
     projects_folder, start_folder, terminal_options, Opened, Place, TerminalOption,
     TerminalOptions,
 };
+pub use text::{localize_error, localize_reply, say};
 pub use versions::{
     fetch_versions, run_version_act, tool_of, version_actions, versions_view, InUse, Progress,
     ProgressGate, ServiceVersions, VersionAct, VersionAction, VersionRow, VersionsView,

@@ -55,9 +55,27 @@ Para distinguirlas al leer: una notificación tiene `method` y `params`; una res
 - **Añadir un evento** también es compatible desde la versión 4. Los clientes **deben ignorar** una notificación cuyo `type` no conocen, pero cuentan su `seq` (`crisol_protocol::Event::Unknown`). Un cliente de la versión 3 trataba un evento desconocido como un error de protocolo y cortaba la conexión.
 - **Cualquier otro cambio sube la versión:** quitar o renombrar algo, cambiar un tipo, o añadir un método, un tipo de respuesta o un código de error. Un cliente que encuentra un `type` de respuesta desconocido no puede entenderla.
 
+## Textos traducibles
+
+El daemon **siempre escribe sus frases en inglés**, en los campos de siempre (`message`, `detail`, `fix`, `warnings`…), y no sabe en qué idioma lee el cliente. Junto a cada frase que se puede traducir (ADR-0030) manda, en un campo opcional `*_text`, un `Text`: `{"key": "doctor.services.running", "args": {"list": "nginx"}}`. `key` es la clave del diccionario del núcleo y `args` son los datos que rellenan los `{marcadores}` de la frase. `args` falta si no hay datos, y los datos son siempre texto ya formateado (una ruta, una versión, un número). Lo que no se traduce (comandos, rutas, versiones, nombres de servicios y de sitios) va como dato, nunca dentro de la frase.
+
+| Dónde | Campos |
+|---|---|
+| `error` | `text` (de `message`) y `fix_text` (de `fix`) |
+| `done` | `message_text` y `warnings_text` |
+| `status` | `warnings_text` |
+| cada comprobación de `doctor` | `name_text`, `detail_text` y `fix_text` |
+
+- `warnings_text` es una lista de `Text` o `null`, vacía o del mismo largo que `warnings`; si el largo no coincide, el cliente la ignora entera.
+- `name` de una comprobación sigue siendo el identificador inglés de la fila; `name_text` es su nombre para mostrar.
+- **Cómo lo lee el cliente:** dice el `Text` en su idioma. Si el diccionario de ese idioma no tiene la clave, la dice en inglés; si ningún diccionario la tiene (un daemon más nuevo que el cliente), muestra la frase inglesa del campo de siempre. Nunca muestra una clave. Un `*_text` que no entiende se lee como ausente.
+- **Plurales:** la clave `x` se escribe como `x_one` y `x_other`, y se elige con el dato `count` (`one` si vale `1`).
+- **Compatibilidad:** los campos son opcionales y el protocolo sigue en la versión 4. Un cliente que no los conoce los ignora y muestra el inglés; un daemon que no los manda da inglés.
+- **`--json` no los lleva.** La CLI los quita antes de imprimir (`strip_texts`), así que su salida es la de siempre: inglés y sin campos nuevos.
+
 ## Errores
 
-`error` es `{"code": <número>, "message": <texto>, "fix"?: <texto>}`. `message` está listo para mostrarse tal cual. `fix`, si viene, es lo exacto que hay que hacer: un comando, por ejemplo el `icacls` que cierra la home.
+`error` es `{"code": <número>, "message": <texto>, "fix"?: <texto>, "text"?: <Text>, "fix_text"?: <Text>}`. `message` está listo para mostrarse tal cual. `fix`, si viene, es lo exacto que hay que hacer: un comando, por ejemplo el `icacls` que cierra la home.
 
 | Código | Nombre | Cuándo |
 |---|---|---|
@@ -224,6 +242,7 @@ Cada método indica sus parámetros (`?` = opcional), la respuesta que da y si *
 ### `status`
 
 - `services`: lista, en orden estable, de `{name, state, detail?}`. `state` es `stopped`, `starting`, `running`, `stopping` o `failed`; `detail` dice por qué falló.
+- `warnings_text?`: las frases de `warnings` con clave y datos (ver «Textos traducibles»).
 - `warnings`: lo que el daemon tiene que decir de la pila web en marcha y que sigue vigente. Son los avisos de su plan (sitios, la versión por defecto que ya no está instalada), los de los certificados y los de `crisol.toml`. Es la misma lista que da el evento `warnings`, y queda vacía con la pila parada. En la respuesta final de `start` y `restart`, son en cambio los avisos de ese arranque.
 - `seq?`: el número del último evento que la foto ya refleja (ver «Eventos»). Lo pone el daemon también en la respuesta final de `start` y `restart`; falta cuando contesta el CLI sin daemon.
 - `blocked?`: el último `blocked` que sigue vigente (ver «Eventos»). Falta si no hay nada bloqueado.
@@ -233,7 +252,7 @@ Los dos siguen la misma regla que un cliente aplica a los eventos (`crisol_core:
 
 ### `done`
 
-`message` (listo para mostrar), `changed` (`false` si la orden repetida no cambió nada) y `warnings`.
+`message` (listo para mostrar), `changed` (`false` si la orden repetida no cambió nada) y `warnings`. `message_text?` y `warnings_text?` traen las mismas frases con clave y datos (ver «Textos traducibles»).
 
 ### `installed`
 
@@ -270,7 +289,7 @@ Los dos siguen la misma regla que un cliente aplica a los eventos (`crisol_core:
 
 ### `doctor`
 
-`checks`: lista de `{name, status, detail, fix?}`, en orden. `status` es `ok`, `warning` o `problem`; `fix` es lo exacto que hay que hacer.
+`checks`: lista de `{name, status, detail, fix?}`, en orden, cada una con `name_text?`, `detail_text?` y `fix_text?` (ver «Textos traducibles»). `status` es `ok`, `warning` o `problem`; `fix` es lo exacto que hay que hacer.
 
 `action?` (ADR-0021 §5) es lo que un botón puede hacer por `fix`. El CLI no la muestra; `--json` la trae. Es un objeto con `kind`:
 

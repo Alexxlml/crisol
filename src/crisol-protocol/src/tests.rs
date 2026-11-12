@@ -5,6 +5,7 @@ use super::*;
 
 mod actions;
 mod document;
+mod texts;
 
 fn round_trip<T>(value: &T) -> T
 where
@@ -220,6 +221,8 @@ fn a_response_carries_a_result_or_an_error_never_both() {
             message: "nginx started".to_owned(),
             changed: true,
             warnings: vec![],
+            message_text: None,
+            warnings_text: Vec::new(),
         }),
     );
     let json = to_line(&ok).unwrap();
@@ -293,6 +296,7 @@ fn replies_ignore_fields_they_do_not_know_so_the_daemon_can_add_some() {
             seq: None,
             blocked: None,
             reload_error: None,
+            warnings_text: Vec::new(),
         })
     );
 }
@@ -333,6 +337,7 @@ fn an_event_and_a_status_carry_their_number_and_older_messages_still_read() {
         seq: Some(7),
         blocked: Some("close the home".to_owned()),
         reload_error: Some("nginx -t said no".to_owned()),
+        warnings_text: Vec::new(),
     });
     let line = serde_json::to_string(&held).unwrap();
     assert_eq!(
@@ -347,6 +352,7 @@ fn an_event_and_a_status_carry_their_number_and_older_messages_still_read() {
         seq: Some(41),
         blocked: None,
         reload_error: None,
+        warnings_text: Vec::new(),
     });
     assert_eq!(
         serde_json::to_string(&status).unwrap(),
@@ -491,6 +497,8 @@ mod client {
             message: message.to_owned(),
             changed: true,
             warnings: vec![],
+            message_text: None,
+            warnings_text: Vec::new(),
         })
     }
 

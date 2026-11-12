@@ -12,6 +12,7 @@ use crisol_protocol::{
 
 use crate::context::Context;
 use crate::link::{Link, Local};
+use crate::text::{localize_error, localize_reply};
 
 /// A connection that said hello.
 #[allow(missing_debug_implementations)] // holds a `dyn Link`
@@ -82,7 +83,17 @@ pub fn call_with_events(
     on_event: &mut dyn FnMut(Event),
 ) -> Result<Reply, RpcError> {
     let mut opened = open(context, call, notice)?;
-    opened.link.call(call, on_event).map_err(client_error)
+    match opened.link.call(call, on_event) {
+        Ok(mut reply) => {
+            localize_reply(&mut reply, context.language);
+            Ok(reply)
+        }
+        Err(error) => {
+            let mut error = client_error(error);
+            localize_error(&mut error, context.language);
+            Err(error)
+        }
+    }
 }
 
 /// This process answering for a daemon that is not there.
@@ -167,7 +178,7 @@ pub fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
         detail: format!(
             "the daemon that is running is {daemon} and this program is {mine}: it was started before an update"
         ),
-        fix: Some("crisol shutdown, then any command starts the new one".to_owned()),
+        fix: Some("crisol shutdown, then any command starts the new one".to_owned()), name_text: None, detail_text: None, fix_text: None,
     })
 }
 

@@ -1,0 +1,20 @@
+{
+  "i18n.sample.running": "running: {services}",
+  "i18n.sample.sites_one": "{count} site",
+  "i18n.sample.sites_other": "{count} sites",
+
+  "home.exposed": "`{path}` can be modified by other accounts of this computer, and Crisol runs and trusts what is inside it, so it will not go on",
+  "home.exposed_fix": "`{path}` can be modified by other accounts of this computer, and Crisol runs and trusts what is inside it, so it will not go on. Remove their write access: {fix}",
+  "home.other_account": "`{path}` belongs to another account of this computer. Each person who uses Crisol needs their own home: set the CRISOL_HOME environment variable to a folder of yours (in cmd: setx CRISOL_HOME \"%USERPROFILE%\\Crisol\") and open a new terminal",
+  "home.check": "cannot check who can write to `{path}`: {error}",
+
+  "doctor.name.services": "services",
+  "doctor.services.failed": "failed: {list}",
+  "doctor.services.nothing_running": "nothing is running; `crisol start` starts the services",
+  "doctor.services.running": "running: {list}",
+
+  "done.databases_starting": "Starting the databases",
+  "done.databases_web_not_started": "the web stack was not started: {reason}",
+  "done.service_already_running": "{service} is already running",
+  "done.service_starting": "Starting {service}"
+}

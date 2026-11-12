@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime};
 
 use crisol_client::connect::{self, client_error};
 use crisol_client::Link;
+use crisol_client::{localize_error, localize_reply};
 use crisol_core::autostart::{AutostartChange, AutostartState};
 use crisol_core::config::Config;
 use crisol_core::onboarding;
@@ -1004,14 +1005,18 @@ impl Session<'_> {
     }
 
     fn show(&mut self, reply: &Reply) -> u8 {
+        let mut shown = reply.clone();
         if self.json {
+            // `--json` is what it always was: English, and without the keys of the texts.
+            shown.strip_texts();
             let _ = writeln!(
                 self.out,
                 "{}",
-                serde_json::to_string(reply).unwrap_or_default()
+                serde_json::to_string(&shown).unwrap_or_default()
             );
         } else {
-            let _ = write!(self.out, "{}", render::reply_styled(reply, &self.style));
+            localize_reply(&mut shown, self.context.client.language);
+            let _ = write!(self.out, "{}", render::reply_styled(&shown, &self.style));
         }
         match reply {
             Reply::Doctor { checks } if checks.iter().any(|c| c.status == CheckStatus::Problem) => {
@@ -1022,14 +1027,21 @@ impl Session<'_> {
     }
 
     fn fail(&mut self, error: &RpcError) -> u8 {
+        let mut shown = error.clone();
         if self.json {
+            shown.strip_texts();
             let _ = writeln!(
                 self.out,
                 "{}",
-                serde_json::to_string(error).unwrap_or_default()
+                serde_json::to_string(&shown).unwrap_or_default()
             );
         } else {
-            let _ = write!(self.err, "{}", render::error_styled(error, &self.err_style));
+            localize_error(&mut shown, self.context.client.language);
+            let _ = write!(
+                self.err,
+                "{}",
+                render::error_styled(&shown, &self.err_style)
+            );
         }
         EXIT_FAILED
     }

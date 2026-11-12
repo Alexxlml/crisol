@@ -31,6 +31,9 @@ fn check(name: &str, status: CheckStatus, detail: &str, fix: Option<&str>) -> Ch
         status,
         detail: detail.to_owned(),
         fix: fix.map(str::to_owned),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
 }
 
@@ -149,6 +152,7 @@ fn status_sites_and_versions_come_in_tables() {
         seq: None,
         blocked: None,
         reload_error: None,
+        warnings_text: Vec::new(),
     });
     let text = strip_ansi(&reply_styled(&status, &Style::formatted(80)));
     assert!(text.contains("│ Service │ State  │ Detail"), "{text}");
@@ -204,6 +208,8 @@ fn messages_get_a_tick_warnings_a_bang_and_errors_a_cross() {
         message: "Everything is stopped".to_owned(),
         changed: true,
         warnings: vec!["names stop resolving".to_owned()],
+        message_text: None,
+        warnings_text: Vec::new(),
     });
     let text = strip_ansi(&reply_styled(&done, &Style::formatted(80)));
     assert_eq!(text, "✓ Everything is stopped\n! names stop resolving\n");

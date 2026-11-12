@@ -112,11 +112,14 @@ fn every_reply() -> Vec<Reply> {
             seq: None,
             blocked: None,
             reload_error: None,
+            warnings_text: Vec::new(),
         }),
         Reply::Done(DoneInfo {
             message: text(),
             changed: false,
             warnings: vec![],
+            message_text: None,
+            warnings_text: Vec::new(),
         }),
         Reply::Installed(InstalledInfo {
             service: text(),

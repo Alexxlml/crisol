@@ -147,6 +147,9 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
         name: name.to_owned(),
         status,
         detail,
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     };
     let off = || {
         Some(CheckAction::Local {

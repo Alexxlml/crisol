@@ -7,6 +7,7 @@ use std::time::Duration;
 use crisol_core::appwindow::AppWindow;
 use crisol_core::autostart::Autostart;
 use crisol_core::engine::Deps;
+use crisol_core::i18n::Language;
 use crisol_core::paths::{CrisolPaths, PrivateDirs};
 use crisol_core::setup::SystemSetup;
 use crisol_core::startmenu::StartMenu;
@@ -22,6 +23,9 @@ pub type RemovePrograms = Box<dyn Fn(&[PathBuf]) -> std::io::Result<()>>;
 /// The parts of Windows and of the install that the command line and the GUI share. The tests
 /// of each build it with fakes; [`Context::windows`] builds the real one.
 pub struct Context {
+    /// The language the messages of the core are said in (ADR-0030 §3): `CRISOL_LANG`, else
+    /// the language of Windows, else English. Whoever shows a reply says it in this language.
+    pub language: Language,
     /// Who is talking, as the daemon's `hello` hears it (`crisol`, `crisol-gui`).
     pub client: String,
     /// The version of this program, which `doctor` compares with the daemon's.

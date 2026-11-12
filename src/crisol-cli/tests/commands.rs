@@ -211,6 +211,8 @@ struct Env {
     refused_steps: Arc<Mutex<Vec<String>>>,
     /// Whether winget installed the programs.
     winget: bool,
+    /// The language of the user (English unless a test changes it).
+    language: std::cell::Cell<crisol_client::Language>,
     driver_stop: Arc<AtomicBool>,
     driver: Option<JoinHandle<()>>,
 }
@@ -280,6 +282,9 @@ impl Env {
                 status: CheckStatus::Warning,
                 detail: "from the system".to_owned(),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             }])),
             roots: Arc::new(NoRoots),
             config_probe: Arc::new(AlwaysEffective),
@@ -317,6 +322,7 @@ impl Env {
             asked_steps: Arc::default(),
             refused_steps: Arc::default(),
             winget: false,
+            language: std::cell::Cell::new(crisol_client::Language::ENGLISH),
             driver_stop,
             driver,
         }
@@ -329,6 +335,7 @@ impl Env {
         let (paths, daemon_paths) = (self.paths.clone(), self.paths.clone());
         let (pipe_for_daemon, daemon_slot) = (self.pipe.clone(), Arc::clone(&self.daemon));
         let client = crisol_client::Context {
+            language: self.language.get(),
             client: "crisol".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             paths,
@@ -836,6 +843,63 @@ fn an_open_home_blocks_start_and_the_error_carries_the_fix() {
     );
     env.dirs.close(env.paths.home());
     env.ok(&["start"]);
+    env.finish();
+}
+
+#[test]
+fn an_error_is_said_in_the_language_of_the_user_and_json_stays_in_english() {
+    let mut env = Env::new(&[("nginx", "1.28.3")]);
+    env.language.set(crisol_client::Language::SPANISH);
+    env.ok(&["install", "nginx"]);
+    env.dirs.expose(env.paths.home());
+
+    // The person reads Spanish, and the command is left as it is.
+    let (code, out, err) = env.run(&["start"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("no continuará"), "{err}");
+    assert!(err.contains("  fix: icacls "), "{err}");
+
+    // `--json` is what it was before there were texts: English, and no field of a text.
+    let (code, out, err) = env.run(&["--json", "start"]);
+    assert_eq!(code, 1, "{out}{err}");
+    let error: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let mut fields: Vec<_> = error.as_object().unwrap().keys().cloned().collect();
+    fields.sort();
+    assert_eq!(fields, ["code", "fix", "message"], "{out}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("will not go on"),
+        "{out}"
+    );
+    env.dirs.close(env.paths.home());
+    env.finish();
+}
+
+#[test]
+fn doctor_is_said_in_the_language_of_the_user_and_json_stays_in_english() {
+    let mut env = Env::new(&[]);
+    env.language.set(crisol_client::Language::SPANISH);
+    let doctor = env.ok(&["doctor"]);
+    assert!(doctor.contains("no hay nada corriendo"), "{doctor}");
+
+    let json = env.ok(&["--json", "doctor"]);
+    let value: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    let checks = value["checks"].as_array().unwrap();
+    for check in checks {
+        for field in check.as_object().unwrap().keys() {
+            assert!(
+                ["name", "status", "detail", "fix", "action"].contains(&field.as_str()),
+                "{field} in {check}"
+            );
+        }
+    }
+    let services = checks.iter().find(|c| c["name"] == "services").unwrap();
+    assert_eq!(
+        services["detail"],
+        "nothing is running; `crisol start` starts the services"
+    );
     env.finish();
 }
 

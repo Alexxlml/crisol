@@ -152,6 +152,9 @@ fn the_json_the_page_reads() {
         status: CheckStatus::Warning,
         detail: "old".to_owned(),
         fix: Some("crisol shutdown".to_owned()),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     });
     let warning = &value(&state)["version_warning"];
     assert_eq!(warning["fix"], json!("crisol shutdown"));

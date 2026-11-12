@@ -30,7 +30,9 @@ use crate::config::Config;
 use crate::dbservice::DbKind;
 use crate::dbstack::{DbEvents, DbStack};
 use crate::engine::{home_error, Engine};
+use crate::i18n::Message;
 use crate::manage::list_installed;
+use crate::msg;
 use crate::ports::PortStatus;
 use crate::service::{FailureReason, ServiceState};
 use crate::sites::SitesFile;
@@ -394,6 +396,7 @@ impl Daemon {
             // What the events said and still holds, so a client that arrives late sees it.
             blocked: self.trouble.blocked.clone(),
             reload_error: self.trouble.reload_error.clone(),
+            warnings_text: Vec::new(),
         }))
     }
 
@@ -483,14 +486,18 @@ impl Daemon {
                 Ok(Reply::Done(info))
             }
             Err(error) if error.code == ErrorCode::NotAvailable && any_database => {
-                warnings.insert(
-                    0,
-                    format!("the web stack was not started: {}", error.message),
-                );
+                let not_started = msg!("done.databases_web_not_started", reason = &error.message);
+                warnings.insert(0, not_started.to_string());
+                // The sentence that came first is the only one with a key.
+                let mut warnings_text = vec![None; warnings.len()];
+                warnings_text[0] = Some(not_started.to_text());
+                let starting = msg!("done.databases_starting");
                 Ok(Reply::Done(DoneInfo {
-                    message: "Starting the databases".to_owned(),
+                    message: starting.to_string(),
                     changed: true,
                     warnings,
+                    message_text: Some(starting.to_text()),
+                    warnings_text,
                 }))
             }
             other => other,
@@ -548,16 +555,19 @@ impl Daemon {
         }
         let started = self.dbs.start(kind, now)?;
         if started.is_empty() {
-            return Ok(done(
-                &format!("{} is already running", kind.service()),
+            return Ok(done_message(
+                &msg!("done.service_already_running", service = kind.service()),
                 false,
             ));
         }
         emit_databases(events, started);
+        let starting = msg!("done.service_starting", service = kind.service());
         Ok(Reply::Done(DoneInfo {
-            message: format!("Starting {}", kind.service()),
+            message: starting.to_string(),
             changed: true,
             warnings: self.dbs.take_notices(),
+            message_text: Some(starting.to_text()),
+            warnings_text: Vec::new(),
         }))
     }
 
@@ -629,6 +639,8 @@ impl Daemon {
             message: "Starting the web stack".to_owned(),
             changed: true,
             warnings,
+            message_text: None,
+            warnings_text: Vec::new(),
         }))
     }
 
@@ -711,6 +723,7 @@ impl Daemon {
 
     fn check_services(&self) -> Check {
         let name = "services".to_owned();
+        let name_text = Some(msg!("doctor.name.services").to_text());
         let states = self.all_states();
         let system = &self.engine.deps().system;
         let mut failed = Vec::new();
@@ -739,12 +752,16 @@ impl Daemon {
                     service: first.clone(),
                 },
             };
+            let detail = msg!("doctor.services.failed", list = failed.join("; "));
             return Check {
                 action: Some(action),
                 name,
                 status: CheckStatus::Problem,
-                detail: format!("failed: {}", failed.join("; ")),
+                detail: detail.to_string(),
                 fix: Some(format!("crisol logs {first}")),
+                name_text,
+                detail_text: Some(detail.to_text()),
+                fix_text: None,
             };
         }
         let running: Vec<&str> = states
@@ -752,16 +769,20 @@ impl Daemon {
             .filter(|(_, state)| *state == ServiceState::Running)
             .map(|(service, _)| service.as_str())
             .collect();
+        let detail = if running.is_empty() {
+            msg!("doctor.services.nothing_running")
+        } else {
+            msg!("doctor.services.running", list = running.join(", "))
+        };
         Check {
             action: None,
             name,
             status: CheckStatus::Ok,
-            detail: if running.is_empty() {
-                "nothing is running; `crisol start` starts the services".to_owned()
-            } else {
-                format!("running: {}", running.join(", "))
-            },
+            detail: detail.to_string(),
             fix: None,
+            name_text,
+            detail_text: Some(detail.to_text()),
+            fix_text: None,
         }
     }
 
@@ -808,6 +829,9 @@ impl Daemon {
                 taken.join("; ")
             ),
             fix,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -834,6 +858,9 @@ impl Daemon {
                 status: CheckStatus::Ok,
                 detail: format!("ready in {}", list(false).join(", ")),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             });
         }
         let hint = self
@@ -855,7 +882,7 @@ impl Daemon {
                 slow.join(", "),
                 self.engine.paths().data_dir().display()
             ),
-            fix: hint,
+            fix: hint, name_text: None, detail_text: None, fix_text: None,
         })
     }
 
@@ -1108,11 +1135,24 @@ fn changes_sites(call: &Call) -> bool {
     )
 }
 
+/// "Done" with a sentence that a client can translate.
+fn done_message(message: &Message, changed: bool) -> Reply {
+    Reply::Done(DoneInfo {
+        message: message.to_string(),
+        changed,
+        warnings: Vec::new(),
+        message_text: Some(message.to_text()),
+        warnings_text: Vec::new(),
+    })
+}
+
 fn done(message: &str, changed: bool) -> Reply {
     Reply::Done(DoneInfo {
         message: message.to_owned(),
         changed,
         warnings: Vec::new(),
+        message_text: None,
+        warnings_text: Vec::new(),
     })
 }
 

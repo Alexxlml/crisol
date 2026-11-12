@@ -806,6 +806,9 @@ fn doctor_reports_each_check_and_adds_the_ones_of_the_system() {
         status: CheckStatus::Warning,
         detail: "not installed".to_owned(),
         fix: Some("crisol system install".to_owned()),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     };
     let rig = Rig::with_system(
         &[("nginx", "1.28.3"), ("php", "8.4.26")],

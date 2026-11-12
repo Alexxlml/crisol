@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::text::{lenient_text, lenient_texts, Text};
+
 /// The result of a [`crate::Call`]. In the JSON it is `{"type": "...", ...fields}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -36,6 +38,19 @@ pub enum Reply {
     },
     /// Answer to `credentials`.
     Credentials(CredentialsInfo),
+}
+
+impl Reply {
+    /// Takes out every `*_text` field, which `--json` does not show (ADR-0030 §5): the output
+    /// stays what it was before the fields existed.
+    pub fn strip_texts(&mut self) {
+        match self {
+            Self::Status(info) => info.strip_texts(),
+            Self::Done(info) => info.strip_texts(),
+            Self::Doctor { checks } => checks.iter_mut().for_each(Check::strip_texts),
+            _ => {}
+        }
+    }
 }
 
 /// How to connect to a service, as the lines of a project's `.env`.
@@ -103,6 +118,20 @@ pub struct StatusInfo {
     /// and the previous one goes on. Absent when the last one was applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reload_error: Option<String>,
+    /// `warnings` as keys and data, empty or of the same length (ADR-0030).
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_texts"
+    )]
+    pub warnings_text: Vec<Option<Text>>,
+}
+
+impl StatusInfo {
+    /// Takes out the `*_text` fields, which `--json` does not show (ADR-0030 §5).
+    pub fn strip_texts(&mut self) {
+        self.warnings_text.clear();
+    }
 }
 
 /// "Done", with a sentence and anything worth adding.
@@ -115,6 +144,28 @@ pub struct DoneInfo {
     /// Things to tell the user.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// `message` as a key and data, for a client to say in its language (ADR-0030).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_text"
+    )]
+    pub message_text: Option<Text>,
+    /// `warnings` as keys and data, empty or of the same length.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_texts"
+    )]
+    pub warnings_text: Vec<Option<Text>>,
+}
+
+impl DoneInfo {
+    /// Takes out the `*_text` fields, which `--json` does not show (ADR-0030 §5).
+    pub fn strip_texts(&mut self) {
+        self.message_text = None;
+        self.warnings_text.clear();
+    }
 }
 
 /// An installed version.
@@ -278,9 +329,37 @@ pub struct Check {
         deserialize_with = "lenient"
     )]
     pub action: Option<CheckAction>,
+    /// `name` as a key and data (`name` stays the English identifier of the row).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_text"
+    )]
+    pub name_text: Option<Text>,
+    /// `detail` as a key and data.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_text"
+    )]
+    pub detail_text: Option<Text>,
+    /// `fix` as a key and data. Only the sentence around a command: the command itself is data.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_text"
+    )]
+    pub fix_text: Option<Text>,
 }
 
 impl Check {
+    /// Takes out the `*_text` fields, which `--json` does not show (ADR-0030 §5).
+    pub fn strip_texts(&mut self) {
+        self.name_text = None;
+        self.detail_text = None;
+        self.fix_text = None;
+    }
+
     /// Whether the button does what `fix` says (ADR-0021 section 5): a check without an action
     /// always agrees. For the ones with a `crisol` command (`calls`, `local`, `show_log`) `fix`
     /// is that command; a command to copy is in `fix`; a link or a path is in `fix` or in the

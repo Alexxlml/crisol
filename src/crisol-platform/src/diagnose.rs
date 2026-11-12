@@ -183,6 +183,9 @@ pub fn vc_runtime_check() -> Check {
             status: CheckStatus::Ok,
             detail: format!("{version} (x64) is installed"),
             fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         };
     }
     if system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir)) {
@@ -193,6 +196,9 @@ pub fn vc_runtime_check() -> Check {
             detail: "its DLLs are in the system folder (no installer recorded a version)"
                 .to_owned(),
             fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         };
     }
     Check {
@@ -203,6 +209,9 @@ pub fn vc_runtime_check() -> Check {
                  servers cannot start without it"
             .to_owned(),
         fix: Some(format!("install it from {VC_RUNTIME_URL}")),
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
     .with_action(CheckAction::Link {
         url: VC_RUNTIME_URL.to_owned(),
@@ -225,7 +234,7 @@ pub fn ipv6_check() -> Check {
             name,
             status: CheckStatus::Ok,
             detail: "programs can listen on [::1]".to_owned(),
-            fix: None,
+            fix: None, name_text: None, detail_text: None, fix_text: None,
         },
         Err(error) => Check {
             action: None,
@@ -237,7 +246,7 @@ pub fn ipv6_check() -> Check {
             fix: Some(
                 "turn IPv6 back on (Windows keeps [::1] working unless IPv6 is disabled in the registry)"
                     .to_owned(),
-            ),
+            ), name_text: None, detail_text: None, fix_text: None,
         },
     }
 }
@@ -323,6 +332,9 @@ mod tests {
             status: CheckStatus::Warning,
             detail: String::new(),
             fix: Some(format!("install it from {VC_RUNTIME_URL}")),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         }
         .with_action(CheckAction::Link {
             url: VC_RUNTIME_URL.to_owned(),

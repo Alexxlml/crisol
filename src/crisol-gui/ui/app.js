@@ -1373,7 +1373,7 @@ async function start() {
 
   const boot = await invoke("bootstrap");
   words = boot.words.words;
-  document.documentElement.lang = boot.words.language === "spanish" ? "es" : "en";
+  document.documentElement.lang = boot.words.language;
   translatePage();
   showSection(section);
   ready = true;

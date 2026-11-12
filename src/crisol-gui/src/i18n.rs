@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 use crisol_client::Language;
 use serde::Serialize;
 
-const ENGLISH: &str = include_str!("../ui/i18n/en.json");
-const SPANISH: &str = include_str!("../ui/i18n/es.json");
+include!(concat!(env!("OUT_DIR"), "/ui_languages.rs"));
 
 /// The words of one language.
 #[derive(Debug, Clone, Serialize)]
@@ -24,10 +23,10 @@ impl Dictionary {
     /// The dictionary of `language`.
     #[must_use]
     pub fn of(language: Language) -> Self {
-        let text = match language {
-            Language::English => ENGLISH,
-            Language::Spanish => SPANISH,
-        };
+        let text = DICTIONARIES
+            .iter()
+            .find(|(code, _)| *code == language.code())
+            .map_or(DICTIONARIES[0].1, |(_, text)| text);
         Self {
             language,
             // The files are embedded and checked by the tests: a bad one fails the build's tests.
@@ -74,42 +73,97 @@ mod tests {
             .collect()
     }
 
+    fn others() -> Vec<Language> {
+        Language::all()
+            .filter(|language| *language != Language::ENGLISH)
+            .collect()
+    }
+
     #[test]
-    fn both_files_are_valid_and_say_the_same_things() {
-        assert!(serde_json::from_str::<BTreeMap<String, String>>(ENGLISH).is_ok());
-        assert!(serde_json::from_str::<BTreeMap<String, String>>(SPANISH).is_ok());
-        let (english, spanish) = (keys(Language::English), keys(Language::Spanish));
-        assert!(!english.is_empty());
+    fn the_page_and_the_core_speak_the_same_languages() {
+        let page: Vec<_> = DICTIONARIES.iter().map(|(code, _)| *code).collect();
+        let core: Vec<_> = Language::all().map(Language::code).collect();
         assert_eq!(
-            english.difference(&spanish).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "keys only in English"
-        );
-        assert_eq!(
-            spanish.difference(&english).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "keys only in Spanish"
+            page, core,
+            "ui/i18n and crisol-core/i18n list other languages"
         );
     }
 
     #[test]
+    fn every_file_is_valid_and_has_exactly_the_keys_of_english() {
+        for (code, text) in DICTIONARIES {
+            assert!(
+                serde_json::from_str::<BTreeMap<String, String>>(text).is_ok(),
+                "{code}.json is not a JSON object of words"
+            );
+        }
+        let english = keys(Language::ENGLISH);
+        assert!(!english.is_empty());
+        for language in others() {
+            let other = keys(language);
+            assert_eq!(
+                english.difference(&other).collect::<Vec<_>>(),
+                Vec::<&String>::new(),
+                "keys only in English, missing in {}",
+                language.code()
+            );
+            assert_eq!(
+                other.difference(&english).collect::<Vec<_>>(),
+                Vec::<&String>::new(),
+                "keys only in {}",
+                language.code()
+            );
+        }
+    }
+
+    #[test]
     fn no_word_is_empty_and_the_placeholders_match() {
-        let (english, spanish) = (
-            Dictionary::of(Language::English),
-            Dictionary::of(Language::Spanish),
-        );
-        for (key, word) in &english.words {
-            assert!(!word.trim().is_empty(), "{key} is empty in English");
-            let other = &spanish.words[key];
-            assert!(!other.trim().is_empty(), "{key} is empty in Spanish");
-            assert_eq!(placeholders(word), placeholders(other), "{key}");
+        let english = Dictionary::of(Language::ENGLISH);
+        for language in others() {
+            let other = Dictionary::of(language);
+            for (key, word) in &english.words {
+                assert!(!word.trim().is_empty(), "{key} is empty in English");
+                let translated = &other.words[key];
+                assert!(
+                    !translated.trim().is_empty(),
+                    "{key} is empty in {}",
+                    language.code()
+                );
+                assert_eq!(
+                    placeholders(word),
+                    placeholders(translated),
+                    "{key} in {}",
+                    language.code()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plurals_come_in_pairs() {
+        for (code, _) in DICTIONARIES {
+            let words = Dictionary::of(Language::from_tag(code).expect("a language")).words;
+            for key in words.keys() {
+                if let Some(base) = key.strip_suffix("_one") {
+                    assert!(
+                        words.contains_key(&format!("{base}_other")),
+                        "{key} in {code}"
+                    );
+                }
+                if let Some(base) = key.strip_suffix("_other") {
+                    assert!(
+                        words.contains_key(&format!("{base}_one")),
+                        "{key} in {code}"
+                    );
+                }
+            }
         }
     }
 
     /// Every key the page and the Rust code ask for exists, so no screen shows a bare key.
     #[test]
     fn every_key_in_use_is_in_the_dictionary() {
-        let known = keys(Language::English);
+        let known = keys(Language::ENGLISH);
         let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
         let mut used = BTreeSet::new();
         for file in ["index.html", "app.js"] {
@@ -197,8 +251,8 @@ mod tests {
     #[test]
     fn the_states_of_adr_0027_are_named_as_the_adr_says() {
         let (en, es) = (
-            Dictionary::of(Language::English),
-            Dictionary::of(Language::Spanish),
+            Dictionary::of(Language::ENGLISH),
+            Dictionary::of(Language::SPANISH),
         );
         for (key, english, spanish) in [
             ("state.running", "Running", "Corriendo"),
@@ -216,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_missing_key_shows_as_itself_and_placeholders_are_filled() {
-        let en = Dictionary::of(Language::English);
+        let en = Dictionary::of(Language::ENGLISH);
         assert_eq!(en.get("no.such.key"), "no.such.key");
         assert_eq!(
             en.with("conn.connected", &[("version", "0.1.0")]),

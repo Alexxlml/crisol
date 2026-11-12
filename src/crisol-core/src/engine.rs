@@ -29,11 +29,13 @@ use crate::config::Config;
 use crate::dbservice::DbAdmin;
 use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
+use crate::i18n::{rpc_error, Localized};
 use crate::install::{unverified_sha256, InstallError, InstallOptions, Progress};
 use crate::manage::{
     install_version, install_version_from, is_unverified_install, list_available, list_installed,
     uninstall, Environment, LocalArchive, ManageError,
 };
+use crate::msg;
 use crate::paths::{home_problems, CrisolPaths, HomeError, PrivateDirs};
 use crate::phpsetup::{installed_php_versions, refresh_php};
 use crate::pin::{use_global, use_local, UseError, Used};
@@ -273,6 +275,9 @@ impl Engine {
                     status: CheckStatus::Warning,
                     detail: message,
                     fix: None,
+                    name_text: None,
+                    detail_text: None,
+                    fix_text: None,
                 }],
             })),
             Call::List { .. } | Call::Sites | Call::Logs { .. } => {
@@ -362,6 +367,8 @@ impl Engine {
             message,
             changed: was != enabled,
             warnings,
+            message_text: None,
+            warnings_text: Vec::new(),
         }))
     }
 
@@ -810,6 +817,9 @@ impl Engine {
                         .to_owned(),
                 )
             }),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -843,6 +853,9 @@ impl Engine {
                     .join(", "),
                 if old.len() == 1 { "s" } else { "" }
             ),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -875,6 +888,9 @@ impl Engine {
                     .join(", ")
             ),
             fix: Some("read them if you need them, then delete them".to_owned()),
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -915,6 +931,9 @@ impl Engine {
                         .join(", "),
                     if different.len() == 1 { "is" } else { "are" }
                 ),
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             });
         }
         (!waiting.is_empty()).then(|| Check {
@@ -928,7 +947,7 @@ impl Engine {
             fix: Some(format!(
                 "when a newer crisol.exe lists the version, `crisol install {}` with it verifies it",
                 waiting[0]
-            )),
+            )), name_text: None, detail_text: None, fix_text: None,
         })
     }
 
@@ -960,7 +979,7 @@ impl Engine {
                 "{}; the series are kept apart and nothing is migrated, so the one in use is the one the version pinned in crisol.toml (or the newest installed) selects",
                 lines.join("; ")
             ),
-            fix: None,
+            fix: None, name_text: None, detail_text: None, fix_text: None,
         })
     }
 
@@ -987,6 +1006,9 @@ impl Engine {
             status: CheckStatus::Ok,
             detail: notes.join("; "),
             fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -999,6 +1021,9 @@ impl Engine {
             status: CheckStatus::Warning,
             detail: crate::dbservice::MEMCACHED_NOTE.to_owned(),
             fix: None,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         })
     }
 
@@ -1015,6 +1040,9 @@ impl Engine {
                     self.paths.home().display()
                 ),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             };
         };
         let rpc = home_error(first);
@@ -1030,6 +1058,9 @@ impl Engine {
             status: CheckStatus::Problem,
             detail,
             fix: rpc.fix,
+            name_text: None,
+            detail_text: None,
+            fix_text: None,
         }
     }
 
@@ -1050,6 +1081,9 @@ impl Engine {
                 status: CheckStatus::Ok,
                 detail: format!("{} is valid", self.paths.config_file().display()),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Ok(loaded) => Check {
                 action: Some(self.reveal_config()),
@@ -1062,6 +1096,9 @@ impl Engine {
                     .collect::<Vec<_>>()
                     .join("; "),
                 fix: Some(format!("edit {}", self.paths.config_file().display())),
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Err(error) => Check {
                 action: Some(self.reveal_config()),
@@ -1069,6 +1106,9 @@ impl Engine {
                 status: CheckStatus::Problem,
                 detail: error.to_string(),
                 fix: Some(format!("fix {}", self.paths.config_file().display())),
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
         }
     }
@@ -1084,6 +1124,9 @@ impl Engine {
                     status: CheckStatus::Problem,
                     detail: error.to_string(),
                     fix: None,
+                    name_text: None,
+                    detail_text: None,
+                    fix_text: None,
                 }
             }
         };
@@ -1100,6 +1143,9 @@ impl Engine {
                     .collect::<Vec<_>>()
                     .join(", "),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             }
         } else {
             let action = CheckAction::install(missing[0], None);
@@ -1109,6 +1155,9 @@ impl Engine {
                 name,
                 status: CheckStatus::Warning,
                 detail: format!("not installed: {}", missing.join(", ")),
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             }
         }
     }
@@ -1128,6 +1177,9 @@ impl Engine {
                 status: CheckStatus::Ok,
                 detail: format!("{} has {}", dir.display(), SHIM_COMMANDS.join(", ")),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             }
         } else {
             Check {
@@ -1136,6 +1188,9 @@ impl Engine {
                 status: CheckStatus::Warning,
                 detail: format!("missing in {}: {}", dir.display(), missing.join(", ")),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             }
         }
     }
@@ -1178,7 +1233,7 @@ impl Engine {
             fix: Some(
                 "remove or change those lines of the hosts file (it needs an administrator), or rename the sites"
                     .to_owned(),
-            ),
+            ), name_text: None, detail_text: None, fix_text: None,
         })
     }
 
@@ -1191,6 +1246,9 @@ impl Engine {
                 status: CheckStatus::Ok,
                 detail: format!("{} site(s) under .{}", list.sites.len(), config.sites.tld),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Ok((list, _)) => Check {
                 action: None,
@@ -1198,6 +1256,9 @@ impl Engine {
                 status: CheckStatus::Warning,
                 detail: list.warnings.join("; "),
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
             Err(error) => Check {
                 action: None,
@@ -1205,6 +1266,9 @@ impl Engine {
                 status: CheckStatus::Problem,
                 detail: error.message,
                 fix: None,
+                name_text: None,
+                detail_text: None,
+                fix_text: None,
             },
         }
     }
@@ -1217,6 +1281,8 @@ fn done(message: String, changed: bool) -> Reply {
         message,
         changed,
         warnings: Vec::new(),
+        message_text: None,
+        warnings_text: Vec::new(),
     })
 }
 
@@ -1263,18 +1329,13 @@ fn installed_name(path: &Path) -> (Option<String>, String) {
 #[must_use]
 pub fn home_error(error: &HomeError) -> RpcError {
     match error {
-        HomeError::Exposed { path, fix } => RpcError::new(
+        HomeError::Exposed { path, fix } => rpc_error(
             ErrorCode::HomeExposed,
-            format!(
-                "`{}` can be modified by other accounts of this computer, and Crisol runs and trusts what is inside it, so it will not go on",
-                path.display()
-            ),
+            &msg!("home.exposed", path = path.display()),
         )
         .with_fix(fix.clone()),
-        HomeError::OtherAccount { .. } => {
-            RpcError::new(ErrorCode::HomeExposed, error.to_string())
-        }
-        HomeError::Check { .. } => RpcError::new(ErrorCode::Io, error.to_string()),
+        HomeError::OtherAccount { .. } => rpc_error(ErrorCode::HomeExposed, &error.message()),
+        HomeError::Check { .. } => rpc_error(ErrorCode::Io, &error.message()),
     }
 }
 

@@ -10,6 +10,9 @@ fn check_with(action: Option<CheckAction>) -> Check {
         detail: "not installed: php".to_owned(),
         fix: Some("crisol install php".to_owned()),
         action,
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
 }
 

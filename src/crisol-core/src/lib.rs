@@ -17,6 +17,7 @@ pub mod exclusions;
 pub mod fetch;
 pub mod globals;
 pub mod hosts;
+pub mod i18n;
 pub mod install;
 pub mod ipc;
 pub mod log;

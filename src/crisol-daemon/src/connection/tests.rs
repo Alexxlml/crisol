@@ -28,6 +28,8 @@ fn world(buffer: usize) -> World {
                     message: "ok".to_owned(),
                     changed: false,
                     warnings: Vec::new(),
+                    message_text: None,
+                    warnings_text: Vec::new(),
                 })));
             }
         }

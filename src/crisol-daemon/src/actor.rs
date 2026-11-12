@@ -177,6 +177,8 @@ pub fn run(
                     message: "The daemon is leaving; some services were killed".to_owned(),
                     changed: true,
                     warnings: Vec::new(),
+                    message_text: None,
+                    warnings_text: Vec::new(),
                 })));
             }
             say_goodbye(events);

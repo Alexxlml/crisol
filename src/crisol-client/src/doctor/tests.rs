@@ -15,6 +15,9 @@ fn check(status: CheckStatus, fix: Option<&str>, action: Option<CheckAction>) ->
         detail: "what was found".to_owned(),
         fix: fix.map(str::to_owned),
         action,
+        name_text: None,
+        detail_text: None,
+        fix_text: None,
     }
 }
 
