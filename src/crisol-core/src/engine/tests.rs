@@ -1519,3 +1519,83 @@ fn doctor_says_which_sites_the_hosts_file_sends_elsewhere() {
     assert!(!line.detail.contains("noshop"), "{}", line.detail);
     assert!(!line.detail.contains("10.0.0.1"), "{}", line.detail);
 }
+
+// ---- the texts of doctor (ADR-0030, test 3) ---------------------------------------------
+
+/// `check` as a client of `language` would show it: each sentence said from its key and data.
+fn said_in(check: &Check, language: crate::i18n::Language) -> Check {
+    let say = |text: &Option<crisol_protocol::Text>, plain: &str| {
+        text.as_ref().map_or_else(
+            || plain.to_owned(),
+            |text| crate::i18n::Message::from(text).render(language),
+        )
+    };
+    let mut said = check.clone();
+    said.detail = say(&check.detail_text, &check.detail);
+    said.fix = check.fix.as_deref().map(|fix| say(&check.fix_text, fix));
+    said
+}
+
+#[test]
+fn every_finding_of_doctor_carries_its_texts_and_says_them_in_every_language() {
+    // A home that is open, a configuration with a warning, a version with a known
+    // vulnerability and one installed from a file: the findings the window shows.
+    let rig = Rig::build(
+        &[("php", "8.4.26"), ("nginx", "1.28.3")],
+        Arc::new(NoSystemChecks),
+        PHP2SHELL,
+    );
+    rig.dirs.expose(rig.paths().home());
+    std::fs::write(
+        rig.paths().config_file(),
+        "[sites]\ntld = \"com\"\n[services.mysql]\nenabled = true\n[services.mariadb]\nenabled = true\n[services.memcached]\nenabled = true\n",
+    )
+    .unwrap();
+    let found = checks(rig.call(&Call::Doctor).unwrap());
+    assert!(found.len() >= 6, "{found:?}");
+    for check in &found {
+        let name = check.name_text.as_ref().unwrap_or_else(|| {
+            panic!("`{}` has no name_text", check.name);
+        });
+        assert!(
+            check.detail_text.is_some(),
+            "`{}` has no detail",
+            check.name
+        );
+        // A command is not a sentence and has no text; a sentence has one.
+        assert!(check.fix_text.is_none() || check.fix.is_some(), "{check:?}");
+        for language in crate::i18n::Language::all() {
+            let said = said_in(check, language);
+            assert!(
+                !said.detail.contains('{'),
+                "{}: {}",
+                language.code(),
+                said.detail
+            );
+            assert!(!said.detail.is_empty(), "{check:?}");
+            // The row keeps its English name as the identifier, whatever it is called.
+            assert_eq!(
+                crate::i18n::Message::from(name).render(crate::i18n::Language::ENGLISH),
+                check.name
+            );
+            // After translating, the button and the fix still say the same thing.
+            assert!(
+                said.action_agrees_with_fix(),
+                "{}: the button and the fix differ: {said:?}",
+                language.code()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_home_that_is_not_there_yet_is_said_in_every_language_too() {
+    let rig = Rig::new(&[]);
+    std::fs::remove_dir_all(rig.paths().home()).unwrap();
+    for check in checks(rig.call(&Call::Doctor).unwrap()) {
+        assert!(
+            check.name_text.is_some() && check.detail_text.is_some(),
+            "{check:?}"
+        );
+    }
+}

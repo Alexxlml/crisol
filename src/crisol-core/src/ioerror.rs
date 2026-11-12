@@ -22,6 +22,10 @@ pub(crate) fn io_message(action: &str, path: &Path, source: &io::Error) -> Messa
         "cannot open" => msg!("io.open", path = path, error = error),
         "cannot place" => msg!("io.place", path = path, error = error),
         "cannot read" => msg!("io.read", path = path, error = error),
+        "cannot create a temporary file in" => msg!("io.create_temp", path = path, error = error),
+        "cannot list the installed bundles in" => {
+            msg!("io.list_bundles", path = path, error = error)
+        }
         "cannot remove" => msg!("io.remove", path = path, error = error),
         "cannot write" => msg!("io.write", path = path, error = error),
         other => msg!("io.other", action = other, path = path, error = error),

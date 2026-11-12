@@ -416,7 +416,7 @@ impl Session<'_> {
         if shows_shadows {
             for line in shimsetup::describe_shadows(&status.shadows) {
                 text.push_str("\n  ");
-                text.push_str(&line);
+                text.push_str(&line.to_string());
             }
         }
         let shadowed: Vec<_> = status

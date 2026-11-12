@@ -15,7 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::edit::{EditError, TomlEditor};
+use crate::i18n::{Localized, Message};
 use crate::manage::{resolve_installed, InstalledVersion, ManageError};
+use crate::msg;
 use crate::paths::CrisolPaths;
 use crate::project::{load_project, FileOwners, PROJECT_FILE};
 use crate::resolve::Tool;
@@ -25,10 +27,8 @@ use crate::version::{VersionError, VersionReq};
 #[derive(Debug, thiserror::Error)]
 pub enum UseError {
     /// The request is not a version.
-    #[error(transparent)]
     BadVersion(#[from] VersionError),
     /// No installed version matches.
-    #[error("{tool} {request} is not installed (installed: {})", list(installed))]
     NotInstalled {
         /// The tool.
         tool: &'static str,
@@ -38,23 +38,42 @@ pub enum UseError {
         installed: Vec<String>,
     },
     /// The project folder does not exist.
-    #[error("`{}` is not a folder", .0.display())]
     NotAFolder(PathBuf),
     /// The installed versions could not be listed.
-    #[error(transparent)]
     Manage(#[from] ManageError),
     /// The file could not be edited or written.
-    #[error(transparent)]
     Edit(#[from] EditError),
 }
 
-fn list(installed: &[String]) -> String {
-    if installed.is_empty() {
-        "none".to_owned()
-    } else {
-        installed.join(", ")
+impl Localized for UseError {
+    fn message(&self) -> Message {
+        match self {
+            Self::BadVersion(error) => error.message(),
+            Self::NotInstalled {
+                tool,
+                request,
+                installed,
+            } if installed.is_empty() => {
+                msg!("use.not_installed_none", tool = tool, request = request)
+            }
+            Self::NotInstalled {
+                tool,
+                request,
+                installed,
+            } => msg!(
+                "use.not_installed",
+                tool = tool,
+                request = request,
+                installed = installed.join(", ")
+            ),
+            Self::NotAFolder(path) => msg!("use.not_a_folder", path = path.display()),
+            Self::Manage(error) => error.message(),
+            Self::Edit(error) => error.message(),
+        }
     }
 }
+
+crate::display_as_message!(UseError);
 
 /// What a `use` did.
 #[derive(Debug, Clone, PartialEq, Eq)]

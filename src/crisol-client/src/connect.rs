@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::Engine;
+use crisol_core::i18n::{finding, Fix};
+use crisol_core::msg;
 use crisol_core::programs::{program_error, require_trusted_program};
 use crisol_protocol::{
     Call, Check, CheckStatus, ClientError, ErrorCode, Event, Reply, RpcError, PROTOCOL_VERSION,
@@ -120,7 +122,7 @@ pub fn start_daemon(
     (context.spawn_daemon)().map_err(|e| {
         RpcError::new(
             ErrorCode::Io,
-            format!("could not start the daemon (crisold): {e}"),
+            msg!("client.cannot_start_daemon", error = e).render(context.language),
         )
     })?;
     notice("Starting the daemon...");
@@ -132,14 +134,15 @@ pub fn start_daemon(
                 if Instant::now() >= end {
                     return Err(RpcError::new(
                         ErrorCode::NotAvailable,
-                        format!(
-                            "the daemon did not open its pipe in {} seconds; its log is {}",
-                            context.daemon_wait.as_secs(),
-                            context.paths.runtime_log("crisold").map_or_else(
+                        msg!(
+                            "client.daemon_silent",
+                            seconds = context.daemon_wait.as_secs(),
+                            log = context.paths.runtime_log("crisold").map_or_else(
                                 |_| "logs/crisold/runtime.log".to_owned(),
                                 |p| p.display().to_string()
                             )
-                        ),
+                        )
+                        .render(context.language),
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -160,7 +163,7 @@ pub fn stop_daemon(context: &Context, notice: &mut dyn FnMut(&str)) -> Result<()
     let end = Instant::now() + context.daemon_wait;
     while (context.connect)().is_ok() {
         if Instant::now() >= end {
-            return Err("the daemon said it would stop, but it is still running".to_owned());
+            return Err(msg!("client.daemon_still_running").render(context.language));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -172,16 +175,17 @@ pub fn stop_daemon(context: &Context, notice: &mut dyn FnMut(&str)) -> Result<()
 /// replaced while it runs, so the update itself needs it stopped).
 #[must_use]
 pub fn daemon_version_check(daemon: &str, mine: &str) -> Option<Check> {
-    (daemon != mine).then(|| Check { action: None,
-        name: "daemon version".to_owned(),
-        status: CheckStatus::Warning,
-        detail: format!(
-            "the daemon that is running is {daemon} and this program is {mine}: it was started before an update"
-        ),
-        fix: Some("crisol shutdown, then any command starts the new one".to_owned()),
-        name_text: None,
-        detail_text: None,
-        fix_text: None,
+    (daemon != mine).then(|| {
+        finding(
+            CheckStatus::Warning,
+            &msg!("doctor.name.daemon_version"),
+            &msg!("doctor.daemon_version", daemon = daemon, mine = mine),
+            Some(Fix::Say(msg!(
+                "doctor.daemon_version_fix",
+                shutdown = "crisol shutdown"
+            ))),
+            None,
+        )
     })
 }
 

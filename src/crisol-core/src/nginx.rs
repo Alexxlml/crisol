@@ -37,6 +37,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::i18n::{Localized, Message};
+use crate::ioerror::io_message;
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::phpini::{write_if_changed, PhpIniError};
 use crate::sites::{DocRoot, Site};
@@ -219,16 +221,12 @@ pub fn probe_path(token: &str) -> String {
 #[derive(Debug, thiserror::Error)]
 pub enum NginxError {
     /// A path is not allowed.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// The home is open to other accounts: no configuration is generated from it.
-    #[error(transparent)]
     Home(#[from] HomeError),
     /// A file could not be written.
-    #[error(transparent)]
     Write(#[from] PhpIniError),
     /// A folder could not be read, created or cleaned.
-    #[error("{action} `{}`: {source}", path.display())]
     Io {
         /// What was being done.
         action: &'static str,
@@ -238,6 +236,23 @@ pub enum NginxError {
         source: io::Error,
     },
 }
+
+impl Localized for NginxError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Paths(error) => error.message(),
+            Self::Home(error) => error.message(),
+            Self::Write(error) => error.message(),
+            Self::Io {
+                action,
+                path,
+                source,
+            } => io_message(action, path, source),
+        }
+    }
+}
+
+crate::display_as_message!(NginxError);
 
 /// What [`write_nginx_config`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]

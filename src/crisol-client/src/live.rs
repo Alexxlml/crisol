@@ -15,6 +15,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crisol_core::i18n::Language;
+use crisol_core::msg;
 use crisol_core::trouble::WebTrouble;
 use crisol_protocol::{
     Call, Check, ClientError, Event, HelloInfo, Numbered, Reply, ServiceInfo, StatusInfo,
@@ -24,6 +26,7 @@ use serde::Serialize;
 use crate::connect::{client_error, daemon_version_check, hello};
 use crate::context::Context;
 use crate::link::{Connector, Link};
+use crate::text::{localize_check, localize_error};
 
 /// Whether there is a daemon on the other side.
 ///
@@ -150,17 +153,33 @@ fn follow(
     link: &mut dyn Link,
     hello: &Call,
     mine: &str,
+    language: Language,
     stop: &AtomicBool,
     state: &mut LiveState,
     publish: &mut dyn FnMut(&LiveState),
 ) -> Ended {
     let info = match link.call(hello, &mut |_| {}) {
         Ok(Reply::Hello(info)) => info,
-        Ok(other) => return Ended::Refused(format!("`hello` was answered with {other:?}")),
-        Err(ClientError::Rpc(error)) => return Ended::Refused(error.message),
+        Ok(other) => {
+            return Ended::Refused(
+                msg!(
+                    "client.unexpected_answer",
+                    call = "hello",
+                    answer = format!("{other:?}")
+                )
+                .render(language),
+            )
+        }
+        Err(ClientError::Rpc(mut error)) => {
+            localize_error(&mut error, language);
+            return Ended::Refused(error.message);
+        }
         Err(_) => return Ended::Lost,
     };
-    state.version_warning = daemon_version_check(&info.daemon, mine);
+    state.version_warning = daemon_version_check(&info.daemon, mine).map(|mut check| {
+        localize_check(&mut check, language);
+        check
+    });
     state.daemon = Some(info);
     if link.call(&Call::Subscribe, &mut |_| {}).is_err() {
         return Ended::Lost;
@@ -240,6 +259,8 @@ pub struct LiveConfig {
     pub hello: Call,
     /// The version of this program, which the daemon's is compared with.
     pub version: String,
+    /// The language the errors and warnings are said in.
+    pub language: Language,
     /// How long to wait before looking for the daemon again.
     pub retry: Duration,
 }
@@ -253,6 +274,7 @@ impl LiveConfig {
             connect: Arc::clone(&context.connect),
             hello: hello(context),
             version: context.version.clone(),
+            language: context.language,
             retry: Duration::from_secs(1),
         }
     }
@@ -360,6 +382,7 @@ fn run(config: &LiveConfig, cell: &Cell, stop: &AtomicBool, on_change: &dyn Fn(&
                     link.as_mut(),
                     &config.hello,
                     &config.version,
+                    config.language,
                     stop,
                     &mut state,
                     &mut |state| publish(state),
@@ -379,7 +402,9 @@ fn run(config: &LiveConfig, cell: &Cell, stop: &AtomicBool, on_change: &dyn Fn(&
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             // Something is there that cannot be used (a pipe of another account, say).
             Err(error) => {
-                state.connection = Connection::Refused(client_error(error.into()).message);
+                let mut error = client_error(error.into());
+                localize_error(&mut error, config.language);
+                state.connection = Connection::Refused(error.message);
             }
         }
         publish(&state);

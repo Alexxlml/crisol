@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crisol_core::daemon::Daemon;
-use crisol_protocol::{Call, ClientError, ErrorCode, Event, Numbered, Reply, RpcError};
+use crisol_core::i18n::rpc_error;
+use crisol_core::msg;
+use crisol_protocol::{Call, ClientError, ErrorCode, Event, Numbered, Reply};
 
 /// Opens a connection to the daemon: `NotFound` when there is none. Every call opens a new
 /// connection, so a live view and the calls never share one (the protocol serves one request
@@ -81,9 +83,9 @@ impl Link for Local {
         let local_ok =
             !call.needs_daemon() || matches!(call, Call::Hello { .. } | Call::Status { .. });
         if !local_ok {
-            return Err(ClientError::Rpc(RpcError::new(
+            return Err(ClientError::Rpc(rpc_error(
                 ErrorCode::NotAvailable,
-                "the daemon is not running; `crisol start` starts it",
+                &msg!("client.daemon_not_running", command = "crisol start"),
             )));
         }
         Ok(self.0.handle(call, Instant::now(), on_event)?)

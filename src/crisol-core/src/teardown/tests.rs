@@ -771,3 +771,58 @@ fn a_window_that_does_not_close_keeps_the_programs_and_the_profile() {
         );
     }
 }
+
+#[test]
+fn nothing_of_the_removal_is_left_to_the_english_of_the_code() {
+    use crate::i18n::assert_says_everywhere as says;
+    // With the helper: its step and its outcome.
+    let world = World::everything();
+    let setup = FakeSetup::new();
+    let system = world.system(&setup, true);
+    let with_helper = plan(&system, true);
+    for step in &with_helper.steps {
+        says(&step.describe());
+    }
+    for message in with_helper.problems.iter().chain(&with_helper.kept) {
+        says(message);
+    }
+    let outcomes = run(&system, &with_helper, &mut || Ok(()));
+    assert_ne!(outcomes.len(), 0);
+    for outcome in &outcomes {
+        says(&outcome.message);
+    }
+    // Without it: what is told as commands for the person, and what stays.
+    let world = World::everything();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup, false);
+    let without = plan(&system, false);
+    for message in without
+        .by_hand
+        .iter()
+        .chain(&without.kept)
+        .chain(&without.problems)
+    {
+        says(message);
+    }
+    for step in &without.steps {
+        says(&step.describe());
+    }
+}
+
+#[test]
+fn what_cannot_be_looked_at_is_said_in_every_language() {
+    use crate::i18n::assert_says_everywhere as says;
+    let world = World::everything();
+    let setup = FakeSetup::new();
+    let mut system = world.system(&setup, true);
+    system.trust = Err("the store is closed".to_owned());
+    let plan = plan(&system, false);
+    assert_ne!(plan.problems.len(), 0);
+    for problem in &plan.problems {
+        says(problem);
+    }
+    let outcomes = run(&system, &plan, &mut || Err("it did not stop".to_owned()));
+    for outcome in &outcomes {
+        says(&outcome.message);
+    }
+}

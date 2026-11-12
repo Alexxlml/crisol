@@ -30,7 +30,7 @@ use crate::config::Config;
 use crate::dbservice::DbKind;
 use crate::dbstack::{DbEvents, DbStack};
 use crate::engine::{home_error, Engine};
-use crate::i18n::Message;
+use crate::i18n::{finding, rpc_error, Fix, Localized, Message};
 use crate::manage::list_installed;
 use crate::msg;
 use crate::ports::PortStatus;
@@ -297,9 +297,9 @@ impl Daemon {
             }
             // Delivered by the binary, which owns the connection.
             Call::Subscribe => Ok(done("Subscribed to events", false)),
-            _ => Err(RpcError::new(
+            _ => Err(rpc_error(
                 ErrorCode::Internal,
-                format!("`{}` was not handled", call.method()),
+                &msg!("daemon.unhandled", method = call.method()),
             )),
         }
     }
@@ -361,11 +361,12 @@ impl Daemon {
 
     fn hello(&self, protocol: u32) -> Result<Reply, RpcError> {
         if protocol != PROTOCOL_VERSION {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::UnsupportedProtocol,
-                format!(
-                    "this daemon speaks protocol {PROTOCOL_VERSION} and the client {protocol}; \
-                     use the same version of crisol and crisold"
+                &msg!(
+                    "daemon.protocol",
+                    daemon = PROTOCOL_VERSION,
+                    client = protocol
                 ),
             ));
         }
@@ -381,9 +382,9 @@ impl Daemon {
         if let Some(name) = service {
             services.retain(|s| s.name == name);
             if services.is_empty() {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::NotFound,
-                    format!("there is no service called `{name}`; `crisol status` lists them"),
+                    &msg!("daemon.no_service", name = name, command = "crisol status"),
                 ));
             }
         }
@@ -450,17 +451,14 @@ impl Daemon {
     fn require_whole_stack(&self, service: Option<&str>) -> Result<(), RpcError> {
         let Some(name) = service else { return Ok(()) };
         if !self.service_list().iter().any(|s| s.name == name) {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotFound,
-                format!("there is no service called `{name}`; `crisol status` lists them"),
+                &msg!("daemon.no_service", name = name, command = "crisol status"),
             ));
         }
-        Err(RpcError::new(
+        Err(rpc_error(
             ErrorCode::Conflict,
-            format!(
-                "`{name}` is part of the web stack, which starts and stops as one; \
-                 use the command without a service name"
-            ),
+            &msg!("daemon.part_of_web", name = name),
         ))
     }
 
@@ -520,9 +518,9 @@ impl Daemon {
             }
             Call::ResetPassword { service } => {
                 let Some(kind) = DbKind::from_service(service) else {
-                    return Some(Err(RpcError::new(
+                    return Some(Err(rpc_error(
                         ErrorCode::NotFound,
-                        format!("no data service called `{service}`"),
+                        &msg!("daemon.no_data_service", service = service),
                     )));
                 };
                 Some(
@@ -547,9 +545,9 @@ impl Daemon {
         events: &mut dyn FnMut(Event),
     ) -> Result<Reply, RpcError> {
         if self.shutting_down {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::Conflict,
-                "the daemon is shutting down",
+                &msg!("daemon.shutting_down"),
             ));
         }
         let started = self.dbs.start(kind, now)?;
@@ -586,9 +584,9 @@ impl Daemon {
 
     fn start(&mut self, now: Instant, events: &mut dyn FnMut(Event)) -> Result<Reply, RpcError> {
         if self.shutting_down {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::Conflict,
-                "the daemon is shutting down",
+                &msg!("daemon.shutting_down"),
             ));
         }
         if self.wanted && self.stack.as_ref().is_some_and(|s| !s.is_stopped()) {
@@ -603,9 +601,9 @@ impl Daemon {
         // before anything starts.
         for (version, installed) in plan.php_versions() {
             if let Some((why, fix)) = self.engine.deps().system.missing_runtime(&installed.path) {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::NotAvailable,
-                    format!("PHP {version} cannot start: {why}"),
+                    &msg!("daemon.php_cannot_start", version = version, why = why),
                 )
                 .with_fix(fix));
             }
@@ -797,7 +795,7 @@ impl Daemon {
             .collect();
         let probe = &self.engine.deps().probe;
         let mut taken = Vec::new();
-        let mut fix = None;
+        let mut fix: Option<Message> = None;
         let mut seen = BTreeSet::new();
         for (service, field, port) in config.enabled_service_ports() {
             if active.iter().any(|a| a == service) || !seen.insert(port) {
@@ -819,18 +817,14 @@ impl Daemon {
             }
         }
         let action = Some(self.engine.reveal_config());
-        (!taken.is_empty()).then(|| Check {
-            action,
-            name: "ports".to_owned(),
-            status: CheckStatus::Problem,
-            detail: format!(
-                "{}; Crisol never stops another program to take its port",
-                taken.join("; ")
-            ),
-            fix,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
+        (!taken.is_empty()).then(|| {
+            finding(
+                CheckStatus::Problem,
+                &msg!("doctor.name.ports"),
+                &msg!("doctor.ports", list = taken.join("; ")),
+                fix.map(Fix::Say),
+                action,
+            )
         })
     }
 
@@ -849,43 +843,36 @@ impl Daemon {
                 .collect::<Vec<_>>()
         };
         let slow = list(true);
-        let name = "database startup".to_owned();
+        let name = msg!("doctor.name.db_startup");
         if slow.is_empty() {
-            return Some(Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: format!("ready in {}", list(false).join(", ")),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            });
+            return Some(finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!("doctor.startup.ready", list = list(false).join(", ")),
+                None,
+                None,
+            ));
         }
         let hint = self
             .engine
             .deps()
             .system
             .slow_start_hint(self.engine.paths());
-        Some(Check {
-            action: self
-                .engine
+        Some(finding(
+            CheckStatus::Warning,
+            &name,
+            &msg!(
+                "doctor.startup.slow",
+                list = slow.join(", "),
+                folder = self.engine.paths().data_dir().display()
+            ),
+            hint.map(Fix::Say),
+            self.engine
                 .deps()
                 .system
                 .slow_start_command(self.engine.paths())
                 .map(|text| CheckAction::Copy { text }),
-            name,
-            status: CheckStatus::Warning,
-            detail: format!(
-                "slow to be ready: {} (they usually take a few seconds); an antivirus that reads every file of {} is the usual cause",
-                slow.join(", "),
-                self.engine.paths().data_dir().display()
-            ),
-            fix: hint,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        })
+        ))
     }
 
     // ---- building and refreshing the stack ----------------------------------------------
@@ -893,7 +880,7 @@ impl Daemon {
     fn config(&self) -> Result<Config, RpcError> {
         Config::load_from(self.engine.paths())
             .map(|loaded| loaded.config)
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))
     }
 
     fn config_warnings(&self) -> Vec<String> {
@@ -928,7 +915,7 @@ impl Daemon {
 
     fn plan(&self, config: &Config) -> Result<WebPlan, RpcError> {
         let linked = SitesFile::load(self.engine.paths())
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?;
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))?;
         let deps = self.engine.deps();
         Ok(plan_web(
             self.engine.paths(),
@@ -943,13 +930,13 @@ impl Daemon {
     fn build(&self) -> Result<(WebStack, Config, WebPlan), RpcError> {
         let config = self.config()?;
         let nginx = list_installed(self.engine.paths())
-            .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?
+            .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?
             .into_iter()
             .rfind(|i| i.service == "nginx")
             .ok_or_else(|| {
-                RpcError::new(
+                rpc_error(
                     ErrorCode::NotAvailable,
-                    "nginx is not installed, so there is nothing to start; run `crisol install nginx`",
+                    &msg!("daemon.no_nginx", command = "crisol install nginx"),
                 )
             })?;
         let plan = self.plan(&config)?;
@@ -1104,12 +1091,14 @@ fn exit_code(reason: &FailureReason) -> Option<i32> {
 
 /// How to give a service another port: `services.mysql.port` is `port` under
 /// `[services.mysql]`.
-fn set_port_fix(field: &str, free: u16) -> String {
+fn set_port_fix(field: &str, free: u16) -> Message {
     match field.rsplit_once('.') {
-        Some((table, key)) => {
-            format!("in crisol.toml, set `{key} = {free}` under `[{table}]` (that port is free)")
-        }
-        None => format!("in crisol.toml, set `{field} = {free}` (that port is free)"),
+        Some((table, key)) => msg!(
+            "doctor.ports.fix_table",
+            setting = format!("{key} = {free}"),
+            table = format!("[{table}]")
+        ),
+        None => msg!("doctor.ports.fix", setting = format!("{field} = {free}")),
     }
 }
 
@@ -1216,7 +1205,7 @@ fn home_fix(error: &crate::paths::HomeError) -> String {
 fn web_error(error: WebError) -> RpcError {
     match error {
         WebError::Home(home) => home_error(&home),
-        other => RpcError::new(ErrorCode::Io, other.to_string()),
+        other => rpc_error(ErrorCode::Io, &other.message()),
     }
 }
 

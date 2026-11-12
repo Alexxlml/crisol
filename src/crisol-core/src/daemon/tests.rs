@@ -1240,8 +1240,12 @@ impl SystemChecks for Explains {
         (code == -1_073_741_515).then(|| "a DLL is missing".to_owned())
     }
 
-    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
-        Some("exclude data/ with: exclude-data".to_owned())
+    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<crate::i18n::Message> {
+        Some(crate::msg!(
+            "doctor.slow_start.hint",
+            command = "exclude-data",
+            undo = "undo-exclude-data"
+        ))
     }
 
     fn slow_start_command(&self, _paths: &CrisolPaths) -> Option<String> {
@@ -1395,9 +1399,10 @@ fn doctor_measures_how_long_a_database_took_to_be_ready_and_says_when_it_was_slo
             assert_eq!(startup.status, CheckStatus::Warning);
             assert!(startup.detail.contains("mysql 1"), "{}", startup.detail);
             assert!(startup.detail.contains("antivirus"), "{}", startup.detail);
-            assert_eq!(
-                startup.fix.as_deref(),
-                Some("exclude data/ with: exclude-data")
+            assert!(
+                startup.fix.as_deref().unwrap().contains("exclude-data"),
+                "{:?}",
+                startup.fix
             );
             // The command alone to copy; Crisol never runs it.
             assert_eq!(

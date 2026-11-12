@@ -12,7 +12,7 @@ use std::io;
 use std::path::Path;
 
 use crate::globals::{shimmed_globals, sync_global_shims, GlobalSync};
-use crate::i18n::{Localized, Message};
+use crate::i18n::{and_list, Localized, Message};
 use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
@@ -182,7 +182,7 @@ pub const ENV_BASH: &str = "eval \"$(crisol env --shell bash)\"";
 /// One sentence per folder that wins over the shims: which commands run from it, why Crisol
 /// cannot change that, and the way out.
 #[must_use]
-pub fn describe_shadows(shadows: &[Shadow]) -> Vec<String> {
+pub fn describe_shadows(shadows: &[Shadow]) -> Vec<Message> {
     let mut groups: Vec<(String, bool, Option<&'static str>, Vec<&str>)> = Vec::new();
     for shadow in shadows {
         let folder = shadow
@@ -206,22 +206,26 @@ pub fn describe_shadows(shadows: &[Shadow]) -> Vec<String> {
         .into_iter()
         .map(|(folder, machine, suite, programs)| {
             let quoted: Vec<String> = programs.iter().map(|p| format!("`{p}`")).collect();
-            let (names, verb, which) = match quoted.as_slice() {
-                [one] => (one.clone(), "runs", "the one"),
-                [init @ .., last] => (format!("{} and {last}", init.join(", ")), "run", "the ones"),
-                [] => (String::new(), "run", "the ones"),
-            };
+            let names = and_list(&quoted);
             let who = suite.map_or_else(String::new, |suite| format!(" ({suite})"));
             if machine {
-                format!(
-                    "{names} in a terminal {verb} {which} in {folder}{who}, not Crisol's: that folder is in the machine PATH, which \
-                     Windows searches before your user PATH, and Crisol never changes the machine PATH. A terminal where Crisol's \
-                     shims come first: `{ENV_POWERSHELL}` in PowerShell, `{ENV_BASH}` in Git Bash"
+                msg!(
+                    "shim.shadow.machine",
+                    names => names,
+                    count = quoted.len(),
+                    folder = folder,
+                    who = who,
+                    powershell = ENV_POWERSHELL,
+                    bash = ENV_BASH
                 )
             } else {
-                format!(
-                    "{names} in a terminal {verb} {which} in {folder}{who}, not Crisol's: it comes earlier in your user PATH. \
-                     `crisol path add` puts Crisol's shims first"
+                msg!(
+                    "shim.shadow.user",
+                    names => names,
+                    count = quoted.len(),
+                    folder = folder,
+                    who = who,
+                    command = "crisol path add"
                 )
             }
         })

@@ -9,6 +9,8 @@ use std::io;
 use std::net::{Ipv6Addr, SocketAddr, TcpListener};
 use std::path::Path;
 
+use crisol_core::i18n::{finding, Fix, Message};
+use crisol_core::msg;
 use crisol_protocol::{Check, CheckAction, CheckStatus};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
@@ -175,47 +177,34 @@ fn required_runtime(install_dir: &Path) -> Option<(u8, u8)> {
 /// start without it, and they say so only with an exit code.
 #[must_use]
 pub fn vc_runtime_check() -> Check {
-    let name = "Visual C++ runtime".to_owned();
+    let name = msg!("doctor.name.vc_runtime");
     if let Some(version) = vc_runtime_version() {
-        return Check {
-            action: None,
-            name,
-            status: CheckStatus::Ok,
-            detail: format!("{version} (x64) is installed"),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        };
+        return finding(
+            CheckStatus::Ok,
+            &name,
+            &msg!("doctor.vc.installed", version = version),
+            None,
+            None,
+        );
     }
     if system_directory().is_ok_and(|dir| vc_runtime_dlls_in(&dir)) {
-        return Check {
-            action: None,
-            name,
-            status: CheckStatus::Ok,
-            detail: "its DLLs are in the system folder (no installer recorded a version)"
-                .to_owned(),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        };
+        return finding(
+            CheckStatus::Ok,
+            &name,
+            &msg!("doctor.vc.dlls_only"),
+            None,
+            None,
+        );
     }
-    Check {
-        action: None,
-        name,
-        status: CheckStatus::Warning,
-        detail: "the Microsoft Visual C++ runtime (x64) is not installed: PHP and the database \
-                 servers cannot start without it"
-            .to_owned(),
-        fix: Some(format!("install it from {VC_RUNTIME_URL}")),
-        name_text: None,
-        detail_text: None,
-        fix_text: None,
-    }
-    .with_action(CheckAction::Link {
-        url: VC_RUNTIME_URL.to_owned(),
-    })
+    finding(
+        CheckStatus::Warning,
+        &name,
+        &msg!("doctor.vc.missing"),
+        Some(Fix::Say(msg!("doctor.vc.fix", url = VC_RUNTIME_URL))),
+        Some(CheckAction::Link {
+            url: VC_RUNTIME_URL.to_owned(),
+        }),
+    )
 }
 
 /// Whether a program can listen on `::1`: Nginx listens there as well as on `127.0.0.1`, so a
@@ -227,46 +216,28 @@ fn ipv6_loopback_works() -> io::Result<()> {
 /// The line of `doctor` about `::1`.
 #[must_use]
 pub fn ipv6_check() -> Check {
-    let name = "IPv6 loopback".to_owned();
+    let name = msg!("doctor.name.ipv6");
     match ipv6_loopback_works() {
-        Ok(()) => Check {
-            action: None,
-            name,
-            status: CheckStatus::Ok,
-            detail: "programs can listen on [::1]".to_owned(),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        },
-        Err(error) => Check {
-            action: None,
-            name,
-            status: CheckStatus::Problem,
-            detail: format!(
-                "nothing can listen on [::1] ({error}): Nginx listens there too, so it cannot start"
-            ),
-            fix: Some(
-                "turn IPv6 back on (Windows keeps [::1] working unless IPv6 is disabled in the registry)"
-                    .to_owned(),
-            ),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        },
+        Ok(()) => finding(CheckStatus::Ok, &name, &msg!("doctor.ipv6.ok"), None, None),
+        Err(error) => finding(
+            CheckStatus::Problem,
+            &name,
+            &msg!("doctor.ipv6.broken", error = error),
+            Some(Fix::Say(msg!("doctor.ipv6.fix"))),
+            None,
+        ),
     }
 }
 
 /// What to do when the databases are slow to start: Microsoft Defender reads every file they
 /// open. An administrator can exclude only the data folder; Crisol does not do it (ADR-0021).
 #[must_use]
-pub fn slow_start_hint(data: &Path) -> String {
+pub fn slow_start_hint(data: &Path) -> Message {
     let quoted = crisol_core::shell::powershell_quote(&data.display().to_string());
-    format!(
-        "if Microsoft Defender is on, an administrator can exclude only the data folder, in \
-         PowerShell as administrator: {} \
-         (Remove-MpPreference -ExclusionPath {quoted} undoes it)",
-        slow_start_command(data)
+    msg!(
+        "doctor.slow_start.hint",
+        command = slow_start_command(data),
+        undo = format!("Remove-MpPreference -ExclusionPath {quoted}")
     )
 }
 

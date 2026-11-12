@@ -17,6 +17,8 @@ use crisol_protocol::{ErrorCode, RpcError};
 use crate::config::Config;
 use crate::dbservice::{plan, Auth, DbAdmin, DbError, DbKind, DbService, NoAdmin, PasswordChange};
 use crate::engine::{home_error, NoSystemChecks, SystemChecks};
+use crate::i18n::{rpc_error, Localized};
+use crate::msg;
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::ports::PortProbe;
 use crate::process::ProcessSupervisor;
@@ -112,47 +114,49 @@ impl DbStack {
         require_private_home(&self.paths, self.dirs.as_ref()).map_err(|e| home_error(&e))?;
         let name = kind.service();
         if kind.password_change(false) == PasswordChange::NoPassword {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::InvalidParams,
-                format!("{name} has no password to reset"),
+                &msg!("dbstack.no_password", name = name),
             ));
         }
         secrets::ensure_dir(&self.paths, self.dirs.as_ref())
-            .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
         if let Some(service) = self.services.get_mut(&kind) {
             if *service.state() == ServiceState::Running {
                 let admin = Arc::clone(&self.admin);
-                return service
-                    .reset_password(admin.as_ref())
-                    .map_err(|why| RpcError::new(ErrorCode::Conflict, why));
+                return service.reset_password(admin.as_ref()).map_err(|why| {
+                    rpc_error(ErrorCode::Conflict, &msg!("db.reason", reason = why))
+                });
             }
             if active(service.state()) {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::Conflict,
-                    format!("{name} is starting or stopping; try again in a moment"),
+                    &msg!("dbstack.busy", name = name),
                 ));
             }
         }
         let config = self.load_config()?;
         let plan = plan(&self.paths, &config, kind).map_err(|e| match e {
-            DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
-            other => RpcError::new(ErrorCode::Io, other.to_string()),
+            DbError::NotInstalled(_) => rpc_error(ErrorCode::NotAvailable, &e.message()),
+            other => rpc_error(ErrorCode::Io, &other.message()),
         })?;
         if kind.password_change(false) == PasswordChange::Ready {
-            let new = secrets::generate_password()
-                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+            let new =
+                secrets::generate_password().map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
             let file = plan.secret_path("");
             secrets::write_file(&file, new.expose())
-                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+                .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
             return Ok(format!(
                 "{name}: new password kept in {}; it takes effect when {name} starts",
                 file.display()
             ));
         }
-        Err(RpcError::new(
+        Err(rpc_error(
             ErrorCode::NotAvailable,
-            format!(
-                "{name} is not running, and its server has to be asked to change the password: start it with `crisol start {name}` and run this again"
+            &msg!(
+                "dbstack.not_running",
+                name = name,
+                command = format!("crisol start {name}")
             ),
         ))
     }
@@ -165,7 +169,7 @@ impl DbStack {
     fn load_config(&self) -> Result<Config, RpcError> {
         Config::load_from(&self.paths)
             .map(|loaded| loaded.config)
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))
     }
 
     /// Starts one database. An error here is the answer to whoever asked for exactly this one.
@@ -178,17 +182,18 @@ impl DbStack {
         }
         self.require_free_port(kind, &config)?;
         let plan = plan(&self.paths, &config, kind).map_err(|e| match e {
-            DbError::NotInstalled(_) => RpcError::new(ErrorCode::NotAvailable, e.to_string()),
-            other => RpcError::new(ErrorCode::Io, other.to_string()),
+            DbError::NotInstalled(_) => rpc_error(ErrorCode::NotAvailable, &e.message()),
+            other => rpc_error(ErrorCode::Io, &other.message()),
         })?;
         // Refused here with what to do, rather than failing with only an exit code.
         if let Some((why, fix)) = self.system.missing_runtime(&plan.version.path) {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotAvailable,
-                format!(
-                    "{} {} cannot start: {why}",
-                    kind.service(),
-                    plan.version.version
+                &msg!(
+                    "dbstack.cannot_start",
+                    service = kind.service(),
+                    version = plan.version.version,
+                    why = why
                 ),
             )
             .with_fix(fix));
@@ -197,19 +202,16 @@ impl DbStack {
         // accounts can write in it, none is read from it or put in it.
         if kind.auth() != Auth::None {
             secrets::ensure_dir(&self.paths, self.dirs.as_ref()).map_err(|e| match e {
-                SecretsError::Exposed(path) => RpcError::new(
-                    ErrorCode::HomeExposed,
-                    format!(
-                        "`{}` can be modified by other accounts of this computer, so the passwords in it cannot be trusted",
-                        path.display()
-                    ),
-                )
-                .with_fix(
-                    self.dirs
-                        .fix_command(&path)
-                        .unwrap_or_else(|| format!("remove the write access of other accounts on `{}`", path.display())),
-                ),
-                other => RpcError::new(ErrorCode::Io, other.to_string()),
+                SecretsError::Exposed(ref path) => {
+                    let rpc = rpc_error(ErrorCode::HomeExposed, &e.message());
+                    if let Some(command) = self.dirs.fix_command(path) {
+                        rpc.with_fix(command)
+                    } else {
+                        let fix = msg!("paths.fix_default", path = path.display());
+                        rpc.with_fix(fix.to_string()).with_fix_text(fix.to_text())
+                    }
+                }
+                other => rpc_error(ErrorCode::Io, &other.message()),
             })?;
         }
         self.notices
@@ -230,16 +232,14 @@ impl DbStack {
         for other in DbKind::ALL.into_iter().filter(|o| *o != kind) {
             let running = self.services.get(&other).is_some_and(|s| active(s.state()));
             if running && other.port(config) == kind.port(config) {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::Conflict,
-                    format!(
-                        "{} is running on port {}, which {} would use too (they are \
-                         alternatives, only one at a time). Stop it first with `crisol stop {}`, \
-                         or give one of them another port in crisol.toml",
-                        other.service(),
-                        other.port(config),
-                        kind.service(),
-                        other.service()
+                    &msg!(
+                        "dbstack.port_taken",
+                        other = other.service(),
+                        port = other.port(config),
+                        service = kind.service(),
+                        command = format!("crisol stop {}", other.service())
                     ),
                 ));
             }

@@ -9,6 +9,8 @@
 use std::collections::BTreeMap;
 
 use crisol_core::config::Config;
+use crisol_core::i18n::rpc_error;
+use crisol_core::msg;
 use crisol_core::resolve::{resolve, ResolveContext, Source, Tool as CoreTool};
 use crisol_core::version::Version;
 use crisol_protocol::{Call, ErrorCode, Event, Reply, RpcError, Tool, VersionInfo, VersionList};
@@ -205,7 +207,12 @@ pub fn fetch_versions(context: &Context) -> Result<VersionsView, RpcError> {
         other => {
             return Err(RpcError::new(
                 ErrorCode::Internal,
-                format!("unexpected answer to `list`: {other:?}"),
+                msg!(
+                    "client.unexpected_answer",
+                    call = "list",
+                    answer = format!("{other:?}")
+                )
+                .render(context.language),
             ))
         }
     };
@@ -303,9 +310,9 @@ impl VersionAct {
             }),
             Self::Use { service, version } => {
                 let tool = tool_of(service).ok_or_else(|| {
-                    RpcError::new(
+                    rpc_error(
                         ErrorCode::InvalidParams,
-                        format!("there is no version of `{service}` to choose; only php and node"),
+                        &msg!("versions.no_choice", service = service),
                     )
                 })?;
                 Ok(Call::Use {

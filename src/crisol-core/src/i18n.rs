@@ -470,6 +470,21 @@ pub fn placeholders(template: &str) -> Vec<String> {
         .collect()
 }
 
+/// Checks that `message` can be said in every language there is: no key shown instead of a
+/// sentence and no `{datum}` left unfilled (ADR-0030, test 3).
+#[cfg(test)]
+pub(crate) fn assert_says_everywhere(message: &Message) {
+    for language in Language::all() {
+        let text = message.render(language);
+        assert!(
+            !text.is_empty() && text != message.key() && !text.contains('{'),
+            "{} says `{text}` for `{}`",
+            language.code(),
+            message.key()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

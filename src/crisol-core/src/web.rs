@@ -37,6 +37,7 @@ use crate::ca::ensure_ca;
 use crate::cacert::{NoRoots, RootCertificates};
 use crate::catalog::Catalog;
 use crate::config::{Config, PhpConfig};
+use crate::i18n::{Localized, Message};
 use crate::manage::InstalledVersion;
 use crate::nginx::{
     config_differs, probe_path, render, stage_nginx_config, write_nginx_config, MailRoute,
@@ -244,15 +245,24 @@ pub fn plan_web(
 #[derive(Debug, thiserror::Error)]
 pub enum WebError {
     /// A path is not allowed.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// The Nginx configuration could not be written.
-    #[error(transparent)]
     Nginx(#[from] NginxError),
     /// The home is open to other accounts: nothing is started or generated from it.
-    #[error(transparent)]
     Home(#[from] HomeError),
 }
+
+impl Localized for WebError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Paths(error) => error.message(),
+            Self::Nginx(error) => error.message(),
+            Self::Home(error) => error.message(),
+        }
+    }
+}
+
+crate::display_as_message!(WebError);
 
 /// Something that happened in the web stack.
 #[derive(Debug, Clone, PartialEq, Eq)]

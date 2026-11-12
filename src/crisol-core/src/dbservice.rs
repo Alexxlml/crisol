@@ -36,7 +36,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
+use crate::i18n::{Localized, Message};
 use crate::manage::{list_installed, InstalledVersion};
+use crate::msg;
 use crate::paths::{CrisolPaths, PathsError};
 use crate::ports::PortProbe;
 use crate::process::{
@@ -354,21 +356,33 @@ impl DbKind {
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     /// No version of it is installed (or the pinned one is not).
-    #[error("{0} is not installed; run `crisol install {0}`")]
     NotInstalled(String),
     /// The installed versions could not be listed.
-    #[error("{0}")]
     List(String),
     /// A folder name is not allowed.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// A path holds a character the configuration cannot carry.
-    #[error("{0}")]
     Unusable(String),
     /// The passwords could not be made, kept or read.
-    #[error(transparent)]
     Secrets(#[from] SecretsError),
 }
+
+impl Localized for DbError {
+    fn message(&self) -> Message {
+        match self {
+            Self::NotInstalled(service) => msg!(
+                "db.not_installed",
+                service = service,
+                command = format!("crisol install {service}")
+            ),
+            Self::List(reason) | Self::Unusable(reason) => msg!("db.reason", reason = reason),
+            Self::Paths(error) => error.message(),
+            Self::Secrets(error) => error.message(),
+        }
+    }
+}
+
+crate::display_as_message!(DbError);
 
 /// Everything decided about one database service before it runs. It holds no password.
 #[derive(Debug, Clone, PartialEq, Eq)]

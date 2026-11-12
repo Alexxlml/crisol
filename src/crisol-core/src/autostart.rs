@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 
 use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
-use crate::i18n::{Localized, Message};
+use crate::i18n::{finding, Fix, Localized, Message};
 use crate::msg;
 use crate::paths::PrivateDirs;
 use crate::programs::{require_trusted_program, ProgramError};
@@ -151,16 +151,18 @@ fn program_of(command: &str) -> Option<&str> {
 /// why that can be: Windows starts the programs of the sign-in entry some seconds after the
 /// desktop appears (about 20 s were measured), so the daemon may simply not be there yet.
 pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool) -> Option<Check> {
-    let name = "autostart";
-    let mk = |status, detail: String, action: Option<CheckAction>| Check {
-        fix: action.as_ref().and_then(CheckAction::command),
-        action,
-        name: name.to_owned(),
-        status,
-        detail,
-        name_text: None,
-        detail_text: None,
-        fix_text: None,
+    let name = msg!("doctor.name.autostart");
+    let mk = |status, detail: Message, action: Option<CheckAction>| {
+        finding(
+            status,
+            &name,
+            &detail,
+            action
+                .as_ref()
+                .and_then(CheckAction::command)
+                .map(Fix::Command),
+            action,
+        )
     };
     let off = || {
         Some(CheckAction::Local {
@@ -173,7 +175,7 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
         Err(error) => {
             return Some(mk(
                 CheckStatus::Warning,
-                format!("cannot read the sign-in entry: {error}"),
+                msg!("doctor.autostart.cannot_read", error = error),
                 None,
             ))
         }
@@ -181,43 +183,41 @@ pub fn check(store: &dyn Autostart, dirs: &dyn PrivateDirs, daemon_running: bool
     let Some(program) = program_of(&command).map(Path::new) else {
         return Some(mk(
             CheckStatus::Warning,
-            format!("the sign-in entry is not a program: {command}"),
+            msg!("doctor.autostart.not_a_program", command = command),
             off(),
         ));
     };
     match require_trusted_program(program, dirs) {
         Ok(()) if daemon_running => Some(mk(
             CheckStatus::Ok,
-            format!("{} starts when you sign in", program.display()),
+            msg!("doctor.autostart.ok", program = program.display()),
             None,
         )),
         Ok(()) => Some(mk(
             CheckStatus::Warning,
-            format!(
-                "{} starts when you sign in, but the daemon is not running now. Windows delays the programs that start at sign-in by some seconds (about 20 were measured), so if you have just signed in, wait a moment; if it was closed on purpose, `crisol start` brings it back",
-                program.display()
+            msg!(
+                "doctor.autostart.not_running",
+                program = program.display(),
+                command = "crisol start"
             ),
             Some(CheckAction::start()),
         )),
         Err(ProgramError::Missing { .. }) => Some(mk(
             CheckStatus::Warning,
-            format!(
-                "the sign-in entry runs {}, which is not there any more",
-                program.display()
-            ),
+            msg!("doctor.autostart.missing", program = program.display()),
             off(),
         )),
         Err(ProgramError::Exposed { path, .. }) => Some(mk(
             CheckStatus::Problem,
-            format!(
-                "the sign-in entry runs {} and {} can be modified by other accounts, who would run code as you at every sign-in; close it, or turn the entry off",
-                program.display(),
-                path.display()
+            msg!(
+                "doctor.autostart.exposed",
+                program = program.display(),
+                path = path.display()
             ),
             off(),
         )),
         Err(error @ ProgramError::Check { .. }) => {
-            Some(mk(CheckStatus::Warning, error.to_string(), None))
+            Some(mk(CheckStatus::Warning, error.message(), None))
         }
     }
 }

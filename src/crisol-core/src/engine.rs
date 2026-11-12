@@ -78,7 +78,7 @@ pub trait SystemChecks: Send + Sync {
 
     /// What usually makes a database slow to start on this system and how to avoid it, for
     /// `doctor` (F11.1). Read only: it says what to do, it does nothing.
-    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<String> {
+    fn slow_start_hint(&self, _paths: &CrisolPaths) -> Option<crate::i18n::Message> {
         None
     }
 
@@ -186,9 +186,9 @@ impl Engine {
             .map(|_| ())
             .map_err(|e| match e {
                 crate::paths::PathsError::OtherAccount { .. } => {
-                    RpcError::new(ErrorCode::HomeExposed, e.to_string())
+                    rpc_error(ErrorCode::HomeExposed, &e.message())
                 }
-                other => RpcError::new(ErrorCode::Io, other.to_string()),
+                other => rpc_error(ErrorCode::Io, &other.message()),
             })
     }
 
@@ -288,18 +288,24 @@ impl Engine {
     /// The `.env` lines to connect to `service`. Reads the password Crisol kept; starts nothing.
     fn credentials(&self, service: &str) -> Result<Reply, RpcError> {
         let kind = crate::dbservice::DbKind::from_service(service).ok_or_else(|| {
-            RpcError::new(
+            rpc_error(
                 ErrorCode::NotFound,
-                format!("`{service}` has no credentials; they are for mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit and memcached"),
+                &msg!(
+                    "engine.no_credentials",
+                    service = service,
+                    list =
+                        "mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit",
+                    last = "memcached"
+                ),
             )
         })?;
         let config = self.load_config()?;
         let details = crate::dbservice::connection_details(&self.paths, &config, kind).map_err(
             |e| match e {
                 crate::dbservice::DbError::NotInstalled(_) => {
-                    RpcError::new(ErrorCode::NotAvailable, e.to_string())
+                    rpc_error(ErrorCode::NotAvailable, &e.message())
                 }
-                other => RpcError::new(ErrorCode::Io, other.to_string()),
+                other => rpc_error(ErrorCode::Io, &other.message()),
             },
         )?;
         Ok(Reply::Credentials(CredentialsInfo {
@@ -319,9 +325,15 @@ impl Engine {
     /// is the user's and the warning is also what `doctor` and `start` say.
     fn set_enabled(&self, service: &str, enabled: bool) -> Result<Reply, RpcError> {
         let kind = crate::dbservice::DbKind::from_service(service).ok_or_else(|| {
-            RpcError::new(
+            rpc_error(
                 ErrorCode::InvalidParams,
-                format!("`{service}` cannot be enabled or disabled; it is for mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit and memcached"),
+                &msg!(
+                    "engine.cannot_enable",
+                    service = service,
+                    list =
+                        "mysql, mariadb, postgresql, mongodb, redis, garnet, meilisearch, mailpit",
+                    last = "memcached"
+                ),
             )
         })?;
         let service = kind.service();
@@ -330,13 +342,13 @@ impl Engine {
         let mut warnings = Vec::new();
         if was != enabled {
             let mut editor = TomlEditor::open_config(&self.paths)
-                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+                .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
             editor
                 .set(&["services", service, "enabled"], enabled)
-                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+                .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
             editor
                 .save()
-                .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))?;
+                .map_err(|e| rpc_error(ErrorCode::Io, &e.message()))?;
             if enabled {
                 if let Ok(after) = Config::load_from(&self.paths) {
                     warnings.extend(
@@ -373,7 +385,7 @@ impl Engine {
     fn load_config(&self) -> Result<Config, RpcError> {
         Config::load_from(&self.paths)
             .map(|loaded| loaded.config)
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))
     }
 
     // ---- versions ---------------------------------------------------------------------
@@ -478,9 +490,9 @@ impl Engine {
                 self.deps.dirs.as_ref(),
             ),
             (Some(archive), Some(_)) if !Path::new(archive).is_absolute() => {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::InvalidParams,
-                    format!("`from` must be an absolute path, not `{archive}`"),
+                    &msg!("engine.from_absolute", archive = archive),
                 ));
             }
             (Some(archive), Some(hash)) => install_version_from(
@@ -496,10 +508,9 @@ impl Engine {
                 self.deps.dirs.as_ref(),
             ),
             _ => {
-                return Err(RpcError::new(
+                return Err(rpc_error(
                     ErrorCode::InvalidParams,
-                    "`from` and `sha256` go together: an archive is installed only with the \
-                     hash the user vouches for",
+                    &msg!("engine.from_with_hash"),
                 ));
             }
         };
@@ -552,9 +563,9 @@ impl Engine {
     ) -> Result<&'a str, RpcError> {
         match version {
             Some(version) => Ok(version),
-            None if from_file => Err(RpcError::new(
+            None if from_file => Err(rpc_error(
                 ErrorCode::InvalidParams,
-                "`from` needs the exact version of the archive",
+                &msg!("engine.from_needs_version"),
             )),
             None => Ok(self.deps.catalog.recommended(service).unwrap_or("latest")),
         }
@@ -673,9 +684,9 @@ impl Engine {
     fn unpark(&self, path: &str) -> Result<Reply, RpcError> {
         let changed = unpark(&self.paths, Path::new(path)).map_err(sites_error)?;
         if !changed {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotFound,
-                format!("{path} is not a parked folder"),
+                &msg!("engine.not_parked", path = path),
             ));
         }
         Ok(done(format!("Unparked {path}"), true))
@@ -695,9 +706,9 @@ impl Engine {
 
     fn unlink(&self, name: &str) -> Result<Reply, RpcError> {
         if !unlink(&self.paths, name).map_err(sites_error)? {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotFound,
-                format!("there is no linked site called `{name}`"),
+                &msg!("engine.not_linked", name = name),
             ));
         }
         Ok(done(format!("Unlinked {name}"), true))
@@ -714,9 +725,9 @@ impl Engine {
     fn secure(&self, name: &str, on: bool) -> Result<Reply, RpcError> {
         let (list, _) = self.discover()?;
         if !list.sites.iter().any(|s| s.name == name) {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotFound,
-                format!("there is no site called `{name}`; `crisol sites` lists them"),
+                &msg!("terminal.no_site", name = name, command = "crisol sites"),
             ));
         }
         let changed = set_secure(&self.paths, name, on).map_err(sites_error)?;
@@ -734,7 +745,7 @@ impl Engine {
     fn discover(&self) -> Result<(crate::sites::SiteList, Config), RpcError> {
         let config = self.load_config()?;
         let linked = SitesFile::load(&self.paths)
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?;
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))?;
         Ok((discover(&self.paths, &config, &linked), config))
     }
 
@@ -744,17 +755,17 @@ impl Engine {
         let path = self
             .paths
             .runtime_log(service)
-            .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?;
+            .map_err(|e| rpc_error(ErrorCode::InvalidParams, &e.message()))?;
         if !path.is_file() {
-            return Err(RpcError::new(
+            return Err(rpc_error(
                 ErrorCode::NotFound,
-                format!("there is no log for `{service}` yet ({})", path.display()),
+                &msg!("engine.no_log", service = service, path = path.display()),
             ));
         }
         read_log(&path, lines, from).map(Reply::Logs).map_err(|e| {
-            RpcError::new(
+            rpc_error(
                 ErrorCode::Io,
-                format!("cannot read {}: {e}", path.display()),
+                &msg!("engine.log_read", path = path.display(), error = e),
             )
         })
     }
@@ -1314,47 +1325,42 @@ fn problem_path(error: &HomeError) -> String {
     format!("`{}`", path.display())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn manage_error(error: ManageError) -> RpcError {
-    match error {
-        ManageError::Home(home) => home_error(&home),
-        ManageError::Catalog(e) => RpcError::new(ErrorCode::NotFound, e.to_string()),
-        ManageError::NotInstalled { .. } => RpcError::new(ErrorCode::NotFound, error.to_string()),
+    let code = match &error {
+        ManageError::Home(home) => return home_error(home),
+        ManageError::Catalog(_) | ManageError::NotInstalled { .. } => ErrorCode::NotFound,
         ManageError::Ambiguous { .. }
         | ManageError::Version(_)
         | ManageError::Paths(_)
         | ManageError::FromNeedsExactVersion { .. }
         | ManageError::FromBadHash
         | ManageError::FromContradictsCatalog { .. }
-        | ManageError::FromUnknownService(_) => {
-            RpcError::new(ErrorCode::InvalidParams, error.to_string())
-        }
-        ManageError::InUse(_) => RpcError::new(ErrorCode::Conflict, error.to_string()),
-        ManageError::UnsupportedPlatform => {
-            RpcError::new(ErrorCode::NotAvailable, error.to_string())
-        }
-        ManageError::Install(_) | ManageError::Io { .. } => {
-            RpcError::new(ErrorCode::Io, error.to_string())
-        }
-    }
+        | ManageError::FromUnknownService(_) => ErrorCode::InvalidParams,
+        ManageError::InUse(_) => ErrorCode::Conflict,
+        ManageError::UnsupportedPlatform => ErrorCode::NotAvailable,
+        ManageError::Install(_) | ManageError::Io { .. } => ErrorCode::Io,
+    };
+    rpc_error(code, &error.message())
 }
 
 fn use_error(error: UseError) -> RpcError {
     match error {
-        UseError::BadVersion(_) => RpcError::new(ErrorCode::InvalidParams, error.to_string()),
+        UseError::BadVersion(_) => rpc_error(ErrorCode::InvalidParams, &error.message()),
         UseError::NotInstalled { .. } | UseError::NotAFolder(_) => {
-            RpcError::new(ErrorCode::NotFound, error.to_string())
+            rpc_error(ErrorCode::NotFound, &error.message())
         }
         UseError::Manage(e) => manage_error(e),
-        UseError::Edit(_) => RpcError::new(ErrorCode::Io, error.to_string()),
+        UseError::Edit(_) => rpc_error(ErrorCode::Io, &error.message()),
     }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn sites_error(error: SitesError) -> RpcError {
     match error {
-        SitesError::Invalid { .. } => RpcError::new(ErrorCode::InvalidParams, error.to_string()),
-        SitesError::NotAFolder(_) => RpcError::new(ErrorCode::NotFound, error.to_string()),
-        SitesError::Edit(_) => RpcError::new(ErrorCode::Io, error.to_string()),
+        SitesError::Invalid { .. } => rpc_error(ErrorCode::InvalidParams, &error.message()),
+        SitesError::NotAFolder(_) => rpc_error(ErrorCode::NotFound, &error.message()),
+        SitesError::Edit(_) => rpc_error(ErrorCode::Io, &error.message()),
     }
 }
 

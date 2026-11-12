@@ -444,3 +444,44 @@ fn a_home_that_is_not_there_yet_is_made_private_by_the_first_step() {
     assert_eq!(outcomes[0].kind, OutcomeKind::Done, "{outcomes:?}");
     assert_eq!(world.dirs.created(), [world.paths.home().to_path_buf()]);
 }
+
+#[test]
+fn nothing_of_the_setup_is_left_to_the_english_of_the_code() {
+    use crate::i18n::assert_says_everywhere as says;
+    let world = World::new();
+    let setup = FakeSetup::not_installed();
+    let system = world.system(&setup);
+    let plan = plan(&system, SystemTime::now());
+    assert_eq!(ids(&plan), STEP_IDS);
+    for step in &plan.steps {
+        says(&step.describe());
+        says(&step.question());
+    }
+    // Every way a step ends: done, left by the person, and the helper's own lines.
+    for agree in [true, false] {
+        let outcomes = run(&system, &plan, &mut |_| agree, SystemTime::now());
+        assert_eq!(outcomes.len(), plan.steps.len());
+        for outcome in &outcomes {
+            says(&outcome.message);
+        }
+    }
+    // And again, with everything in place, what is already done is said too.
+    let again = super::plan(&system, SystemTime::now());
+    for message in again.done.iter().chain(&again.notes) {
+        says(message);
+    }
+}
+
+#[test]
+fn what_stops_the_setup_is_said_in_every_language() {
+    use crate::i18n::assert_says_everywhere as says;
+    let world = World::new();
+    world.dirs.expose(&world.programs);
+    world.dirs.expose(world.paths.home());
+    let setup = FakeSetup::not_installed();
+    let blocked = plan(&world.system(&setup), SystemTime::now());
+    assert!(blocked.is_blocked());
+    for problem in &blocked.problems {
+        says(&problem.message);
+    }
+}

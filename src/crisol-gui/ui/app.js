@@ -364,7 +364,7 @@ function renderDoctor() {
       const item = el("li", "row doctor");
       item.append(chip(DOCTOR_CHIPS[row.status], t("doctor.status." + row.status)));
       const grow = el("span", "grow");
-      grow.append(el("strong", null, row.name), el("span", "detail", row.detail));
+      grow.append(el("strong", null, row.label || row.name), el("span", "detail", row.detail));
       // The exact thing to do: what the command line would say, in the core's words, shown
       // under the button so that nothing is done without being seen first.
       if (row.fix) {

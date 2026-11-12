@@ -31,6 +31,8 @@ use serde::Deserialize;
 
 use crate::config::{deserialize_reporting_unknown, invalid, Config, ConfigError, ConfigWarning};
 use crate::edit::{EditError, TomlEditor};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::CrisolPaths;
 
 /// How a site came to exist.
@@ -362,7 +364,6 @@ pub fn set_secure(paths: &CrisolPaths, name: &str, on: bool) -> Result<bool, Sit
 #[derive(Debug, thiserror::Error)]
 pub enum SitesError {
     /// A value is not acceptable.
-    #[error("{what} {why}")]
     Invalid {
         /// What was wrong.
         what: String,
@@ -370,12 +371,22 @@ pub enum SitesError {
         why: String,
     },
     /// The folder does not exist.
-    #[error("`{}` is not a folder", .0.display())]
     NotAFolder(PathBuf),
     /// `sites.toml` could not be edited or written.
-    #[error(transparent)]
     Edit(#[from] EditError),
 }
+
+impl Localized for SitesError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Invalid { what, why } => msg!("sites.invalid", what = what, why = why),
+            Self::NotAFolder(path) => msg!("use.not_a_folder", path = path.display()),
+            Self::Edit(error) => error.message(),
+        }
+    }
+}
+
+crate::display_as_message!(SitesError);
 
 // ---- finding the sites ----------------------------------------------------------------
 

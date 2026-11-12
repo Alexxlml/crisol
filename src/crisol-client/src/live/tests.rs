@@ -73,6 +73,7 @@ fn run_script(lines: &[String]) -> (Ended, LiveState, Vec<LiveState>, Vec<String
         &mut remote,
         &hello_call(),
         "0.1.0",
+        Language::ENGLISH,
         &stop,
         &mut state,
         &mut |s| {
@@ -137,6 +138,7 @@ fn a_stopped_view_publishes_nothing_more() {
         &mut remote,
         &hello_call(),
         "0.1.0",
+        Language::ENGLISH,
         &stop,
         &mut LiveState::default(),
         &mut |s| {
@@ -352,6 +354,7 @@ fn config(connections: Connections) -> LiveConfig {
         }),
         hello: hello_call(),
         version: "0.1.0".to_owned(),
+        language: Language::ENGLISH,
         retry: Duration::from_millis(5),
     }
 }
@@ -528,4 +531,52 @@ fn a_new_start_of_nginx_clears_what_held_against_the_old_one() {
         service_event("nginx", "starting", 3),
     ]);
     assert_eq!(state.reload_error, None);
+}
+
+/// What the window shows of a daemon that refuses it, and of one that is another version, in
+/// the language of the person (ADR-0030): the daemon says it in English and with its key.
+#[test]
+fn what_the_window_shows_of_the_daemon_is_said_in_the_language_of_the_person() {
+    let refusal = r#"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"this daemon speaks protocol 4 and the client 3; use the same version of crisol and crisold","text":{"key":"daemon.protocol","args":{"daemon":"4","client":"3"}}}}"#;
+    let follow_in = |language, lines: &[String]| {
+        let mut remote = Remote(Client::new(Cursor::new(script(lines)), Vec::new()));
+        let mut state = LiveState::default();
+        let ended = follow(
+            &mut remote,
+            &hello_call(),
+            "0.1.0",
+            language,
+            &AtomicBool::new(false),
+            &mut state,
+            &mut |_| {},
+        );
+        (ended, state)
+    };
+    match follow_in(Language::SPANISH, &[refusal.to_owned()]).0 {
+        Ended::Refused(message) => assert!(message.contains("protocolo 4"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    match follow_in(Language::ENGLISH, &[refusal.to_owned()]).0 {
+        Ended::Refused(message) => assert!(message.contains("protocol 4"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    let (_, state) = follow_in(
+        Language::SPANISH,
+        &[
+            HELLO.replace("0.1.0", "0.0.9"),
+            SUBSCRIBED.to_owned(),
+            status(&[], Some(1)),
+        ],
+    );
+    let warning = state.version_warning.unwrap();
+    assert!(
+        warning
+            .detail
+            .contains("se inició antes de una actualización"),
+        "{}",
+        warning.detail
+    );
+    assert!(warning.fix.unwrap().starts_with("crisol shutdown"));
+    // The name of the row stays: it is what identifies it. Its translation is in `name_text`.
+    assert_eq!(warning.name, "daemon version");
 }

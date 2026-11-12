@@ -7,6 +7,8 @@
 use std::path::Path;
 
 use crisol_core::config::Config;
+use crisol_core::i18n::Localized;
+use crisol_core::msg;
 use crisol_core::CrisolPaths;
 use crisol_protocol::{Call, ErrorCode, Reply, RpcError, SiteInfo};
 use serde::{Deserialize, Serialize};
@@ -170,7 +172,12 @@ pub fn sites_view(
 fn load_config(context: &Context) -> Result<Config, RpcError> {
     Config::load_from(&context.paths)
         .map(|loaded| loaded.config)
-        .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))
+        .map_err(|e| {
+            RpcError::new(
+                ErrorCode::InvalidParams,
+                e.message().render(context.language),
+            )
+        })
 }
 
 fn fetch(context: &Context) -> Result<(Vec<SiteInfo>, Vec<String>), RpcError> {
@@ -178,7 +185,12 @@ fn fetch(context: &Context) -> Result<(Vec<SiteInfo>, Vec<String>), RpcError> {
         Reply::Sites { sites, warnings } => Ok((sites, warnings)),
         other => Err(RpcError::new(
             ErrorCode::Internal,
-            format!("unexpected answer to `sites`: {other:?}"),
+            msg!(
+                "client.unexpected_answer",
+                call = "sites",
+                answer = format!("{other:?}")
+            )
+            .render(context.language),
         )),
     }
 }
@@ -199,14 +211,17 @@ pub fn open_site(context: &Context, name: &str) -> Result<(), RpcError> {
     let site = sites.iter().find(|site| site.name == name).ok_or_else(|| {
         RpcError::new(
             ErrorCode::NotFound,
-            format!("there is no site called `{name}`; `crisol sites` lists them"),
+            msg!("terminal.no_site", name = name, command = "crisol sites")
+                .render(context.language),
         )
     })?;
     let url = site_url(&site.domain, site.secure, &config);
-    context
-        .desktop
-        .open_url(&url)
-        .map_err(|e| RpcError::new(ErrorCode::Io, format!("cannot open {url}: {e}")))
+    context.desktop.open_url(&url).map_err(|e| {
+        RpcError::new(
+            ErrorCode::Io,
+            msg!("sites.cannot_open", url = url, error = e).render(context.language),
+        )
+    })
 }
 
 /// A site name that the core accepts, from the name of a folder: lowercase letters, digits and

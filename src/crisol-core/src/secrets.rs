@@ -15,6 +15,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 
 /// Characters of a generated password. Letters and digits only: the password goes into SQL
@@ -59,13 +61,10 @@ impl std::fmt::Display for Secret {
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
     /// Other accounts can write in `secrets/`: they could read or change every password.
-    #[error("`{}` can be modified by other accounts of this computer, so the passwords in it cannot be trusted", .0.display())]
     Exposed(PathBuf),
     /// The system could not give random bytes.
-    #[error("the system could not generate random bytes: {0}")]
     Random(String),
     /// A file or folder failed.
-    #[error("{}: {source}", path.display())]
     Io {
         /// What failed.
         path: PathBuf,
@@ -73,6 +72,18 @@ pub enum SecretsError {
         source: io::Error,
     },
 }
+
+impl Localized for SecretsError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Exposed(path) => msg!("secrets.exposed", path = path.display()),
+            Self::Random(reason) => msg!("secrets.random", reason = reason),
+            Self::Io { path, source } => msg!("secrets.io", path = path.display(), error = source),
+        }
+    }
+}
+
+crate::display_as_message!(SecretsError);
 
 fn io_error(path: &Path) -> impl Fn(io::Error) -> SecretsError + '_ {
     move |source| SecretsError::Io {

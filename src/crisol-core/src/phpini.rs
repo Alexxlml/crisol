@@ -26,6 +26,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::{Localized, Message};
+use crate::ioerror::io_message;
+use crate::msg;
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 
 /// The file PHP ships as the starting point.
@@ -96,19 +99,14 @@ impl Default for PhpIniSettings {
 #[derive(Debug, thiserror::Error)]
 pub enum PhpIniError {
     /// The service or version is not a valid folder name.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// The home is open to other accounts: nothing is generated from it.
-    #[error(transparent)]
     Home(#[from] HomeError),
     /// This PHP version is not installed (its `bin/php/<version>/` folder is missing).
-    #[error("PHP {0} is not installed")]
     NotInstalled(String),
     /// The installation lacks the `php.ini-development` to start from.
-    #[error("`{}` has no {BASE_FILE}", .0.display())]
     NoBaseFile(PathBuf),
     /// A setting cannot be written into an INI file safely.
-    #[error("invalid php.ini setting `{name}`: {reason}")]
     InvalidSetting {
         /// Setting name.
         name: &'static str,
@@ -116,7 +114,6 @@ pub enum PhpIniError {
         reason: String,
     },
     /// A file operation failed.
-    #[error("{action} `{}`: {source}", path.display())]
     Io {
         /// What was being done.
         action: &'static str,
@@ -126,6 +123,31 @@ pub enum PhpIniError {
         source: io::Error,
     },
 }
+
+impl Localized for PhpIniError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Paths(error) => error.message(),
+            Self::Home(error) => error.message(),
+            Self::NotInstalled(version) => msg!("phpini.not_installed", version = version),
+            Self::NoBaseFile(path) => msg!(
+                "phpini.no_base_file",
+                path = path.display(),
+                file = BASE_FILE
+            ),
+            Self::InvalidSetting { name, reason } => {
+                msg!("phpini.invalid_setting", name = name, reason = reason)
+            }
+            Self::Io {
+                action,
+                path,
+                source,
+            } => io_message(action, path, source),
+        }
+    }
+}
+
+crate::display_as_message!(PhpIniError);
 
 fn io_error<'a>(
     action: &'static str,

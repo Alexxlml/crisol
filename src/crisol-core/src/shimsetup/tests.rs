@@ -93,7 +93,7 @@ fn the_machine_node_is_reported_as_winning_and_the_way_out_is_named() {
     assert_eq!(status.shadows.len(), 1);
     assert!(status.shadows[0].in_system_path);
 
-    let text = describe_shadows(&status.shadows).join("\n");
+    let text = shadow_text(&status.shadows);
     assert!(
         text.contains("`node` in a terminal runs the one in C:\\Program Files\\nodejs"),
         "{text}"
@@ -120,7 +120,7 @@ fn something_earlier_in_the_user_path_is_told_apart_from_the_machine_path() {
         expandable: true,
     }));
     let shadows = path_status(&store, &paths, &exists).unwrap().shadows;
-    let text = describe_shadows(&shadows).join("\n");
+    let text = shadow_text(&shadows);
     assert!(
         text.contains("earlier in your user PATH") && text.contains("crisol path add"),
         "{text}"
@@ -184,4 +184,13 @@ fn each_shell_gets_a_line_that_changes_only_that_terminal() {
     assert!(bash.contains("export PATH="), "{bash}");
     let quoted = env_script(shims, Shell::Bash);
     assert!(quoted.contains(r"it'\''s"), "{quoted}");
+}
+
+/// The sentences about what wins over the shims, one per line, in English.
+fn shadow_text(shadows: &[Shadow]) -> String {
+    describe_shadows(shadows)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }

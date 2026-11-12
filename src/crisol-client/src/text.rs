@@ -71,7 +71,7 @@ fn localize_done(info: &mut DoneInfo, language: Language) {
     info.strip_texts();
 }
 
-fn localize_check(check: &mut Check, language: Language) {
+pub(crate) fn localize_check(check: &mut Check, language: Language) {
     // `name` stays: it identifies the row (ADR-0030 §6). Its `name_text` stays too, for whoever
     // shows the name of the row in the user's language.
     check.detail = say(language, check.detail_text.as_ref(), &check.detail);
