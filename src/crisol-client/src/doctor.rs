@@ -12,6 +12,8 @@ use std::path::{Component, Path};
 use std::time::SystemTime;
 
 use crisol_core::autostart;
+use crisol_core::i18n::{rpc_error, Language, Localized, Message};
+use crisol_core::msg;
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
 use crisol_core::shimsetup;
@@ -22,6 +24,7 @@ use serde::Serialize;
 
 use crate::connect;
 use crate::context::Context;
+use crate::text::{localize_error, say};
 use crate::versions::{Progress, ProgressGate};
 
 /// A sentence of the page: its key in the dictionaries, and the words that go in it.
@@ -78,8 +81,11 @@ pub struct DoctorButton {
 /// One line of `doctor`, as the screen draws it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DoctorRow {
-    /// A short name (`PATH`).
+    /// A short name (`PATH`): the identifier of the row, the same in every language.
     pub name: String,
+    /// What the row is called, in the language of the person (`PATH` is not translated; most
+    /// names are).
+    pub label: String,
     /// How it came out.
     pub status: CheckStatus,
     /// What was found, in the core's words.
@@ -214,7 +220,7 @@ pub fn doctor_button(paths: &CrisolPaths, action: &CheckAction) -> Option<Doctor
 
 /// Puts the findings of `doctor` in the shape the screen draws.
 #[must_use]
-pub fn doctor_view(checks: Vec<Check>, paths: &CrisolPaths) -> DoctorView {
+pub fn doctor_view(checks: Vec<Check>, paths: &CrisolPaths, language: Language) -> DoctorView {
     let count = |status| checks.iter().filter(|c| c.status == status).count();
     let (problems, warnings) = (count(CheckStatus::Problem), count(CheckStatus::Warning));
     let rows = checks
@@ -224,6 +230,7 @@ pub fn doctor_view(checks: Vec<Check>, paths: &CrisolPaths) -> DoctorView {
                 .action
                 .as_ref()
                 .and_then(|action| doctor_button(paths, action)),
+            label: say(language, check.name_text.as_ref(), &check.name),
             name: check.name,
             status: check.status,
             detail: check.detail,
@@ -240,10 +247,15 @@ pub fn doctor_view(checks: Vec<Check>, paths: &CrisolPaths) -> DoctorView {
 /// Asks `doctor` and draws it. The daemon answers, or this process when there is none.
 pub fn fetch_doctor(context: &Context) -> Result<DoctorView, RpcError> {
     match connect::call(context, &Call::Doctor, &mut |_| {})? {
-        Reply::Doctor { checks } => Ok(doctor_view(checks, &context.paths)),
-        other => Err(RpcError::new(
+        Reply::Doctor { checks } => Ok(doctor_view(checks, &context.paths, context.language)),
+        other => Err(failure(
+            context,
             ErrorCode::Internal,
-            format!("unexpected answer to `doctor`: {other:?}"),
+            &msg!(
+                "client.unexpected_answer",
+                call = "doctor",
+                answer = format!("{other:?}")
+            ),
         )),
     }
 }
@@ -277,12 +289,19 @@ fn io_failure(error: &std::io::Error) -> RpcError {
     RpcError::new(ErrorCode::Io, error.to_string())
 }
 
-fn trust_failure(error: TrustError) -> RpcError {
-    match error {
-        TrustError::Home(home) => crisol_core::engine::home_error(&home),
-        TrustError::Ca(ca) => RpcError::new(ErrorCode::InvalidParams, ca.to_string()),
-        TrustError::Store(io) => RpcError::new(ErrorCode::Io, format!("trust store: {io}")),
-    }
+/// An error answer said in the language of the person.
+fn failure(context: &Context, code: ErrorCode, message: &Message) -> RpcError {
+    RpcError::new(code, message.render(context.language))
+}
+
+fn trust_failure(context: &Context, error: &TrustError) -> RpcError {
+    let mut answer = match error {
+        TrustError::Home(home) => crisol_core::engine::home_error(home),
+        TrustError::Ca(_) => rpc_error(ErrorCode::InvalidParams, &error.message()),
+        TrustError::Store(_) => rpc_error(ErrorCode::Io, &error.message()),
+    };
+    localize_error(&mut answer, context.language);
+    answer
 }
 
 /// What `crisol trust` shows before Windows asks (§5.3): the second click of the trust button
@@ -316,17 +335,18 @@ pub fn trust_preview(context: &Context) -> Result<TrustPreview, RpcError> {
         &suffix_of(&context.paths),
         SystemTime::now(),
     )
-    .map_err(trust_failure)?;
+    .map_err(|e| trust_failure(context, &e))?;
     let info = plan.ca.info();
     Ok(TrustPreview {
         name: info.common_name.clone(),
         created: plan.created,
         already: plan.already,
-        vouches_for: format!(
-            "{} and their subdomains, and {}",
-            info.permitted_dns.join(", "),
-            info.permitted_ips.join(", ")
-        ),
+        vouches_for: msg!(
+            "doctor.vouches_for",
+            names = info.permitted_dns.join(", "),
+            addresses = info.permitted_ips.join(", ")
+        )
+        .render(context.language),
         valid_until: info.valid_until(),
         sha256: info.fingerprint.clone(),
         sha1: plan.thumbprint,
@@ -342,14 +362,14 @@ fn run_trust(context: &Context) -> Result<ActionDone, RpcError> {
         &suffix_of(&context.paths),
         SystemTime::now(),
     )
-    .map_err(trust_failure)?;
+    .map_err(|e| trust_failure(context, &e))?;
     let outcome = trust_ca(
         store.as_ref(),
         &plan.ca,
         &context.paths,
         context.dirs.as_ref(),
     )
-    .map_err(trust_failure)?;
+    .map_err(|e| trust_failure(context, &e))?;
     Ok(match outcome {
         AddOutcome::Added => ActionDone::ok(Words::new("doctor.done.trust_added")),
         AddOutcome::AlreadyThere => ActionDone::ok(Words::new("doctor.done.trust_already")),
@@ -366,7 +386,7 @@ fn run_untrust_stale(context: &Context) -> Result<ActionDone, RpcError> {
         true,
         SystemTime::now(),
     )
-    .map_err(trust_failure)?;
+    .map_err(|e| trust_failure(context, &e))?;
     Ok(if !report.removed.is_empty() {
         ActionDone::ok(
             Words::new("doctor.done.untrust_done").with("names", report.removed.join(", ")),
@@ -381,7 +401,8 @@ fn run_untrust_stale(context: &Context) -> Result<ActionDone, RpcError> {
 fn run_system_install(context: &Context) -> Result<ActionDone, RpcError> {
     match context.setup.install(&suffix_of(&context.paths)) {
         Ok(report) => Ok(ActionDone::ok(
-            Words::new("doctor.done.system_installed").with("steps", report.steps.join("; ")),
+            Words::new("doctor.done.system_installed")
+                .with("steps", report.message().render(context.language)),
         )),
         // The person said no at the permission prompt: nothing was changed.
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(
@@ -392,7 +413,7 @@ fn run_system_install(context: &Context) -> Result<ActionDone, RpcError> {
             .and_then(|inner| inner.downcast_ref::<crisol_core::programs::ProgramError>())
             .map_or_else(
                 || io_failure(&error),
-                |program| RpcError::new(ErrorCode::NotAvailable, program.to_string()),
+                |program| failure(context, ErrorCode::NotAvailable, &program.message()),
             )),
     }
 }
@@ -426,9 +447,10 @@ pub fn run_doctor_action(
     let offered = doctor_button(&context.paths, action)
         .filter(|button| button.kind == ButtonKind::Run)
         .ok_or_else(|| {
-            RpcError::new(
+            failure(
+                context,
                 ErrorCode::InvalidParams,
-                "that action is not one the screen offers",
+                &msg!("client.action_not_offered"),
             )
         })?;
     match &offered.action {
@@ -455,9 +477,10 @@ pub fn run_doctor_action(
                 .map_err(|e| io_failure(&e))?;
             Ok(ActionDone::ok(Words::new("doctor.done.reveal")))
         }
-        CheckAction::ShowLog { .. } | CheckAction::Copy { .. } => Err(RpcError::new(
+        CheckAction::ShowLog { .. } | CheckAction::Copy { .. } => Err(failure(
+            context,
             ErrorCode::InvalidParams,
-            "the page does that one itself",
+            &msg!("client.page_does_it"),
         )),
     }
 }

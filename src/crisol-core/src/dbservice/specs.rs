@@ -20,6 +20,8 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use super::{DbError, DbKind, DbPlan, Initializer, MongoAdmin};
+use crate::i18n::Message;
+use crate::msg;
 use crate::process::ProcessSpec;
 use crate::secrets::{self, Secret};
 use crate::service::{HealthCheck, HealthCommand, LifecyclePolicy, ServiceSpec, StopHook};
@@ -553,7 +555,10 @@ pub struct Credentials {
 
 /// What `doctor` and `crisol db credentials` say about Memcached: it cannot have a password, and
 /// what that means for PHP sessions (Y2 of the review of phase 9).
-pub const MEMCACHED_NOTE: &str = "Memcached has no password (its login needs SASL, which this build does not have): it listens on 127.0.0.1 only, but any program or account of this computer can read and write everything in it. Do not keep PHP sessions in Memcached (SESSION_DRIVER=memcached, session.save_handler=memcached) if this computer has other accounts: anyone who can read the sessions can impersonate the users of your local applications. Use files, the database or Redis, which have a password.";
+#[must_use]
+pub fn memcached_note() -> Message {
+    msg!("doctor.memcached")
+}
 
 /// The `.env` lines for connecting to `plan`'s service with `secret`.
 #[must_use]
@@ -610,7 +615,7 @@ pub fn credentials(plan: &DbPlan, secret: Option<&Secret>) -> Credentials {
         DbKind::Memcached => {
             lines.push(pair("MEMCACHED_HOST", "127.0.0.1"));
             lines.push(pair("MEMCACHED_PORT", &port));
-            notes.push(MEMCACHED_NOTE.to_owned());
+            notes.push(memcached_note().to_string());
         }
         DbKind::Mongodb => {
             let user = crate::mongowire::ADMIN_USER;

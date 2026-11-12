@@ -1670,7 +1670,7 @@ fn uninstall_all_with_purge_asks_about_backups_and_deletes_the_home() {
         assert_eq!(notice.databases, ["mysql"]);
         assert_eq!(notice.projects, ["shop"]);
         assert!(plans[0].deletes_home());
-        assert_ne!(plans[0].by_hand, Vec::<String>::new());
+        assert_ne!(plans[0].by_hand.len(), 0);
     }
     assert!(!env.paths.home().exists());
 }

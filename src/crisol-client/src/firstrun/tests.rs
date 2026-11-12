@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crisol_core::autostart::{Autostart, FakeAutostart};
+use crisol_core::i18n::Language;
 use crisol_core::paths::fake::FakePrivateDirs;
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::{FakeSetup, SystemSetup};
@@ -85,7 +86,13 @@ impl World {
     fn set_up(&self) {
         let setup = FakeSetup::not_installed();
         let accepted = ["trust", "helper", "autostart"].map(str::to_owned);
-        run_setup_on(&self.setup_system(&setup), &accepted, SystemTime::now()).unwrap();
+        run_setup_on(
+            &self.setup_system(&setup),
+            &accepted,
+            SystemTime::now(),
+            Language::ENGLISH,
+        )
+        .unwrap();
     }
 }
 
@@ -93,7 +100,7 @@ fn ids(view: &SetupView) -> Vec<&'static str> {
     view.steps.iter().map(|s| s.id).collect()
 }
 
-fn kinds(outcomes: &[Outcome]) -> Vec<(&'static str, OutcomeKind)> {
+fn kinds(outcomes: &[OutcomeLine]) -> Vec<(&'static str, OutcomeKind)> {
     outcomes.iter().map(|o| (o.step, o.kind)).collect()
 }
 
@@ -102,7 +109,7 @@ fn a_fresh_install_shows_every_step_and_which_switches_start_on() {
     let world = World::new();
     let setup = FakeSetup::not_installed();
     let plan = onboarding::plan(&world.setup_system(&setup), SystemTime::now());
-    let view = setup_view(&plan);
+    let view = setup_view(&plan, Language::ENGLISH);
 
     assert_eq!(
         ids(&view),
@@ -131,7 +138,13 @@ fn only_the_switches_that_are_on_are_done_and_a_no_is_a_result() {
     let world = World::new();
     let setup = FakeSetup::not_installed();
     let accepted = vec!["helper".to_owned()];
-    let done = run_setup_on(&world.setup_system(&setup), &accepted, SystemTime::now()).unwrap();
+    let done = run_setup_on(
+        &world.setup_system(&setup),
+        &accepted,
+        SystemTime::now(),
+        Language::ENGLISH,
+    )
+    .unwrap();
 
     assert_eq!(
         kinds(&done.outcomes),
@@ -154,7 +167,13 @@ fn a_name_the_page_makes_up_is_not_a_step() {
     let world = World::new();
     let setup = FakeSetup::not_installed();
     let accepted = vec!["format-disk".to_owned(), "uninstall".to_owned()];
-    let done = run_setup_on(&world.setup_system(&setup), &accepted, SystemTime::now()).unwrap();
+    let done = run_setup_on(
+        &world.setup_system(&setup),
+        &accepted,
+        SystemTime::now(),
+        Language::ENGLISH,
+    )
+    .unwrap();
 
     // Nothing optional ran: only what the core's own plan lists can be done.
     assert_eq!(setup.calls(), Vec::<String>::new());
@@ -173,14 +192,20 @@ fn a_setup_with_the_switches_as_they_start_is_not_offered_again() {
     let world = World::new();
     let setup = FakeSetup::not_installed();
     let accepted = ["trust", "helper"].map(str::to_owned);
-    run_setup_on(&world.setup_system(&setup), &accepted, SystemTime::now()).unwrap();
+    run_setup_on(
+        &world.setup_system(&setup),
+        &accepted,
+        SystemTime::now(),
+        Language::ENGLISH,
+    )
+    .unwrap();
     // The fake does not remember the helper it installed: from now on it is there.
     let setup = FakeSetup::new();
 
-    let view = setup_view(&onboarding::plan(
-        &world.setup_system(&setup),
-        SystemTime::now(),
-    ));
+    let view = setup_view(
+        &onboarding::plan(&world.setup_system(&setup), SystemTime::now()),
+        Language::ENGLISH,
+    );
     assert_eq!(ids(&view), ["autostart"]);
     assert!(view.can_run(), "the screen still offers to switch it on");
     assert!(!view.incomplete, "{view:?}");
@@ -193,14 +218,20 @@ fn a_setup_that_is_done_has_nothing_to_show_and_nothing_to_run() {
     let setup = FakeSetup::new();
 
     let plan = onboarding::plan(&world.setup_system(&setup), SystemTime::now());
-    let view = setup_view(&plan);
+    let view = setup_view(&plan, Language::ENGLISH);
     assert!(
         view.steps.is_empty() && !view.can_run() && !view.incomplete,
         "{view:?}"
     );
     assert_ne!(view.done, Vec::<String>::new());
 
-    let again = run_setup_on(&world.setup_system(&setup), &[], SystemTime::now()).unwrap();
+    let again = run_setup_on(
+        &world.setup_system(&setup),
+        &[],
+        SystemTime::now(),
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert!(again.outcomes.is_empty() && !again.failed);
 }
 
@@ -210,11 +241,20 @@ fn what_stops_the_setup_is_shown_with_its_fix_and_nothing_is_offered() {
     fs::remove_file(world.programs.join("crisol-shim.exe")).unwrap();
     let setup = FakeSetup::not_installed();
     let system = world.setup_system(&setup);
-    let view = setup_view(&onboarding::plan(&system, SystemTime::now()));
+    let view = setup_view(
+        &onboarding::plan(&system, SystemTime::now()),
+        Language::ENGLISH,
+    );
 
     assert_ne!(view.problems, Vec::new());
     assert!(!view.can_run() && !view.incomplete, "{view:?}");
-    let error = run_setup_on(&system, &["helper".to_owned()], SystemTime::now()).unwrap_err();
+    let error = run_setup_on(
+        &system,
+        &["helper".to_owned()],
+        SystemTime::now(),
+        Language::ENGLISH,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::Conflict);
     assert_eq!(setup.calls(), Vec::<String>::new());
 }
@@ -234,13 +274,13 @@ fn the_uninstall_view_says_whether_the_home_goes_with_it() {
     let setup = FakeSetup::new();
     let system = world.teardown_system(&setup);
 
-    let safe = uninstall_view(teardown::plan(&system, false));
+    let safe = uninstall_view(&teardown::plan(&system, false), Language::ENGLISH);
     assert!(!safe.deletes_home);
-    assert!(safe.plan.purge.is_none());
+    assert!(safe.purge.is_none());
 
-    let purge = uninstall_view(teardown::plan(&system, true));
+    let purge = uninstall_view(&teardown::plan(&system, true), Language::ENGLISH);
     assert!(purge.deletes_home);
-    let notice = purge.plan.purge.as_ref().unwrap();
+    let notice = purge.purge.as_ref().unwrap();
     assert_eq!(notice.home, world.paths.home());
 }
 
@@ -248,7 +288,10 @@ fn the_uninstall_view_says_whether_the_home_goes_with_it() {
 fn the_uninstall_view_is_the_plan_of_the_command_line_in_json() {
     let world = World::new();
     let setup = FakeSetup::new();
-    let view = uninstall_view(teardown::plan(&world.teardown_system(&setup), true));
+    let view = uninstall_view(
+        &teardown::plan(&world.teardown_system(&setup), true),
+        Language::ENGLISH,
+    );
     let json = serde_json::to_value(&view).unwrap();
 
     assert!(json["steps"].is_array());
@@ -265,7 +308,14 @@ fn a_purge_is_refused_until_the_backup_is_confirmed_and_nothing_is_touched() {
     let system = world.teardown_system(&setup);
 
     let mut stopped = 0;
-    let error = run_uninstall_on(&system, true, false, &mut count_stops(&mut stopped)).unwrap_err();
+    let error = run_uninstall_on(
+        &system,
+        true,
+        false,
+        &mut count_stops(&mut stopped),
+        Language::ENGLISH,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams);
     assert_eq!(stopped, 0, "the daemon was not stopped");
     assert_eq!(setup.calls(), Vec::<String>::new());
@@ -282,7 +332,14 @@ fn a_safe_uninstall_needs_no_backup_and_leaves_the_user_s_files() {
     let system = world.teardown_system(&setup);
 
     let mut stopped = 0;
-    let done = run_uninstall_on(&system, false, false, &mut count_stops(&mut stopped)).unwrap();
+    let done = run_uninstall_on(
+        &system,
+        false,
+        false,
+        &mut count_stops(&mut stopped),
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert_eq!(stopped, 1);
     assert!(done.done, "{:?}", done.outcomes);
     assert!(done.close_app);
@@ -298,7 +355,14 @@ fn a_purge_with_the_backup_confirmed_deletes_the_home_and_the_app_closes() {
     let system = world.teardown_system(&setup);
 
     let mut stopped = 0;
-    let done = run_uninstall_on(&system, true, true, &mut count_stops(&mut stopped)).unwrap();
+    let done = run_uninstall_on(
+        &system,
+        true,
+        true,
+        &mut count_stops(&mut stopped),
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert!(done.done && done.close_app, "{:?}", done.outcomes);
     assert!(!world.paths.home().exists());
 }
@@ -311,7 +375,14 @@ fn an_uninstall_that_left_something_keeps_the_app_open_to_read_what_failed() {
     let system = world.teardown_system(&setup);
 
     let mut stopped = 0;
-    let done = run_uninstall_on(&system, false, false, &mut count_stops(&mut stopped)).unwrap();
+    let done = run_uninstall_on(
+        &system,
+        false,
+        false,
+        &mut count_stops(&mut stopped),
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert!(!done.done);
     assert!(!done.close_app);
     let helper = done.outcomes.iter().find(|o| o.step == "helper").unwrap();

@@ -33,6 +33,9 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::{ArchiveFormat, Package};
 use crate::fetch::{Fetch, FetchError};
+use crate::i18n::{Localized, Message};
+use crate::ioerror::io_message;
+use crate::msg;
 use crate::paths::{is_reserved_device_name, CrisolPaths, PathsError};
 use crate::version::Version;
 
@@ -179,19 +182,14 @@ pub fn confirm_unverified(dir: &Path, sha256: &str) {
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
     /// That version is already installed; nothing was touched.
-    #[error("already installed at {}", .0.display())]
     AlreadyInstalled(PathBuf),
     /// The package name or version does not make a valid folder name.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// The download could not be started.
-    #[error(transparent)]
     Fetch(#[from] FetchError),
     /// The connection failed while receiving the body.
-    #[error("the download was interrupted: {0}")]
     Interrupted(String),
     /// The server's announced size, or the size received, is not what the catalog says.
-    #[error("the download is {actual} bytes but the catalog says {expected}")]
     SizeMismatch {
         /// Size in the catalog.
         expected: u64,
@@ -199,13 +197,11 @@ pub enum InstallError {
         actual: u64,
     },
     /// The stream went past the size limit.
-    #[error("the download is larger than the allowed {limit} bytes")]
     TooLarge {
         /// The limit that was exceeded.
         limit: u64,
     },
     /// The SHA-256 of the download is not the one in the catalog. Nothing was unpacked.
-    #[error("the download does not match the catalog (expected sha256 {expected}, got {actual})")]
     HashMismatch {
         /// Hash in the catalog.
         expected: String,
@@ -214,10 +210,6 @@ pub enum InstallError {
     },
     /// The SHA-256 of a local archive (`install --from`) is not the one the user gave.
     /// Nothing was unpacked.
-    #[error(
-        "the file does not match the sha256 you gave (you gave {given}, the file has {actual}); \
-         nothing was unpacked"
-    )]
     FileHashMismatch {
         /// Hash given with `--sha256`.
         given: String,
@@ -225,7 +217,6 @@ pub enum InstallError {
         actual: String,
     },
     /// An entry of the archive would be written somewhere it must not.
-    #[error("unsafe entry `{entry}` in the archive: {reason}")]
     UnsafeEntry {
         /// The entry name as stored.
         entry: String,
@@ -233,31 +224,24 @@ pub enum InstallError {
         reason: String,
     },
     /// The archive is damaged.
-    #[error("the archive is damaged: {0}")]
     BadArchive(String),
     /// The archive has more entries than allowed.
-    #[error("the archive has more than {limit} entries")]
     TooManyEntries {
         /// The limit.
         limit: usize,
     },
     /// The archive unpacks to more than allowed.
-    #[error("the archive unpacks to more than {limit} bytes")]
     ExtractedTooLarge {
         /// The limit.
         limit: u64,
     },
     /// The archive format is not supported on this version of Crisol.
-    #[error("the {0:?} archive format is not supported yet")]
     UnsupportedFormat(ArchiveFormat),
     /// The installed tree lacks the executable the catalog promised.
-    #[error("the archive does not contain `{0}`")]
     MissingExecutable(String),
     /// The installation was cancelled.
-    #[error("the installation was cancelled")]
     Cancelled,
     /// A file operation failed.
-    #[error("{action} `{}`: {source}", path.display())]
     Io {
         /// What was being done.
         action: &'static str,
@@ -267,6 +251,51 @@ pub enum InstallError {
         source: io::Error,
     },
 }
+
+impl Localized for InstallError {
+    fn message(&self) -> Message {
+        match self {
+            Self::AlreadyInstalled(path) => msg!("install.already", path = path.display()),
+            Self::Paths(error) => error.message(),
+            Self::Fetch(error) => error.message(),
+            Self::Interrupted(reason) => msg!("install.interrupted", reason = reason),
+            Self::SizeMismatch { expected, actual } => msg!(
+                "install.size_mismatch",
+                expected = expected,
+                actual = actual
+            ),
+            Self::TooLarge { limit } => msg!("install.too_large", limit = limit),
+            Self::HashMismatch { expected, actual } => msg!(
+                "install.hash_mismatch",
+                expected = expected,
+                actual = actual
+            ),
+            Self::FileHashMismatch { given, actual } => {
+                msg!("install.file_hash_mismatch", given = given, actual = actual)
+            }
+            Self::UnsafeEntry { entry, reason } => {
+                msg!("install.unsafe_entry", entry = entry, reason = reason)
+            }
+            Self::BadArchive(reason) => msg!("install.bad_archive", reason = reason),
+            Self::TooManyEntries { limit } => msg!("install.too_many_entries", limit = limit),
+            Self::ExtractedTooLarge { limit } => {
+                msg!("install.extracted_too_large", limit = limit)
+            }
+            Self::UnsupportedFormat(format) => {
+                msg!("install.unsupported_format", format = format!("{format:?}"))
+            }
+            Self::MissingExecutable(name) => msg!("install.missing_executable", name = name),
+            Self::Cancelled => msg!("install.cancelled"),
+            Self::Io {
+                action,
+                path,
+                source,
+            } => io_message(action, path, source),
+        }
+    }
+}
+
+crate::display_as_message!(InstallError);
 
 fn io_error<'a>(
     action: &'static str,

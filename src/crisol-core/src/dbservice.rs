@@ -47,7 +47,7 @@ use crate::service::{FailureReason, Service, ServiceEvent, ServiceState};
 
 pub use admin::{client_call, redis_set_password, ClientCall, DbAdmin, NoAdmin, WireAdmin};
 pub use specs::{
-    credentials, init_spec, render_ini, service_spec, write_ini, Credentials, MEMCACHED_NOTE,
+    credentials, init_spec, memcached_note, render_ini, service_spec, write_ini, Credentials,
 };
 
 /// How the data of a service is made.

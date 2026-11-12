@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::sync::Mutex;
 
+use crisol_core::i18n::Language;
 use crisol_core::paths::fake::FakePrivateDirs;
 use crisol_core::shell::ShellLaunch;
 use crisol_core::shims::{shim_file_name, SHIM_COMMANDS};
@@ -78,7 +79,7 @@ fn config(text: &str) -> Config {
 #[test]
 fn the_list_has_every_terminal_marked_by_whether_the_computer_has_it() {
     let desktop = FakeDesktop::with(&[Terminal::Cmd, Terminal::WindowsPowerShell]);
-    let options = terminal_options(&desktop, &config(""));
+    let options = terminal_options(&desktop, &config(""), Language::ENGLISH);
     let found: Vec<_> = options.options.iter().map(|o| (o.name, o.found)).collect();
     assert_eq!(
         found,
@@ -98,7 +99,11 @@ fn the_list_has_every_terminal_marked_by_whether_the_computer_has_it() {
 #[test]
 fn a_chosen_terminal_that_is_there_is_the_one_that_opens() {
     let desktop = FakeDesktop::with(&Terminal::ALL);
-    let options = terminal_options(&desktop, &config("[shell]\nterminal = \"bash\"\n"));
+    let options = terminal_options(
+        &desktop,
+        &config("[shell]\nterminal = \"bash\"\n"),
+        Language::ENGLISH,
+    );
     assert_eq!(options.chosen, Some("bash"));
     assert_eq!(options.effective, Some("bash"));
     assert_eq!(options.warning, None);
@@ -107,7 +112,11 @@ fn a_chosen_terminal_that_is_there_is_the_one_that_opens() {
 #[test]
 fn a_chosen_terminal_that_is_gone_is_warned_about_and_the_automatic_one_is_used() {
     let desktop = FakeDesktop::with(&[Terminal::Cmd]);
-    let options = terminal_options(&desktop, &config("[shell]\nterminal = \"pwsh\"\n"));
+    let options = terminal_options(
+        &desktop,
+        &config("[shell]\nterminal = \"pwsh\"\n"),
+        Language::ENGLISH,
+    );
     assert_eq!(options.chosen, Some("pwsh"));
     assert_eq!(options.effective, Some("cmd"));
     assert!(options.warning.unwrap().contains("pwsh"));
@@ -115,7 +124,7 @@ fn a_chosen_terminal_that_is_gone_is_warned_about_and_the_automatic_one_is_used(
 
 #[test]
 fn with_no_terminal_at_all_nothing_opens_and_it_is_said() {
-    let options = terminal_options(&FakeDesktop::with(&[]), &config(""));
+    let options = terminal_options(&FakeDesktop::with(&[]), &config(""), Language::ENGLISH);
     assert_eq!(options.effective, None);
     assert!(options.warning.is_some());
 }
@@ -124,11 +133,17 @@ fn with_no_terminal_at_all_nothing_opens_and_it_is_said() {
 fn choosing_writes_one_key_and_automatic_takes_it_out() {
     let (_tmp, paths) = home();
     fs::write(paths.config_file(), "# mine\n[sites]\ntld = \"test\"\n").unwrap();
-    choose_terminal(&paths, &FakePrivateDirs::new(), Some("pwsh")).unwrap();
+    choose_terminal(
+        &paths,
+        &FakePrivateDirs::new(),
+        Some("pwsh"),
+        Language::ENGLISH,
+    )
+    .unwrap();
     let text = fs::read_to_string(paths.config_file()).unwrap();
     assert!(text.starts_with("# mine\n"), "{text}");
     assert!(text.contains("terminal = \"pwsh\""), "{text}");
-    choose_terminal(&paths, &FakePrivateDirs::new(), None).unwrap();
+    choose_terminal(&paths, &FakePrivateDirs::new(), None, Language::ENGLISH).unwrap();
     assert!(!fs::read_to_string(paths.config_file())
         .unwrap()
         .contains("terminal"));
@@ -137,7 +152,13 @@ fn choosing_writes_one_key_and_automatic_takes_it_out() {
 #[test]
 fn a_name_that_is_not_a_terminal_writes_nothing() {
     let (_tmp, paths) = home();
-    let error = choose_terminal(&paths, &FakePrivateDirs::new(), Some("wt")).unwrap_err();
+    let error = choose_terminal(
+        &paths,
+        &FakePrivateDirs::new(),
+        Some("wt"),
+        Language::ENGLISH,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams);
     assert!(!paths.config_file().exists());
 }
@@ -183,7 +204,14 @@ fn a_project_opens_in_its_own_folder() {
     fs::create_dir_all(&shop).unwrap();
     let sites = vec![("shop".to_owned(), shop.clone())];
     assert_eq!(
-        start_folder(&Place::Site("shop".into()), &sites, &paths, &config("")).unwrap(),
+        start_folder(
+            &Place::Site("shop".into()),
+            &sites,
+            &paths,
+            &config(""),
+            Language::ENGLISH
+        )
+        .unwrap(),
         shop
     );
 }
@@ -193,8 +221,14 @@ fn a_project_that_is_gone_is_an_error_not_another_folder() {
     let (tmp, paths) = home();
     let sites = vec![("old".to_owned(), tmp.path().join("deleted"))];
     for name in ["old", "never-was"] {
-        let error =
-            start_folder(&Place::Site(name.into()), &sites, &paths, &config("")).unwrap_err();
+        let error = start_folder(
+            &Place::Site(name.into()),
+            &sites,
+            &paths,
+            &config(""),
+            Language::ENGLISH,
+        )
+        .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound, "{name}");
     }
 }
@@ -226,6 +260,7 @@ fn the_terminal_opens_in_a_new_window_in_the_folder_with_the_shims_in_front() {
         &env,
         &Place::Site("shop".into()),
         &[("shop".to_owned(), shop.clone())],
+        Language::ENGLISH,
     )
     .unwrap();
 
@@ -246,7 +281,15 @@ fn the_chosen_terminal_opens_and_the_general_button_opens_where_the_projects_are
     let (_tmp, paths) = home();
     fs::write(paths.config_file(), "[shell]\nterminal = \"cmd\"\n").unwrap();
     let desktop = FakeDesktop::with(&Terminal::ALL);
-    let opened = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap();
+    let opened = launch_terminal(
+        &desktop,
+        &paths,
+        &[],
+        &Place::Projects,
+        &[],
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert_eq!(opened.terminal, "cmd");
     assert_eq!(opened.folder, paths.home().join("www"));
     assert_eq!(
@@ -260,7 +303,15 @@ fn a_chosen_terminal_that_is_gone_still_opens_one_and_says_so() {
     let (_tmp, paths) = home();
     fs::write(paths.config_file(), "[shell]\nterminal = \"bash\"\n").unwrap();
     let desktop = FakeDesktop::with(&[Terminal::Cmd]);
-    let opened = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap();
+    let opened = launch_terminal(
+        &desktop,
+        &paths,
+        &[],
+        &Place::Projects,
+        &[],
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert_eq!(opened.terminal, "cmd");
     assert!(opened.note.unwrap().contains("bash"));
     // Nothing was rewritten.
@@ -273,7 +324,11 @@ fn a_chosen_terminal_that_is_gone_still_opens_one_and_says_so() {
 #[test]
 fn a_name_that_is_not_a_terminal_is_shown_as_automatic_with_the_mistake() {
     let desktop = FakeDesktop::with(&[Terminal::Cmd]);
-    let options = terminal_options(&desktop, &config("[shell]\nterminal = \"wt\"\n"));
+    let options = terminal_options(
+        &desktop,
+        &config("[shell]\nterminal = \"wt\"\n"),
+        Language::ENGLISH,
+    );
     assert_eq!(options.chosen, None);
     assert_eq!(options.unknown.as_deref(), Some("wt"));
     assert_eq!(options.effective, Some("cmd"));
@@ -289,7 +344,15 @@ fn a_name_that_is_not_a_terminal_still_opens_one_and_says_so() {
     let (_tmp, paths) = home();
     fs::write(paths.config_file(), "[shell]\nterminal = \"wt\"\n").unwrap();
     let desktop = FakeDesktop::with(&[Terminal::Cmd]);
-    let opened = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap();
+    let opened = launch_terminal(
+        &desktop,
+        &paths,
+        &[],
+        &Place::Projects,
+        &[],
+        Language::ENGLISH,
+    )
+    .unwrap();
     assert_eq!(opened.terminal, "cmd");
     assert!(opened.note.unwrap().contains("\"wt\""));
     assert_eq!(
@@ -304,7 +367,15 @@ fn without_shims_nothing_opens_and_the_fix_is_offered() {
     let (_tmp, paths) = home();
     fs::remove_dir_all(paths.shims_dir()).unwrap();
     let desktop = FakeDesktop::with(&Terminal::ALL);
-    let error = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap_err();
+    let error = launch_terminal(
+        &desktop,
+        &paths,
+        &[],
+        &Place::Projects,
+        &[],
+        Language::ENGLISH,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotAvailable);
     assert_eq!(error.fix.as_deref(), Some("crisol shims install"));
     assert!(desktop.started.lock().unwrap().is_empty());
@@ -315,7 +386,15 @@ fn a_terminal_that_cannot_start_says_which_one() {
     let (_tmp, paths) = home();
     let mut desktop = FakeDesktop::with(&Terminal::ALL);
     desktop.fail_to_start = true;
-    let error = launch_terminal(&desktop, &paths, &[], &Place::Projects, &[]).unwrap_err();
+    let error = launch_terminal(
+        &desktop,
+        &paths,
+        &[],
+        &Place::Projects,
+        &[],
+        Language::ENGLISH,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::Io);
     assert!(error.message.contains("pwsh"), "{}", error.message);
 }

@@ -477,8 +477,13 @@ async fn terminal_options() -> Result<TerminalOptions, Failure> {
 #[tauri::command]
 async fn choose_terminal(name: Option<String>) -> Result<(), Failure> {
     blocking(move |context| {
-        crisol_client::choose_terminal(&context.paths, context.dirs.as_ref(), name.as_deref())
-            .map_err(Failure::from)
+        crisol_client::choose_terminal(
+            &context.paths,
+            context.dirs.as_ref(),
+            name.as_deref(),
+            context.language,
+        )
+        .map_err(Failure::from)
     })
     .await
 }

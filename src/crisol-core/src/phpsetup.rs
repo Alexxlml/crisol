@@ -82,7 +82,9 @@ pub fn refresh_php(
     match write_php_cacert_with(paths, roots, local_ca.as_ref(), dirs) {
         Ok(Some(written)) => {
             result.warnings.extend(written.warnings);
-            result.notes.extend(written.notes);
+            result
+                .notes
+                .extend(written.notes.iter().map(ToString::to_string));
         }
         Ok(None) => result.warnings.push(
             "the CA bundle is not installed (`crisol install cacert`): PHP's cURL will not trust any HTTPS site"

@@ -44,6 +44,7 @@ use crisol_core::dns::{
 };
 use crisol_core::exclusions::{remove_inside, ExclusionsOutcome};
 use crisol_core::hosts::{HostsFile, HostsManager, BEGIN};
+use crisol_core::msg;
 use crisol_core::paths::PrivateDirs;
 use crisol_core::programs::{require_trusted_program, ProgramError};
 use crisol_core::setup::{
@@ -130,19 +131,17 @@ pub fn remove_system_changes(
     match disable(nrpt, suffix) {
         Ok(true) => report
             .steps
-            .push(format!("Removed the DNS rule for .{suffix}")),
+            .push(msg!("helper.dns_rule_removed", suffix = suffix)),
         Ok(false) => report
             .steps
-            .push(format!("There was no DNS rule of Crisol for .{suffix}")),
-        Err(DnsError::Foreign { namespace, .. }) => report.steps.push(format!(
-            "Left alone the DNS rule for {namespace}: it is not Crisol's"
-        )),
+            .push(msg!("helper.dns_rule_none", suffix = suffix)),
+        Err(DnsError::Foreign { namespace, .. }) => report
+            .steps
+            .push(msg!("helper.dns_rule_foreign", namespace = namespace)),
         Err(error) => failures.push(error.to_string()),
     }
     match hosts.clear() {
-        Ok(()) => report
-            .steps
-            .push("Took Crisol's block out of the hosts file".to_owned()),
+        Ok(()) => report.steps.push(msg!("helper.hosts_cleared")),
         Err(error) => failures.push(error.to_string()),
     }
     (report, failures)
@@ -197,12 +196,12 @@ pub fn install_self(suffix: &str) -> Result<SetupReport, SetupFailure> {
         })?;
     report
         .steps
-        .push(format!("Installed the helper in {}", destination.display()));
+        .push(msg!("helper.installed_in", folder = destination.display()));
     let server = IpAddr::V4(DEFAULT_DNS_ADDR);
     match enable(&PowerShellNrpt, suffix, server) {
         Ok(_) => report
             .steps
-            .push(format!("Made the DNS rule for .{suffix}")),
+            .push(msg!("helper.dns_rule_made", suffix = suffix)),
         Err(DnsError::Foreign { .. }) => return Err(SetupFailure::ForeignRule),
         Err(_) => return Err(SetupFailure::Rule),
     }
@@ -241,12 +240,11 @@ pub fn uninstall_self(suffix: &str, home: &Path) -> Result<SetupReport, SetupFai
     match remove_installation(&program_files, Some(&running)) {
         Ok(Some(folder)) => {
             schedule_removal(&folder).map_err(|_| SetupFailure::Failed)?;
-            report.steps.push(format!(
-                "The helper and {} go away as soon as this program ends",
-                folder.display()
-            ));
+            report
+                .steps
+                .push(msg!("helper.goes_away", folder = folder.display()));
         }
-        Ok(None) => report.steps.push("Removed the helper".to_owned()),
+        Ok(None) => report.steps.push(msg!("helper.removed")),
         Err(_) => return Err(SetupFailure::Failed),
     }
     Ok(report)
@@ -424,8 +422,8 @@ impl SystemSetup for WindowsSetup {
         HelperLocation::installed()?.verify()?;
         Ok(SetupReport {
             steps: vec![
-                "Installed the privileged helper in Program Files".to_owned(),
-                format!("Made the DNS rule for .{suffix}"),
+                msg!("helper.installed_pf"),
+                msg!("helper.dns_rule_made", suffix = suffix),
             ],
             done: SetupDone::Done,
         })
@@ -446,16 +444,13 @@ impl SystemSetup for WindowsSetup {
             .as_deref()
             .is_none_or(|f| wait_until_gone(f, Duration::from_secs(15)));
         let helper = match (gone, &folder) {
-            (false, Some(folder)) => format!(
-                "Removed the privileged helper, but {} is still there; delete it as an administrator if it does not go away by itself",
-                folder.display()
-            ),
-            _ => "Removed the privileged helper".to_owned(),
+            (false, Some(folder)) => msg!("helper.removed_but_there", folder = folder.display()),
+            _ => msg!("helper.removed_privileged"),
         };
         Ok(SetupReport {
             steps: vec![
-                format!("Removed the DNS rule for .{suffix} and Crisol's block of the hosts file"),
-                done.exclusions_sentence(home),
+                msg!("helper.removed_rules", suffix = suffix),
+                done.exclusions_message(home),
                 helper,
             ],
             done,

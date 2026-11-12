@@ -11,10 +11,20 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
+
 /// Why a version or request could not be understood.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("`{0}` is not a valid version: use numbers separated by dots, optionally followed by `-` and a pre-release tag")]
 pub struct VersionError(pub String);
+
+impl Localized for VersionError {
+    fn message(&self) -> Message {
+        msg!("version.invalid", text = &self.0)
+    }
+}
+
+crate::display_as_message!(VersionError);
 
 /// An installable version.
 #[derive(Debug, Clone)]

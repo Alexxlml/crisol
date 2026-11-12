@@ -12,13 +12,14 @@
 //!   are derived from it and are never read back.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::CrisolPaths;
 use crate::version::VersionReq;
 
@@ -295,50 +296,43 @@ impl ConfigWarning {
     }
 }
 
-impl fmt::Display for ConfigWarning {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Localized for ConfigWarning {
+    fn message(&self) -> Message {
         match self {
-            Self::UnknownField(path) => write!(f, "unknown field `{path}` is ignored"),
-            Self::PortConflict { port, services } => {
-                write!(
-                    f,
-                    "port {port} is used by more than one enabled service: {}",
-                    services.join(", ")
-                )
-            }
-            Self::PublicTld(tld) => write!(
-                f,
-                "`sites.tld = \"{tld}\"` is not reserved for local use (test, localhost, example, \
-                 invalid, local, internal, home.arpa): it can collide with real domains, and no \
-                 HTTPS is offered for it"
+            Self::UnknownField(path) => msg!("config.warning.unknown_field", path = path),
+            Self::PortConflict { port, services } => msg!(
+                "config.warning.port_conflict",
+                port = port,
+                services = services.join(", ")
+            ),
+            Self::PublicTld(tld) => msg!(
+                "config.warning.public_tld",
+                setting = format!("sites.tld = \"{tld}\"")
             ),
             Self::ExclusiveServices { first, second } => {
-                write!(
-                    f,
-                    "`{first}` and `{second}` are alternatives; enable only one of them"
-                )
+                msg!("config.warning.exclusive", first = first, second = second)
             }
-            Self::UnknownTerminal(name) => write!(f, "{}", crate::shell::unknown_terminal(name)),
+            Self::UnknownTerminal(name) => crate::shell::unknown_terminal(name),
         }
     }
 }
+
+crate::display_as_message!(ConfigWarning);
 
 /// A configuration that could not be loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// The file exists but could not be read.
-    #[error("cannot read `{}`: {source}", path.display())]
     Read {
         /// File that failed.
         path: PathBuf,
         /// Underlying I/O error.
         source: io::Error,
     },
-    /// The text is not valid TOML or a value has the wrong type.
-    #[error("invalid crisol.toml: {0}")]
+    /// The text is not valid TOML or a value has the wrong type. The reason comes from the TOML
+    /// reader and is shown as it is.
     Parse(#[from] toml::de::Error),
     /// A value is well-formed but not acceptable.
-    #[error("invalid value for `{field}`: {reason}")]
     Invalid {
         /// Dotted path of the field.
         field: String,
@@ -346,6 +340,22 @@ pub enum ConfigError {
         reason: String,
     },
 }
+
+impl Localized for ConfigError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Read { path, source } => {
+                msg!("config.read", path = path.display(), error = source)
+            }
+            Self::Parse(error) => msg!("config.parse", error = error),
+            Self::Invalid { field, reason } => {
+                msg!("config.invalid", field = field, reason = reason)
+            }
+        }
+    }
+}
+
+crate::display_as_message!(ConfigError);
 
 /// A configuration together with the warnings found while loading it.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -32,7 +32,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 
 use crate::ca::LocalCa;
+use crate::i18n::Message;
 use crate::manage::list_installed;
+use crate::msg;
 use crate::paths::{require_private_home, CrisolPaths, PrivateDirs};
 use crate::phpini::{write_if_changed, PhpIniError};
 
@@ -310,7 +312,7 @@ pub struct WrittenCacert {
     pub warnings: Vec<String>,
     /// Facts that need no action (certificates left out of the bundle and why). They go to the
     /// daemon's log and to `crisol doctor`, not to `crisol start` (review of phase 9, W1).
-    pub notes: Vec<String>,
+    pub notes: Vec<Message>,
 }
 
 /// The bundle as it would be written, before anything touches the disk.
@@ -321,7 +323,7 @@ struct Built {
     added: usize,
     omitted: usize,
     warnings: Vec<String>,
-    notes: Vec<String>,
+    notes: Vec<Message>,
 }
 
 /// Builds `etc/php/cacert.pem` from the installed `cacert` package plus the system roots.
@@ -375,7 +377,7 @@ pub fn php_cacert_notes(
     system: &dyn RootCertificates,
     local_ca: Option<&LocalCa>,
     dirs: &dyn PrivateDirs,
-) -> Result<Option<Vec<String>>, PhpIniError> {
+) -> Result<Option<Vec<Message>>, PhpIniError> {
     Ok(build_php_cacert(paths, system, local_ca, dirs)?.map(|built| built.notes))
 }
 
@@ -429,10 +431,10 @@ fn build_php_cacert(
     let (text, excluded_ders) = exclude_certificates(&text, &disallowed);
     let excluded: Vec<String> = excluded_ders.iter().map(|d| certificate_name(d)).collect();
     if !excluded.is_empty() {
-        notes.push(format!(
-            "{} certificate(s) of Mozilla's bundle were left out because the system distrusts them: {}",
-            excluded.len(),
-            excluded.join(", ")
+        notes.push(msg!(
+            "cacert.note.excluded",
+            count = excluded.len(),
+            list = excluded.join(", ")
         ));
     }
     let total = roots.len();
@@ -450,16 +452,11 @@ fn build_php_cacert(
         merged.text
     );
     if merged.skipped > 0 {
-        notes.push(format!(
-            "{} system certificate(s) were not valid and were left out",
-            merged.skipped
-        ));
+        notes.push(msg!("cacert.note.invalid", count = merged.skipped));
     }
 
     if omitted > 0 {
-        notes.push(format!(
-            "{omitted} system root(s) were left out of PHP's CA bundle: their use is restricted to something other than TLS servers, or the system distrusts them in part"
-        ));
+        notes.push(msg!("cacert.note.omitted", count = omitted));
     }
 
     Ok(Some(Built {

@@ -14,8 +14,10 @@
 
 use std::time::SystemTime;
 
+use crisol_core::i18n::{Language, Message};
+use crisol_core::msg;
 use crisol_core::onboarding::{self, Agreed as SetupAgreed};
-use crisol_core::teardown::{self, Agreed as TeardownAgreed, Outcome};
+use crisol_core::teardown::{self, Agreed as TeardownAgreed, Outcome, OutcomeKind, PurgeNotice};
 use crisol_protocol::{ErrorCode, RpcError};
 use serde::Serialize;
 
@@ -84,37 +86,66 @@ fn on_by_default(step: &onboarding::Step) -> bool {
 
 /// The plan of the setup, as the screen draws it.
 #[must_use]
-pub fn setup_view(plan: &onboarding::Plan) -> SetupView {
+pub fn setup_view(plan: &onboarding::Plan, language: Language) -> SetupView {
     SetupView {
         steps: plan
             .steps
             .iter()
             .map(|step| SetupStep {
                 id: step.id(),
-                description: step.describe(),
+                description: step.describe().render(language),
                 optional: step.optional(),
                 on_by_default: step.optional() && on_by_default(step),
             })
             .collect(),
-        done: plan.done.clone(),
+        done: said(&plan.done, language),
         problems: plan
             .problems
             .iter()
             .map(|p| SetupProblem {
-                message: p.message.clone(),
+                message: p.message.render(language),
                 fix: p.fix.clone(),
             })
             .collect(),
-        notes: plan.notes.clone(),
+        notes: said(&plan.notes, language),
         incomplete: plan.problems.is_empty() && plan.steps.iter().any(|step| !step.optional()),
     }
+}
+
+/// `messages` said in `language`.
+fn said(messages: &[Message], language: Language) -> Vec<String> {
+    messages.iter().map(|m| m.render(language)).collect()
+}
+
+/// One line of what a run did, as the screen draws it: the step, how it went and what happened,
+/// said in the language of the person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutcomeLine {
+    /// The step (`trust`).
+    pub step: &'static str,
+    /// How it went.
+    #[serde(rename = "result")]
+    pub kind: OutcomeKind,
+    /// What happened.
+    pub message: String,
+}
+
+fn outcome_lines(outcomes: &[Outcome], language: Language) -> Vec<OutcomeLine> {
+    outcomes
+        .iter()
+        .map(|o| OutcomeLine {
+            step: o.step,
+            kind: o.kind,
+            message: o.message.render(language),
+        })
+        .collect()
 }
 
 /// What a setup run did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SetupDone {
     /// One line per step that was tried or left, in order.
-    pub outcomes: Vec<Outcome>,
+    pub outcomes: Vec<OutcomeLine>,
     /// Something failed (a person's "no" is not a failure).
     pub failed: bool,
 }
@@ -148,17 +179,22 @@ pub fn with_setup_system<R>(
 #[must_use]
 pub fn fetch_setup(context: &Context) -> SetupView {
     with_setup_system(context, |system| {
-        setup_view(&onboarding::plan(system, SystemTime::now()))
+        setup_view(
+            &onboarding::plan(system, SystemTime::now()),
+            context.language,
+        )
     })
 }
 
 /// Plans again and does the plan. `accepted` are the ids of the optional steps the person
 /// agreed to; the others are left as they were and reported as such. The steps that are not
-/// optional are done: pressing the button is the agreement to them.
+/// optional are done: pressing the button is the agreement to them. What is said comes in
+/// `language`.
 pub fn run_setup_on(
     system: &onboarding::System<'_>,
     accepted: &[String],
     now: SystemTime,
+    language: Language,
 ) -> Result<SetupDone, RpcError> {
     let plan = onboarding::plan(system, now);
     let agreed = onboarding::run_if_agreed(
@@ -173,7 +209,8 @@ pub fn run_setup_on(
             ErrorCode::Conflict,
             plan.problems
                 .first()
-                .map_or_else(|| "the setup cannot run".to_owned(), |p| p.message.clone()),
+                .map_or_else(|| msg!("setup.cannot_run"), |p| p.message.clone())
+                .render(language),
         )),
         SetupAgreed::NothingToDo | SetupAgreed::No => Ok(SetupDone {
             outcomes: Vec::new(),
@@ -183,7 +220,7 @@ pub fn run_setup_on(
             failed: outcomes
                 .iter()
                 .any(|o| o.kind == teardown::OutcomeKind::Failed),
-            outcomes,
+            outcomes: outcome_lines(&outcomes, language),
         }),
     }
 }
@@ -191,20 +228,35 @@ pub fn run_setup_on(
 /// Sets up what is left. See [`run_setup_on`].
 pub fn run_setup(context: &Context, accepted: &[String]) -> Result<SetupDone, RpcError> {
     with_setup_system(context, |system| {
-        run_setup_on(system, accepted, SystemTime::now())
+        run_setup_on(system, accepted, SystemTime::now(), context.language)
     })
 }
 
 // ---- uninstall ---------------------------------------------------------------------------
 
-/// What the uninstall screen draws: the plan of `uninstall --all` as the core words it, and
-/// whether the home goes with it, which is what the backup question is about.
+/// One step of the removal, as the screen draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UninstallStep {
+    /// A short name (`ca`).
+    pub step: &'static str,
+    /// What will be done.
+    pub description: String,
+}
+
+/// What the uninstall screen draws: the plan of `uninstall --all` said in the person's language,
+/// and whether the home goes with it, which is what the backup question is about.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UninstallView {
-    /// The steps, what is done by hand, what could not be looked at, what stays and, with
-    /// `purge`, what is deleted (`steps`, `by_hand`, `problems`, `kept`, `purge`).
-    #[serde(flatten)]
-    pub plan: teardown::Plan,
+    /// What will be undone, in order.
+    pub steps: Vec<UninstallStep>,
+    /// What the person has to do by hand, as instructions.
+    pub by_hand: Vec<String>,
+    /// What could not be looked at.
+    pub problems: Vec<String>,
+    /// What stays, and how to get rid of it.
+    pub kept: Vec<String>,
+    /// With `purge`: what is deleted.
+    pub purge: Option<PurgeNotice>,
     /// The home is deleted with its data and projects: the page asks whether there is a backup
     /// before it offers the button.
     pub deletes_home: bool,
@@ -212,10 +264,21 @@ pub struct UninstallView {
 
 /// The plan of the removal, as the screen draws it.
 #[must_use]
-pub fn uninstall_view(plan: teardown::Plan) -> UninstallView {
+pub fn uninstall_view(plan: &teardown::Plan, language: Language) -> UninstallView {
     UninstallView {
         deletes_home: plan.deletes_home(),
-        plan,
+        steps: plan
+            .steps
+            .iter()
+            .map(|step| UninstallStep {
+                step: step.id(),
+                description: step.describe().render(language),
+            })
+            .collect(),
+        by_hand: said(&plan.by_hand, language),
+        problems: said(&plan.problems, language),
+        kept: said(&plan.kept, language),
+        purge: plan.purge.clone(),
     }
 }
 
@@ -223,7 +286,7 @@ pub fn uninstall_view(plan: teardown::Plan) -> UninstallView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UninstallDone {
     /// One line per step, in order.
-    pub outcomes: Vec<Outcome>,
+    pub outcomes: Vec<OutcomeLine>,
     /// Every step was done or had nothing left to do: Crisol is out of Windows.
     pub done: bool,
     /// The app should close: its programs are deleted a few seconds after it ends.
@@ -260,24 +323,25 @@ pub fn with_teardown_system<R>(
 #[must_use]
 pub fn fetch_uninstall(context: &Context, purge: bool) -> UninstallView {
     with_teardown_system(context, |system| {
-        uninstall_view(teardown::plan(system, purge))
+        uninstall_view(&teardown::plan(system, purge), context.language)
     })
 }
 
 /// Plans again and does the plan. When it deletes the home, `backups_confirmed` must be true:
 /// the person has said they have what they need elsewhere. `stop_daemon` stops the daemon and
-/// waits until its files are free.
+/// waits until its files are free. What is said comes in `language`.
 pub fn run_uninstall_on(
     system: &teardown::System<'_>,
     purge: bool,
     backups_confirmed: bool,
     stop_daemon: &mut dyn FnMut() -> Result<(), String>,
+    language: Language,
 ) -> Result<UninstallDone, RpcError> {
     let plan = teardown::plan(system, purge);
     if plan.deletes_home() && !backups_confirmed {
         return Err(RpcError::new(
             ErrorCode::InvalidParams,
-            "the home is deleted with its databases and projects; say first that you have a backup",
+            msg!("teardown.backup_first").render(language),
         ));
     }
     match teardown::run_if_agreed(system, &plan, &mut |_| true, stop_daemon) {
@@ -289,7 +353,7 @@ pub fn run_uninstall_on(
         TeardownAgreed::Ran(outcomes) => {
             let done = teardown::all_done(&outcomes) && plan.problems.is_empty();
             Ok(UninstallDone {
-                outcomes,
+                outcomes: outcome_lines(&outcomes, language),
                 done,
                 // The app is one of the programs Crisol leaves running, and its files are
                 // deleted once it has ended; a failed run is left open to read what failed.
@@ -307,9 +371,13 @@ pub fn run_uninstall(
     notice: &mut dyn FnMut(&str),
 ) -> Result<UninstallDone, RpcError> {
     with_teardown_system(context, |system| {
-        run_uninstall_on(system, purge, backups_confirmed, &mut || {
-            connect::stop_daemon(context, notice)
-        })
+        run_uninstall_on(
+            system,
+            purge,
+            backups_confirmed,
+            &mut || connect::stop_daemon(context, notice),
+            context.language,
+        )
     })
 }
 

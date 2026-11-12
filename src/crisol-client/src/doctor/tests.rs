@@ -37,6 +37,7 @@ fn a_finding_without_an_action_has_no_button_and_keeps_its_words() {
             check(CheckStatus::Problem, None, None),
         ],
         &paths,
+        Language::ENGLISH,
     );
     assert_eq!((view.problems, view.warnings), (2, 1));
     assert!(view.rows.iter().all(|row| row.button.is_none()));
@@ -199,6 +200,7 @@ fn a_button_carries_the_very_action_it_was_made_from() {
             Some(action.clone()),
         )],
         &paths,
+        Language::ENGLISH,
     );
     assert_eq!(view.rows[0].button.as_ref().unwrap().action, action);
     // And it travels to the page as JSON the page can send back.

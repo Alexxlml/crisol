@@ -25,6 +25,8 @@ use base64::Engine as _;
 
 use crate::config::Config;
 use crate::dbservice::{plan as db_plan, DbKind};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::shims::{shim_file_name, SHIM_COMMANDS};
 
@@ -102,24 +104,33 @@ impl Terminal {
 #[derive(Debug, thiserror::Error)]
 pub enum ShellError {
     /// This is already a `crisol shell`.
-    #[error("this terminal is already a `crisol shell`; `exit` leaves it")]
     AlreadyInside,
     /// The shims are not in place, so the terminal would have nothing of Crisol's.
-    #[error("the shims are not installed, so a `crisol shell` would have no `php` or `node` of Crisol's: run `crisol shims install` first")]
     NoShims,
     /// The terminal that was asked for is not installed.
-    #[error("{0} was not found on this computer")]
     NotFound(&'static str),
     /// None of the terminals was found.
-    #[error("no terminal was found (pwsh, powershell or cmd)")]
     NoTerminal,
     /// A folder has a character a `PATH` or a profile cannot carry.
-    #[error("`{0}` contains `;`, `%` or `\"`, which a terminal's PATH cannot carry")]
     Unusable(PathBuf),
     /// The profile could not be written.
-    #[error("cannot write the profile of the terminal: {0}")]
     Io(#[from] io::Error),
 }
+
+impl Localized for ShellError {
+    fn message(&self) -> Message {
+        match self {
+            Self::AlreadyInside => msg!("shell.already_inside"),
+            Self::NoShims => msg!("shell.no_shims", command = "crisol shims install"),
+            Self::NotFound(name) => msg!("shell.not_found", name = name),
+            Self::NoTerminal => msg!("shell.no_terminal"),
+            Self::Unusable(path) => msg!("shell.unusable", path = path.display()),
+            Self::Io(error) => msg!("shell.io", error = error),
+        }
+    }
+}
+
+crate::display_as_message!(ShellError);
 
 /// What PowerShell reads as a single quote: `'` and the typographic ones (U+2018 to U+201B).
 const POWERSHELL_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
@@ -210,9 +221,11 @@ impl From<Option<Terminal>> for Preference<'_> {
 
 /// Why a name in `[shell] terminal` is not used.
 #[must_use]
-pub fn unknown_terminal(name: &str) -> String {
-    format!(
-        "`shell.terminal = \"{name}\"` in crisol.toml is not a terminal Crisol knows (pwsh, powershell, cmd, bash); it is ignored"
+pub fn unknown_terminal(name: &str) -> Message {
+    msg!(
+        "shell.unknown_terminal",
+        setting = format!("shell.terminal = \"{name}\""),
+        terminals = "pwsh, powershell, cmd, bash"
     )
 }
 
@@ -234,7 +247,7 @@ pub fn choose_terminal<'a>(
     preferred: impl Into<Preference<'a>>,
     parent: Option<&str>,
     find: &dyn Fn(Terminal) -> Option<PathBuf>,
-) -> Result<(Terminal, PathBuf, Option<String>), ShellError> {
+) -> Result<(Terminal, PathBuf, Option<Message>), ShellError> {
     let preferred = preferred.into();
     if let Some(terminal) = asked {
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
@@ -246,7 +259,8 @@ pub fn choose_terminal<'a>(
     };
     if let Some(terminal) = parent.and_then(Terminal::from_program) {
         let program = find(terminal).ok_or(ShellError::NotFound(terminal.name()))?;
-        let note = typo.map(|typo| format!("{typo}; opening {}", terminal.name()));
+        let note =
+            typo.map(|typo| msg!("shell.opening_after", lost => typo, name = terminal.name()));
         return Ok((terminal, program, note));
     }
     let mut lost = typo;
@@ -254,10 +268,7 @@ pub fn choose_terminal<'a>(
         match find(terminal) {
             Some(program) => return Ok((terminal, program, None)),
             None => {
-                lost = Some(format!(
-                    "{} (`[shell] terminal` in crisol.toml) was not found on this computer",
-                    terminal.name()
-                ));
+                lost = Some(msg!("shell.lost_terminal", name = terminal.name()));
             }
         }
     }
@@ -266,11 +277,8 @@ pub fn choose_terminal<'a>(
         .find_map(|t| find(t).map(|p| (t, p)))
         .ok_or(ShellError::NoTerminal)?;
     let note = match lost {
-        Some(lost) => format!("{lost}; opening {}", terminal.name()),
-        None => format!(
-            "opening {}: the program that started crisol is not one of the terminals it supports (cmd, PowerShell, Git Bash); `--shell` chooses one",
-            terminal.name()
-        ),
+        Some(lost) => msg!("shell.opening_after", lost => lost, name = terminal.name()),
+        None => msg!("shell.opening_unknown_parent", name = terminal.name()),
     };
     Ok((terminal, program, Some(note)))
 }

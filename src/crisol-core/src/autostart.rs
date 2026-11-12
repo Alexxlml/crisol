@@ -12,6 +12,8 @@ use std::sync::{Mutex, PoisonError};
 
 use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::PrivateDirs;
 use crate::programs::{require_trusted_program, ProgramError};
 
@@ -92,12 +94,21 @@ pub fn state(store: &dyn Autostart, daemon: &Path) -> io::Result<AutostartState>
 pub enum AutostartError {
     /// `crisold`, or its folder, can be replaced by other accounts: it would run at every
     /// sign-in with the user's rights.
-    #[error("{0}")]
     Program(#[from] ProgramError),
     /// The store or the path failed.
-    #[error("{0}")]
     Io(#[from] io::Error),
 }
+
+impl Localized for AutostartError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Program(error) => error.message(),
+            Self::Io(error) => msg!("io.error", error = error),
+        }
+    }
+}
+
+crate::display_as_message!(AutostartError);
 
 /// Makes the daemon start at sign-in. Refuses if `daemon` or its folder can be written by other
 /// accounts (`dirs` says), since whoever can replace it runs code as this user at every sign-in.

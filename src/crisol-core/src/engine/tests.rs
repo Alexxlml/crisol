@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 
 use sha2::{Digest, Sha256};

@@ -44,6 +44,8 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::config::{deserialize_reporting_unknown, ConfigWarning};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::version::{Version, VersionError, VersionReq};
 
 mod advisory;
@@ -221,13 +223,10 @@ impl Package {
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
     /// Not valid TOML, or a value has the wrong type.
-    #[error("invalid catalog: {0}")]
     Parse(#[from] toml::de::Error),
     /// The file uses a format this version does not understand.
-    #[error("catalog schema {0} is not supported (expected {SUPPORTED_SCHEMA})")]
     UnsupportedSchema(u32),
     /// An entry has a value that is not acceptable.
-    #[error("catalog entry {entry}: `{field}` {reason}")]
     Invalid {
         /// Which entry (`php 8.4.21` or `#3`).
         entry: String,
@@ -237,16 +236,12 @@ pub enum CatalogError {
         reason: String,
     },
     /// Two entries describe the same build.
-    #[error("catalog lists {0} twice")]
     Duplicate(String),
     /// The signature is missing, malformed or does not match.
-    #[error("catalog signature check failed: {0}")]
     Signature(String),
     /// No public key is configured, so signed catalogs cannot be trusted yet.
-    #[error("no catalog public key is configured; only the built-in catalog can be used")]
     NoTrustedKey,
     /// The catalog is older than the one in use.
-    #[error("catalog serial {offered} is older than the one in use ({current})")]
     Rollback {
         /// Serial of the rejected catalog.
         offered: u64,
@@ -254,10 +249,8 @@ pub enum CatalogError {
         current: u64,
     },
     /// The requested version is not a version.
-    #[error(transparent)]
     BadRequest(#[from] VersionError),
     /// Nothing in the catalog matches.
-    #[error("no {service} {request} for {target} in the catalog")]
     NotFound {
         /// Tool asked for.
         service: String,
@@ -267,6 +260,48 @@ pub enum CatalogError {
         target: Target,
     },
 }
+
+impl Localized for CatalogError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Parse(error) => msg!("catalog.parse", error = error),
+            Self::UnsupportedSchema(schema) => msg!(
+                "catalog.unsupported_schema",
+                schema = schema,
+                expected = SUPPORTED_SCHEMA
+            ),
+            Self::Invalid {
+                entry,
+                field,
+                reason,
+            } => msg!(
+                "catalog.invalid",
+                entry = entry,
+                field = field,
+                reason = reason
+            ),
+            Self::Duplicate(entry) => msg!("catalog.duplicate", entry = entry),
+            Self::Signature(reason) => msg!("catalog.signature", reason = reason),
+            Self::NoTrustedKey => msg!("catalog.no_trusted_key"),
+            Self::Rollback { offered, current } => {
+                msg!("catalog.rollback", offered = offered, current = current)
+            }
+            Self::BadRequest(error) => error.message(),
+            Self::NotFound {
+                service,
+                request,
+                target,
+            } => msg!(
+                "catalog.not_found",
+                service = service,
+                request = request,
+                target = target
+            ),
+        }
+    }
+}
+
+crate::display_as_message!(CatalogError);
 
 /// A validated catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]

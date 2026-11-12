@@ -12,6 +12,8 @@ use std::io;
 use std::path::Path;
 
 use crate::globals::{shimmed_globals, sync_global_shims, GlobalSync};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::shell::powershell_quote;
@@ -24,12 +26,21 @@ use crate::userpath::{
 #[derive(Debug, thiserror::Error)]
 pub enum ShimsError {
     /// The shim program is not one that can be trusted (missing, or open to other accounts).
-    #[error(transparent)]
     Program(#[from] ProgramError),
     /// A file could not be written.
-    #[error(transparent)]
     Io(#[from] io::Error),
 }
+
+impl Localized for ShimsError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Program(error) => error.message(),
+            Self::Io(error) => msg!("io.error", error = error),
+        }
+    }
+}
+
+crate::display_as_message!(ShimsError);
 
 /// What `crisol shims install` did, in file names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

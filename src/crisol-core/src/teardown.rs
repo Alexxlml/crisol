@@ -40,6 +40,8 @@ use crate::autostart::Autostart;
 use crate::dbservice::DbKind;
 use crate::dns::RULE_COMMENT;
 use crate::hosts::{BEGIN, END};
+use crate::i18n::Message;
+use crate::msg;
 use crate::paths::CrisolPaths;
 use crate::programs::WINGET_ID;
 use crate::setup::{remove_exclusion_command, suffix_of, SystemSetup};
@@ -183,47 +185,34 @@ impl Step {
 
     /// What will be done, in a sentence.
     #[must_use]
-    pub fn describe(&self) -> String {
+    pub fn describe(&self) -> Message {
         match self {
-            Self::CloseWindow => {
-                "Close the Crisol window, which is open (also when it is only in the tray): its program and what it keeps cannot be deleted while it runs".to_owned()
-            }
-            Self::StopDaemon => "Stop the daemon and the services it runs".to_owned(),
-            Self::Autostart { command } => {
-                format!("Remove the entry that starts Crisol when you sign in ({command})")
-            }
-            Self::Path { folder } => {
-                format!("Take {} out of your user PATH", folder.display())
-            }
-            Self::StartMenu { path } => {
-                format!("Delete the Start menu entry that opens the window ({})", path.display())
-            }
-            Self::GuiData { folder } => format!(
-                "Delete what the window keeps for its web view when this command ends: {}",
-                folder.display()
+            Self::CloseWindow => msg!("teardown.step.close_window"),
+            Self::StopDaemon => msg!("teardown.step.stop_daemon"),
+            Self::Autostart { command } => msg!("teardown.step.autostart", command = command),
+            Self::Path { folder } => msg!("teardown.step.path", folder = folder.display()),
+            Self::StartMenu { path } => msg!("teardown.step.startmenu", path = path.display()),
+            Self::GuiData { folder } => msg!("teardown.step.gui_data", folder = folder.display()),
+            Self::Ca { name, .. } => msg!("teardown.step.ca", name = name),
+            Self::Helper { suffix, home } => msg!(
+                "teardown.step.helper",
+                suffix = suffix,
+                home = home.display()
             ),
-            Self::Ca { name, .. } => format!(
-                "Take {name} out of the certificates Windows trusts (Windows asks you to confirm)"
-            ),
-            Self::Helper { suffix, home } => format!(
-                "With administrator rights (one prompt): remove the DNS rule for .{suffix}, Crisol's block of the hosts file, the Defender exclusions inside {} if there are any, and the helper in Program Files",
-                home.display()
-            ),
-            Self::Clean { home } => format!(
-                "Delete what Crisol keeps in {}: the installed versions, the global npm packages, the logs, the certificates, the cache, the shims and the configuration it generated. Your databases, their passwords, your settings and your projects stay",
-                home.display()
-            ),
-            Self::Purge { home } => format!("Delete {} and everything in it", home.display()),
-            Self::Programs { files } => format!(
-                "Delete Crisol's programs when this command ends: {}",
-                files
-                    .iter()
-                    .map(|f| f.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Self::Clean { home } => msg!("teardown.step.clean", home = home.display()),
+            Self::Purge { home } => msg!("teardown.step.purge", home = home.display()),
+            Self::Programs { files } => msg!("teardown.step.programs", files = path_list(files)),
         }
     }
+}
+
+/// `paths` one after the other, as a list of names for a sentence.
+fn path_list(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// In JSON a step is `{"step": <id>, "description": <sentence>}`.
@@ -266,11 +255,11 @@ pub struct Plan {
     /// What will be undone, in order.
     pub steps: Vec<Step>,
     /// What the user has to do by hand, as instructions.
-    pub by_hand: Vec<String>,
+    pub by_hand: Vec<Message>,
     /// What could not be looked at.
-    pub problems: Vec<String>,
+    pub problems: Vec<Message>,
     /// What stays, and how to get rid of it.
-    pub kept: Vec<String>,
+    pub kept: Vec<Message>,
     /// With `--purge`: what it deletes.
     pub purge: Option<PurgeNotice>,
 }
@@ -329,7 +318,7 @@ pub struct Outcome {
     #[serde(rename = "result")]
     pub kind: OutcomeKind,
     /// What happened.
-    pub message: String,
+    pub message: Message,
 }
 
 /// Whether every step was done or had nothing to do.
@@ -470,7 +459,7 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
         Ok(None) => {}
         Err(error) => plan
             .problems
-            .push(format!("cannot read the sign-in entry: {error}")),
+            .push(msg!("teardown.problem.autostart_read", error = error)),
     }
     match path_status(system.user_path, paths, &|_| false) {
         Ok(status) if status.in_path => plan.steps.push(Step::Path {
@@ -479,22 +468,25 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
         Ok(_) => {}
         Err(error) => plan
             .problems
-            .push(format!("cannot read your user PATH: {error}")),
+            .push(msg!("teardown.problem.path_read", error = error)),
     }
     start_menu_step(system, &mut plan);
-    let by_hand_cas = "open `certmgr.msc`, go to Trusted Root Certification Authorities > Certificates, and delete the ones named `Crisol Local CA …`";
     match &system.trust {
         Ok(store) => match crisol_cas(*store) {
             Ok(cas) => plan.steps.extend(cas.into_iter().map(|ca| Step::Ca {
                 name: ca.common_name,
                 der: ca.der,
             })),
-            Err(error) => plan.problems.push(format!(
-                "cannot read the certificates you trust ({error}); to do it by hand, {by_hand_cas}"
+            Err(error) => plan.problems.push(msg!(
+                "teardown.problem.trust_read",
+                error = error,
+                by_hand => msg!("teardown.by_hand_cas", tool = "certmgr.msc", name = "Crisol Local CA …")
             )),
         },
-        Err(error) => plan.problems.push(format!(
-            "cannot open the certificates you trust ({error}); to do it by hand, {by_hand_cas}"
+        Err(error) => plan.problems.push(msg!(
+            "teardown.problem.trust_open",
+            error = error,
+            by_hand => msg!("teardown.by_hand_cas", tool = "certmgr.msc", name = "Crisol Local CA …")
         )),
     }
     let suffix = suffix_of(paths);
@@ -504,21 +496,33 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             home: home.clone(),
         }),
         Ok(false) => without_helper(system, &suffix, &home, &mut plan),
-        Err(error) => plan.problems.push(format!(
-            "cannot tell whether the helper is installed ({error}); `crisol system uninstall` removes it"
+        Err(error) => plan.problems.push(msg!(
+            "teardown.problem.helper_unknown",
+            error = error,
+            command = "crisol system uninstall"
         )),
     }
+    home_steps(system, purge, &mut plan);
+    if let Some(folder) = system.gui_data.as_ref().filter(|f| f.is_dir()) {
+        plan.steps.push(Step::GuiData {
+            folder: folder.clone(),
+        });
+    }
+    programs_notice(system, &mut plan);
+    plan
+}
+
+/// What happens to the home: nothing deleted when it holds what is not Crisol's, everything with
+/// `purge`, else only what Crisol keeps there.
+fn home_steps(system: &System<'_>, purge: bool, plan: &mut Plan) {
+    let paths = system.paths;
+    let home = paths.home().to_path_buf();
     match purge_notice(paths) {
         Ok(notice) if !notice.foreign.is_empty() => {
-            plan.problems.push(format!(
-                "{} holds things that are not Crisol's, so nothing in it will be deleted: {}. Move them out and run this again, or delete what you want yourself",
-                home.display(),
-                notice
-                    .foreign
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            plan.problems.push(msg!(
+                "teardown.problem.foreign",
+                home = home.display(),
+                list = path_list(&notice.foreign)
             ));
             if purge {
                 plan.purge = Some(notice);
@@ -532,28 +536,28 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
             if anything_to_clean(paths) {
                 plan.steps.push(Step::Clean { home: home.clone() });
             }
-            let databases = if notice.databases.is_empty() {
-                String::new()
+            plan.kept.push(if notice.databases.is_empty() {
+                msg!(
+                    "teardown.kept.home",
+                    home = home.display(),
+                    command = "crisol uninstall --all --purge"
+                )
             } else {
-                format!(" ({})", notice.databases.join(", "))
-            };
-            plan.kept.push(format!(
-                "In {}: your databases{databases} and their passwords, your settings and your projects. `crisol uninstall --all --purge` deletes them too",
-                home.display()
-            ));
+                msg!(
+                    "teardown.kept.home_databases",
+                    home = home.display(),
+                    databases = notice.databases.join(", "),
+                    command = "crisol uninstall --all --purge"
+                )
+            });
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => plan
-            .problems
-            .push(format!("cannot read {}: {error}", home.display())),
+        Err(error) => plan.problems.push(msg!(
+            "teardown.problem.home_read",
+            home = home.display(),
+            error = error
+        )),
     }
-    if let Some(folder) = system.gui_data.as_ref().filter(|f| f.is_dir()) {
-        plan.steps.push(Step::GuiData {
-            folder: folder.clone(),
-        });
-    }
-    programs_notice(system, &mut plan);
-    plan
 }
 
 /// The Start menu entry that opens the window, if there is one. It is only a shortcut: one that
@@ -563,8 +567,10 @@ fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
     let path = match system.start_menu.path() {
         Ok(path) => path,
         Err(error) => {
-            plan.by_hand.push(format!(
-                "Cannot find your Start menu ({error}): if it has an entry named {SHORTCUT_NAME}, delete it"
+            plan.by_hand.push(msg!(
+                "teardown.by_hand.startmenu",
+                error = error,
+                name = SHORTCUT_NAME
             ));
             return;
         }
@@ -578,14 +584,12 @@ fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
 /// What happens to Crisol's programs: deleted, left to winget, or left to the user.
 fn programs_notice(system: &System<'_>, plan: &mut Plan) {
     if system.winget {
-        plan.kept.push(format!(
-            "crisol.exe and the programs next to it belong to winget: when this is done, `winget uninstall {WINGET_ID}` removes them"
+        plan.kept.push(msg!(
+            "teardown.kept.winget",
+            command = format!("winget uninstall {WINGET_ID}")
         ));
     } else if system.programs.is_empty() {
-        plan.kept.push(
-            "crisol.exe and the programs next to it: delete them yourself when this is done"
-                .to_owned(),
-        );
+        plan.kept.push(msg!("teardown.kept.programs"));
     } else {
         plan.steps.push(Step::Programs {
             files: system.programs.clone(),
@@ -599,37 +603,44 @@ fn without_helper(system: &System<'_>, suffix: &str, home: &Path, plan: &mut Pla
     match system.setup.leftovers(suffix) {
         Ok(leftovers) => {
             if leftovers.nrpt_rule {
-                plan.by_hand.push(format!(
-                    "The DNS rule for .{suffix} is still there. In PowerShell as an administrator: Get-DnsClientNrptRule | Where-Object Comment -eq '{RULE_COMMENT}' | Remove-DnsClientNrptRule -Force"
+                plan.by_hand.push(msg!(
+                    "teardown.by_hand.dns_rule",
+                    suffix = suffix,
+                    command = format!(
+                        "Get-DnsClientNrptRule | Where-Object Comment -eq '{RULE_COMMENT}' | Remove-DnsClientNrptRule -Force"
+                    )
                 ));
             }
             if let Some(hosts) = leftovers.hosts_block {
-                plan.by_hand.push(format!(
-                    "Crisol's block is still in the hosts file. Open {} as an administrator and delete the lines from `{BEGIN}` to `{END}`",
-                    hosts.display()
+                plan.by_hand.push(msg!(
+                    "teardown.by_hand.hosts_block",
+                    hosts = hosts.display(),
+                    begin = BEGIN,
+                    end = END
                 ));
             }
         }
-        Err(error) => plan.problems.push(format!(
-            "cannot tell whether the DNS rule or the hosts block of Crisol are still there: {error}"
-        )),
+        Err(error) => plan
+            .problems
+            .push(msg!("teardown.problem.leftovers", error = error)),
     }
-    plan.by_hand.push(format!(
-        "Defender's exclusions cannot be seen without administrator rights, and the helper that could is not installed. If you excluded a folder inside {}, in PowerShell as an administrator: {} (`(Get-MpPreference).ExclusionPath` lists them)",
-        home.display(),
-        remove_exclusion_command(home)
+    plan.by_hand.push(msg!(
+        "teardown.by_hand.exclusions",
+        home = home.display(),
+        command = remove_exclusion_command(home),
+        list = "(Get-MpPreference).ExclusionPath"
     ));
 }
 
 /// Why the home or the programs were not deleted.
-fn why_kept(outcomes: &[Outcome]) -> &'static str {
+fn why_kept(outcomes: &[Outcome]) -> Message {
     if outcomes
         .iter()
         .any(|o| matches!(o.kind, OutcomeKind::Declined | OutcomeKind::Failed))
     {
-        "something above is still in place"
+        msg!("teardown.why.in_place")
     } else {
-        "something could not be checked (see above)"
+        msg!("teardown.why.unchecked")
     }
 }
 
@@ -650,88 +661,67 @@ pub fn run(
         let (kind, message) = match step {
             Step::CloseWindow => close_window(system),
             Step::StopDaemon => match stop_daemon() {
-                Ok(()) => (
-                    OutcomeKind::Done,
-                    "Stopped the daemon and its services".to_owned(),
-                ),
+                Ok(()) => (OutcomeKind::Done, msg!("teardown.did.stop_daemon")),
                 Err(error) => (
                     OutcomeKind::Failed,
-                    format!("could not stop the daemon: {error}"),
+                    msg!("teardown.failed.stop_daemon", error = error),
                 ),
             },
             Step::Autostart { .. } => match system.autostart.remove() {
-                Ok(true) => (OutcomeKind::Done, "Removed the sign-in entry".to_owned()),
-                Ok(false) => (
-                    OutcomeKind::Nothing,
-                    "There was no sign-in entry any more".to_owned(),
-                ),
+                Ok(true) => (OutcomeKind::Done, msg!("teardown.did.autostart")),
+                Ok(false) => (OutcomeKind::Nothing, msg!("teardown.nothing.autostart")),
                 Err(error) => (
                     OutcomeKind::Failed,
-                    format!("could not remove the sign-in entry: {error}"),
+                    msg!("teardown.failed.autostart", error = error),
                 ),
             },
             Step::Path { folder } => match path_remove(system.user_path, system.paths) {
                 Ok(PathChange::Removed) => (
                     OutcomeKind::Done,
-                    format!(
-                        "Took {} out of your user PATH; terminals that are open keep the old one until they are closed",
-                        folder.display()
-                    ),
+                    msg!("teardown.did.path", folder = folder.display()),
                 ),
                 Ok(_) => (
                     OutcomeKind::Nothing,
-                    format!("{} was not in your user PATH any more", folder.display()),
+                    msg!("teardown.nothing.path", folder = folder.display()),
                 ),
                 Err(error) => (
                     OutcomeKind::Failed,
-                    format!("could not change your user PATH: {error}"),
+                    msg!("setup.failed.path", error = error),
                 ),
             },
             Step::StartMenu { .. } => remove_start_menu(system),
             Step::Ca { name, der } => remove_ca(system, name, der),
             Step::Helper { suffix, home } => match system.setup.uninstall(suffix, home) {
-                Ok(report) => (OutcomeKind::Done, report.steps.join("; ")),
+                Ok(report) => (OutcomeKind::Done, report.message()),
                 Err(error) if error.kind() == io::ErrorKind::PermissionDenied => (
                     OutcomeKind::Declined,
-                    format!(
-                        "The administrator prompt was declined ({error}): the DNS rule, the hosts block, the Defender exclusions and the helper are still there"
-                    ),
+                    msg!("teardown.declined.prompt", error = error),
                 ),
                 Err(error) => (
                     OutcomeKind::Failed,
-                    format!("the helper could not undo its changes: {error}"),
+                    msg!("teardown.failed.helper", error = error),
                 ),
             },
             // Deleting comes last, and only when everything above is gone: a CA still trusted
             // or a helper still installed needs the files and the programs to be taken out.
-            Step::Clean { home } | Step::Purge { home }
-                if unchecked || !all_done(&outcomes) =>
-            {
-                (
-                    OutcomeKind::Skipped,
-                    format!(
-                        "Nothing in {} was deleted, because {}; run this again when it is solved",
-                        home.display(),
-                        why_kept(&outcomes)
-                    ),
-                )
-            }
+            Step::Clean { home } | Step::Purge { home } if unchecked || !all_done(&outcomes) => (
+                OutcomeKind::Skipped,
+                msg!(
+                    "teardown.skipped.home",
+                    home = home.display(),
+                    why => why_kept(&outcomes)
+                ),
+            ),
             Step::Clean { .. } => clean(system.paths),
             Step::Purge { .. } => purge(system.paths),
             Step::GuiData { .. } if unchecked || !all_done(&outcomes) => (
                 OutcomeKind::Skipped,
-                format!(
-                    "What the window keeps for its web view was kept, because {}, so that this can be run again",
-                    why_kept(&outcomes)
-                ),
+                msg!("teardown.skipped.gui_data", why => why_kept(&outcomes)),
             ),
             Step::GuiData { folder } => delete_gui_data(system, folder),
             Step::Programs { .. } if unchecked || !all_done(&outcomes) => (
                 OutcomeKind::Skipped,
-                format!(
-                    "Crisol's programs were kept, because {}, so that this can be run again",
-                    why_kept(&outcomes)
-                ),
+                msg!("teardown.skipped.programs", why => why_kept(&outcomes)),
             ),
             Step::Programs { files } => delete_programs(system, files),
         };
@@ -774,98 +764,78 @@ pub fn run_if_agreed(
     }
 }
 
-fn close_window(system: &System<'_>) -> (OutcomeKind, String) {
+fn close_window(system: &System<'_>) -> (OutcomeKind, Message) {
     match system.app_window.close() {
-        Ok(true) => (OutcomeKind::Done, "Closed the Crisol window".to_owned()),
-        Ok(false) => (
-            OutcomeKind::Nothing,
-            "The Crisol window was not open".to_owned(),
-        ),
+        Ok(true) => (OutcomeKind::Done, msg!("teardown.did.close_window")),
+        Ok(false) => (OutcomeKind::Nothing, msg!("teardown.nothing.close_window")),
         Err(error) => (
             OutcomeKind::Failed,
-            format!(
-                "could not close the Crisol window ({error}); close it from its tray icon (Quit) and run this again"
-            ),
+            msg!("teardown.failed.close_window", error = error),
         ),
     }
 }
 
-fn remove_start_menu(system: &System<'_>) -> (OutcomeKind, String) {
+fn remove_start_menu(system: &System<'_>) -> (OutcomeKind, Message) {
     match system.start_menu.remove() {
-        Ok(true) => (OutcomeKind::Done, "Deleted the Start menu entry".to_owned()),
-        Ok(false) => (
-            OutcomeKind::Nothing,
-            "There was no Start menu entry any more".to_owned(),
-        ),
+        Ok(true) => (OutcomeKind::Done, msg!("teardown.did.startmenu")),
+        Ok(false) => (OutcomeKind::Nothing, msg!("teardown.nothing.startmenu")),
         Err(error) => (
             OutcomeKind::Failed,
-            format!("could not delete the Start menu entry: {error}"),
+            msg!("teardown.failed.startmenu", error = error),
         ),
     }
 }
 
-fn delete_gui_data(system: &System<'_>, folder: &Path) -> (OutcomeKind, String) {
+fn delete_gui_data(system: &System<'_>, folder: &Path) -> (OutcomeKind, Message) {
     // The window is probably the one running this: its web view holds the folder until it ends.
     match (system.remove_programs)(&[folder.to_path_buf()]) {
         Ok(()) => (
             OutcomeKind::Done,
-            format!(
-                "{} is deleted a few seconds after this command ends",
-                folder.display()
-            ),
+            msg!("teardown.did.gui_data", folder = folder.display()),
         ),
         Err(error) => (
             OutcomeKind::Failed,
-            format!(
-                "{} could not be deleted ({error}); delete it yourself",
-                folder.display()
+            msg!(
+                "teardown.failed.gui_data",
+                folder = folder.display(),
+                error = error
             ),
         ),
     }
 }
 
-fn delete_programs(system: &System<'_>, files: &[PathBuf]) -> (OutcomeKind, String) {
+fn delete_programs(system: &System<'_>, files: &[PathBuf]) -> (OutcomeKind, Message) {
     match (system.remove_programs)(files) {
         // Scheduled, not seen: they go once this command has ended.
         Ok(()) => (
             OutcomeKind::Done,
-            format!(
-                "Crisol's programs are deleted a few seconds after this command ends; if any is still there, delete it yourself: {}",
-                files
-                    .iter()
-                    .map(|f| f.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            msg!("teardown.did.programs", files = path_list(files)),
         ),
         Err(error) => (
             OutcomeKind::Failed,
-            format!("Crisol's programs could not be deleted ({error}); delete them yourself"),
+            msg!("teardown.failed.programs", error = error),
         ),
     }
 }
 
-fn remove_ca(system: &System<'_>, name: &str, der: &[u8]) -> (OutcomeKind, String) {
+fn remove_ca(system: &System<'_>, name: &str, der: &[u8]) -> (OutcomeKind, Message) {
     let store = match &system.trust {
         Ok(store) => *store,
-        Err(error) => return (OutcomeKind::Failed, error.clone()),
+        Err(error) => return (OutcomeKind::Failed, msg!("io.error", error = error)),
     };
     match store.remove(der) {
-        Ok(RemoveOutcome::Removed) => (
-            OutcomeKind::Done,
-            format!("Windows no longer trusts {name}"),
-        ),
+        Ok(RemoveOutcome::Removed) => (OutcomeKind::Done, msg!("teardown.did.ca", name = name)),
         Ok(RemoveOutcome::Absent) => (
             OutcomeKind::Nothing,
-            format!("{name} was not trusted any more"),
+            msg!("teardown.nothing.ca", name = name),
         ),
         Ok(RemoveOutcome::Declined) => (
             OutcomeKind::Declined,
-            format!("Windows was told no; {name} is still trusted"),
+            msg!("teardown.declined.ca", name = name),
         ),
         Err(error) => (
             OutcomeKind::Failed,
-            format!("could not take {name} out: {error}"),
+            msg!("teardown.failed.ca", name = name, error = error),
         ),
     }
 }
@@ -920,7 +890,7 @@ fn clean_etc(etc: &Path) -> io::Result<()> {
 }
 
 /// The safe uninstall of the home: deletes what Crisol keeps there except what is the user's.
-fn clean(paths: &CrisolPaths) -> (OutcomeKind, String) {
+fn clean(paths: &CrisolPaths) -> (OutcomeKind, Message) {
     let etc = paths.etc_dir();
     let left: Vec<String> = cleanable_entries(paths)
         .iter()
@@ -938,24 +908,18 @@ fn clean(paths: &CrisolPaths) -> (OutcomeKind, String) {
     if left.is_empty() {
         (
             OutcomeKind::Done,
-            format!(
-                "Deleted what Crisol keeps in {}, except your databases, their passwords, your settings and your projects",
-                paths.home().display()
-            ),
+            msg!("teardown.did.clean", home = paths.home().display()),
         )
     } else {
         (
             OutcomeKind::Failed,
-            format!(
-                "could not delete: {}. Close what is using them and delete them yourself",
-                left.join("; ")
-            ),
+            msg!("teardown.failed.delete", list = left.join("; ")),
         )
     }
 }
 
 /// Deletes what Crisol keeps in the home, then the home if it is empty.
-fn purge(paths: &CrisolPaths) -> (OutcomeKind, String) {
+fn purge(paths: &CrisolPaths) -> (OutcomeKind, Message) {
     let mut left = Vec::new();
     for entry in own_entries(paths) {
         if let Err(error) = remove_entry(&entry) {
@@ -965,25 +929,27 @@ fn purge(paths: &CrisolPaths) -> (OutcomeKind, String) {
     let home = paths.home();
     if left.is_empty() {
         match fs::remove_dir(home) {
-            Ok(()) => (OutcomeKind::Done, format!("Deleted {}", home.display())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                (OutcomeKind::Done, format!("Deleted {}", home.display()))
-            }
+            Ok(()) => (
+                OutcomeKind::Done,
+                msg!("teardown.did.purge", home = home.display()),
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (
+                OutcomeKind::Done,
+                msg!("teardown.did.purge", home = home.display()),
+            ),
             Err(error) => (
                 OutcomeKind::Failed,
-                format!(
-                    "emptied {}, but the folder itself could not be deleted: {error}",
-                    home.display()
+                msg!(
+                    "teardown.failed.purge_folder",
+                    home = home.display(),
+                    error = error
                 ),
             ),
         }
     } else {
         (
             OutcomeKind::Failed,
-            format!(
-                "could not delete: {}. Close what is using them and delete them yourself",
-                left.join("; ")
-            ),
+            msg!("teardown.failed.delete", list = left.join("; ")),
         )
     }
 }

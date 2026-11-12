@@ -18,6 +18,9 @@ pub mod fake;
 use std::io::Read;
 use std::time::Duration;
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
+
 /// An open download.
 pub struct Response {
     /// Size announced by the server, if any.
@@ -38,15 +41,24 @@ impl std::fmt::Debug for Response {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FetchError {
     /// The server answered with an error status.
-    #[error("the server answered {0}")]
     Status(u16),
     /// The URL is not `https`.
-    #[error("only https downloads are allowed: {0}")]
     NotHttps(String),
     /// The connection failed.
-    #[error("network error: {0}")]
     Network(String),
 }
+
+impl Localized for FetchError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Status(status) => msg!("fetch.status", status = status),
+            Self::NotHttps(url) => msg!("fetch.not_https", url = url),
+            Self::Network(reason) => msg!("fetch.network", reason = reason),
+        }
+    }
+}
+
+crate::display_as_message!(FetchError);
 
 /// Opens URLs.
 pub trait Fetch: Send + Sync {

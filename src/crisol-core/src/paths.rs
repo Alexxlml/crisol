@@ -39,16 +39,10 @@ mod names {
 #[derive(Debug, thiserror::Error)]
 pub enum PathsError {
     /// `CRISOL_HOME` (or the default) is not an absolute path.
-    #[error("the Crisol home must be an absolute path, got `{}`", .0.display())]
     NotAbsolute(PathBuf),
     /// No `CRISOL_HOME` was set and the platform could not provide a default.
-    #[error("CRISOL_HOME is not set and no default home directory is available")]
     NoHome,
     /// The home holds a character that breaks the `PATH` entry for its `shims` folder.
-    #[error(
-        "the Crisol home `{}` contains `{ch}`, which cannot be part of a PATH entry: choose another folder",
-        .path.display()
-    )]
     UnusableCharacter {
         /// The home that was given.
         path: PathBuf,
@@ -56,10 +50,8 @@ pub enum PathsError {
         ch: char,
     },
     /// A service name, version or other path component is not allowed.
-    #[error("invalid path component `{0}`: use letters, digits, `.`, `_`, `-` or `+`")]
     InvalidComponent(String),
     /// A directory could not be created.
-    #[error("cannot create `{}`: {source}", path.display())]
     Create {
         /// Directory that could not be created.
         path: PathBuf,
@@ -67,12 +59,30 @@ pub enum PathsError {
         source: io::Error,
     },
     /// The home exists and belongs to another account of this computer.
-    #[error("{}", other_account_message(path))]
     OtherAccount {
         /// The home.
         path: PathBuf,
     },
 }
+
+impl Localized for PathsError {
+    fn message(&self) -> Message {
+        match self {
+            Self::NotAbsolute(path) => msg!("paths.not_absolute", path = path.display()),
+            Self::NoHome => msg!("paths.no_home"),
+            Self::UnusableCharacter { path, ch } => {
+                msg!("paths.unusable_character", path = path.display(), ch = ch)
+            }
+            Self::InvalidComponent(name) => msg!("paths.invalid_component", name = name),
+            Self::Create { path, source } => {
+                msg!("paths.create", path = path.display(), error = source)
+            }
+            Self::OtherAccount { path } => other_account_message(path),
+        }
+    }
+}
+
+crate::display_as_message!(PathsError);
 
 /// The command that gives the current account a home of its own, in cmd. A command, so it goes
 /// into the sentence as data and is never translated (ADR-0030 §1).

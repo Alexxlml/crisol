@@ -13,8 +13,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crisol_protocol::{ErrorCode, RpcError, Text, TextArg};
+use crisol_protocol::{Check, CheckAction, CheckStatus, ErrorCode, RpcError, Text, TextArg};
 use serde::{Serialize, Serializer};
+
+use crate::msg;
 
 include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 
@@ -177,6 +179,19 @@ impl Message {
         self
     }
 
+    /// Whether the English sentence has `text` in it. For checking what a message says without
+    /// building its sentence first.
+    #[must_use]
+    pub fn contains(&self, text: &str) -> bool {
+        self.to_string().contains(text)
+    }
+
+    /// Whether the English sentence begins with `text`.
+    #[must_use]
+    pub fn starts_with(&self, text: &str) -> bool {
+        self.to_string().starts_with(text)
+    }
+
     /// The key.
     #[must_use]
     pub fn key(&self) -> &str {
@@ -281,6 +296,83 @@ pub fn rpc_error(code: ErrorCode, message: &Message) -> RpcError {
 pub trait Localized {
     /// The message, with its data.
     fn message(&self) -> Message;
+}
+
+/// What a finding of `doctor` says to do about it.
+#[derive(Debug, Clone)]
+pub enum Fix {
+    /// An exact command, or any text that is not translated.
+    Command(String),
+    /// A sentence of its own.
+    Say(Message),
+}
+
+/// A finding of `doctor` made of messages: the English sentences (what `--json` always had) next
+/// to their keys and data (ADR-0030 §4). `name` is also the identifier of the row, in English.
+#[must_use]
+pub fn finding(
+    status: CheckStatus,
+    name: &Message,
+    detail: &Message,
+    fix: Option<Fix>,
+    action: Option<CheckAction>,
+) -> Check {
+    let (fix, fix_text) = match fix {
+        None => (None, None),
+        Some(Fix::Command(command)) => (Some(command), None),
+        Some(Fix::Say(message)) => (Some(message.to_string()), Some(message.to_text())),
+    };
+    Check {
+        name: name.to_string(),
+        status,
+        detail: detail.to_string(),
+        fix,
+        action,
+        name_text: Some(name.to_text()),
+        detail_text: Some(detail.to_text()),
+        fix_text,
+    }
+}
+
+/// `Display` for a type that is [`Localized`]: its message in English, what an error printed
+/// before messages had keys.
+#[macro_export]
+macro_rules! display_as_message {
+    ($type:ty) => {
+        impl ::std::fmt::Display for $type {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::Display::fmt(&$crate::i18n::Localized::message(self), f)
+            }
+        }
+    };
+}
+
+impl Message {
+    /// `first` followed by each of `rest`, one after the other with "; " in between (the lines
+    /// of a report). The separator is in the dictionary (`i18n.join`), not in the code.
+    #[must_use]
+    pub fn joined(first: Self, rest: Vec<Self>) -> Self {
+        let join = |head: Self, tail: Self| msg!("i18n.join", first => head, rest => tail);
+        let mut rest = rest.into_iter().rev();
+        let Some(last) = rest.next() else {
+            return first;
+        };
+        join(first, rest.fold(last, |tail, head| join(head, tail)))
+    }
+}
+
+/// `items` one after the other with "and" in between (`a and b and c`), the word in the
+/// dictionary (`i18n.and`). Each item is shown as it is.
+#[must_use]
+pub fn and_list(items: &[String]) -> Message {
+    let mut items = items.iter().rev();
+    let Some(last) = items.next() else {
+        return msg!("i18n.text", text = "");
+    };
+    items.fold(
+        msg!("i18n.text", text = last),
+        |tail, head| msg!("i18n.and", first = head, rest => tail),
+    )
 }
 
 /// Makes a [`Message`]: `msg!("doctor.ca.stale", names = list)`. A datum given with `=` is text

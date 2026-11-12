@@ -19,6 +19,7 @@ pub mod globals;
 pub mod hosts;
 pub mod i18n;
 pub mod install;
+mod ioerror;
 pub mod ipc;
 pub mod log;
 pub mod manage;

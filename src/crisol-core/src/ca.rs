@@ -51,6 +51,8 @@ use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 
 /// The names (and everything under them) reserved for local use, the only ones the CA may be
@@ -86,20 +88,19 @@ const ALWAYS_PERMITTED: [&str; 2] = ["test", "localhost"];
 #[derive(Debug, thiserror::Error)]
 pub enum CaError {
     /// A file could not be read or written.
-    #[error("{action} `{}`: {source}", path.display())]
     Io {
-        /// What was being done.
+        /// What was being done: `create`, `check` (the permissions of), `temp` (a temporary file
+        /// in), `read` or `write`.
         action: &'static str,
         /// The file.
         path: std::path::PathBuf,
         /// The error.
         source: io::Error,
     },
-    /// The certificate or the key is not valid.
-    #[error("the local CA in `certs/` cannot be used: {0}")]
+    /// The certificate or the key is not valid. The reason comes from the libraries that read
+    /// it and is shown as it is.
     Invalid(String),
     /// Only one of `ca.pem` and `ca.key` exists.
-    #[error("`certs/` has `{present}` but not `{missing}`: restore the missing file or remove the other one and make a new CA (it must be trusted again)")]
     Incomplete {
         /// The file that is there.
         present: &'static str,
@@ -107,44 +108,57 @@ pub enum CaError {
         missing: &'static str,
     },
     /// The key is not the one of the certificate.
-    #[error(
-        "`ca.key` is not the key of `ca.pem`. If a run of Crisol was interrupted while making the \
-         CA, remove both files and make a new one (it must be trusted again); if not, somebody \
-         changed one of them"
-    )]
     KeyMismatch,
     /// The certificate is not a CA.
-    #[error("`ca.pem` is not a certificate authority")]
     NotACa,
     /// The CA has expired.
-    #[error("the local CA expired; make a new one (it must be trusted again)")]
     Expired,
     /// A CA exists and the request was to create one without replacing it.
-    #[error("a local CA already exists in `certs/`")]
     AlreadyExists,
     /// The TLD is not one reserved for local use, so no CA is made for it.
-    #[error(
-        "`.{0}` is not a name reserved for local use (test, localhost, example, invalid, local, \
-         internal, home.arpa): a local CA is not made for it, because it could vouch for real \
-         public domains. Its sites are served over HTTP; use a TLD such as `.test` for HTTPS"
-    )]
     TldNotSpecialUse(String),
     /// `certs/` or one of the CA files can be modified by other accounts of this computer.
-    #[error(
-        "`{}` can be modified by other accounts on this computer, so the local CA cannot be \
-         trusted. Remove write access for the other accounts on it (on Windows, \
-         `crisol doctor` shows the exact `icacls` command), or move CRISOL_HOME to a private \
-         folder and make the CA again",
-        path.display()
-    )]
     Exposed {
         /// The folder or file that is open.
         path: std::path::PathBuf,
     },
     /// The CA cannot issue for this name (it was made for another TLD).
-    #[error("the local CA cannot issue a certificate for `{0}`: make a new CA (it must be trusted again)")]
     NotCovered(String),
 }
+
+impl Localized for CaError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Io {
+                action,
+                path,
+                source,
+            } => {
+                let (path, error) = (path.display(), source);
+                match *action {
+                    "create" => msg!("ca.io_create", path = path, error = error),
+                    "check" => msg!("ca.io_check", path = path, error = error),
+                    "temp" => msg!("ca.io_temp", path = path, error = error),
+                    "read" => msg!("ca.io_read", path = path, error = error),
+                    _ => msg!("ca.io_write", path = path, error = error),
+                }
+            }
+            Self::Invalid(reason) => msg!("ca.invalid", reason = reason),
+            Self::Incomplete { present, missing } => {
+                msg!("ca.incomplete", present = present, missing = missing)
+            }
+            Self::KeyMismatch => msg!("ca.key_mismatch"),
+            Self::NotACa => msg!("ca.not_a_ca"),
+            Self::Expired => msg!("ca.expired"),
+            Self::AlreadyExists => msg!("ca.already_exists"),
+            Self::TldNotSpecialUse(tld) => msg!("ca.tld_not_special_use", tld = tld),
+            Self::Exposed { path } => msg!("ca.exposed", path = path.display()),
+            Self::NotCovered(name) => msg!("ca.not_covered", name = name),
+        }
+    }
+}
+
+crate::display_as_message!(CaError);
 
 /// What can be read from the CA's certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,13 +283,13 @@ fn ensure_private_certs(paths: &CrisolPaths, dirs: &dyn PrivateDirs) -> Result<(
         let home = paths.home();
         if !home.exists() {
             if let Some(parent) = home.parent() {
-                fs::create_dir_all(parent).map_err(io_error("cannot create", parent))?;
+                fs::create_dir_all(parent).map_err(io_error("create", parent))?;
             }
             dirs.create_private_dir(home)
-                .map_err(io_error("cannot create", home))?;
+                .map_err(io_error("create", home))?;
         }
         dirs.create_private_dir(&certs)
-            .map_err(io_error("cannot create", &certs))?;
+            .map_err(io_error("create", &certs))?;
     }
     check_not_exposed(paths, dirs)
 }
@@ -295,7 +309,7 @@ fn check_paths_not_exposed(
         if path.exists()
             && dirs
                 .is_writable_by_others(path)
-                .map_err(io_error("cannot check the permissions of", path))?
+                .map_err(io_error("check", path))?
         {
             return Err(CaError::Exposed { path: path.clone() });
         }
@@ -315,7 +329,7 @@ pub fn load_ca(
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(CaError::Io {
-            action: "cannot read",
+            action: "read",
             path: path.to_path_buf(),
             source,
         }),
@@ -611,21 +625,20 @@ pub(crate) fn write_files(dir: &Path, files: &[(std::path::PathBuf, &str)]) -> R
             source,
         }
     };
-    fs::create_dir_all(dir).map_err(io("cannot create", dir))?;
+    fs::create_dir_all(dir).map_err(io("create", dir))?;
     let mut staged = Vec::with_capacity(files.len());
     for (path, text) in files {
         let mut file = tempfile::Builder::new()
             .prefix(".crisol-cert-")
             .tempfile_in(dir)
-            .map_err(io("cannot create a temporary file in", dir))?;
+            .map_err(io("temp", dir))?;
         file.write_all(text.as_bytes())
             .and_then(|()| file.as_file().sync_all())
-            .map_err(io("cannot write", path))?;
+            .map_err(io("write", path))?;
         staged.push((path, file));
     }
     for (path, file) in staged {
-        file.persist(path)
-            .map_err(|e| io("cannot write", path)(e.error))?;
+        file.persist(path).map_err(|e| io("write", path)(e.error))?;
     }
     Ok(())
 }
@@ -649,10 +662,10 @@ pub fn write_node_ca(
         check_paths_not_exposed(dirs, &[dir.to_path_buf(), path.clone()])?;
     } else {
         if let Some(etc) = dir.parent() {
-            fs::create_dir_all(etc).map_err(io_error("cannot create", etc))?;
+            fs::create_dir_all(etc).map_err(io_error("create", etc))?;
         }
         dirs.create_private_dir(dir)
-            .map_err(io_error("cannot create", dir))?;
+            .map_err(io_error("create", dir))?;
     }
     if fs::read_to_string(&path).ok().as_deref() != Some(ca.cert_pem()) {
         write_files(dir, &[(path.clone(), ca.cert_pem())])?;

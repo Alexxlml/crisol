@@ -21,6 +21,8 @@ use sha2::{Digest, Sha256};
 
 use crate::dns::{rule_for, DnsError, DEFAULT_DNS_ADDR};
 use crate::exclusions::{decode_home, encode_home};
+use crate::i18n::Message;
+use crate::msg;
 use crate::shell::powershell_quote;
 
 /// The file name of the manifest, next to the helper.
@@ -325,23 +327,21 @@ impl SetupDone {
 
     /// The sentence about the exclusions inside `home`, after a removal.
     #[must_use]
-    pub fn exclusions_sentence(self, home: &Path) -> String {
+    pub fn exclusions_message(self, home: &Path) -> Message {
         match self {
-            Self::Done => format!(
-                "There were no Defender exclusions inside {}",
-                home.display()
+            Self::Done => msg!("system.exclusions_none", home = home.display()),
+            Self::ExclusionsRemoved => msg!("system.exclusions_removed", home = home.display()),
+            Self::ExclusionsUnavailable => msg!(
+                "system.exclusions_unavailable",
+                home = home.display(),
+                command = remove_exclusion_command(home)
             ),
-            Self::ExclusionsRemoved => {
-                format!("Removed the Defender exclusions inside {}", home.display())
-            }
-            Self::ExclusionsUnavailable => format!(
-                "Defender did not answer, so its exclusions were not looked at; if you excluded a folder inside {}, `{}` (as an administrator) takes it out",
-                home.display(),
-                remove_exclusion_command(home)
-            ),
-            Self::ExclusionsLeft => format!(
-                "Some Defender exclusions inside {} could not be removed (Defender keeps the ones a group policy sets); `(Get-MpPreference).ExclusionPath` and `(Get-MpPreference).ExclusionProcess` (as an administrator) list the ones left, and `Remove-MpPreference -ExclusionPath <path>` takes one out",
-                home.display()
+            Self::ExclusionsLeft => msg!(
+                "system.exclusions_left",
+                home = home.display(),
+                list_paths = "(Get-MpPreference).ExclusionPath",
+                list_processes = "(Get-MpPreference).ExclusionProcess",
+                remove = "Remove-MpPreference -ExclusionPath <path>"
             ),
         }
     }
@@ -361,9 +361,20 @@ pub fn remove_exclusion_command(home: &Path) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SetupReport {
     /// One line per thing done.
-    pub steps: Vec<String>,
+    pub steps: Vec<Message>,
     /// How it ended.
     pub done: SetupDone,
+}
+
+impl SetupReport {
+    /// What was done, as one sentence: the lines one after the other.
+    #[must_use]
+    pub fn message(&self) -> Message {
+        match self.steps.split_first() {
+            Some((first, rest)) => Message::joined(first.clone(), rest.to_vec()),
+            None => msg!("system.nothing_done"),
+        }
+    }
 }
 
 /// The suffix of the local sites in this home (`test`): what `crisol.toml` says, or the default
@@ -462,7 +473,7 @@ impl SystemSetup for FakeSetup {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(format!("install {suffix}"));
         Ok(SetupReport {
-            steps: vec![format!("installed the helper and the rule for .{suffix}")],
+            steps: vec![msg!("system.installed_fake", suffix = suffix)],
             done: SetupDone::Done,
         })
     }
@@ -479,7 +490,7 @@ impl SystemSetup for FakeSetup {
             ));
         }
         Ok(SetupReport {
-            steps: vec![format!("removed the helper and the rule for .{suffix}")],
+            steps: vec![msg!("system.removed_fake", suffix = suffix)],
             done: SetupDone::Done,
         })
     }

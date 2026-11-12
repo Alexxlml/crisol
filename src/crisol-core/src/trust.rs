@@ -26,6 +26,8 @@ use std::time::SystemTime;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::ca::{ensure_ca, load_ca, CaError, LocalCa};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PrivateDirs};
 
 pub mod fake;
@@ -80,15 +82,24 @@ pub trait TrustStore: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
     /// The home is open to other accounts: nothing is trusted from it.
-    #[error(transparent)]
     Home(#[from] HomeError),
     /// The local CA could not be made or read.
-    #[error(transparent)]
     Ca(#[from] CaError),
     /// The trust store failed.
-    #[error("trust store: {0}")]
     Store(#[from] io::Error),
 }
+
+impl Localized for TrustError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Home(error) => error.message(),
+            Self::Ca(error) => error.message(),
+            Self::Store(error) => msg!("trust.store", error = error),
+        }
+    }
+}
+
+crate::display_as_message!(TrustError);
 
 /// What `crisol trust` shows before the system asks: the CA, made now if there was none.
 #[derive(Debug)]

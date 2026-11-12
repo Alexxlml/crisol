@@ -138,7 +138,7 @@ fn the_endings_that_worked_have_their_own_codes() {
     }
     assert_eq!(SetupDone::from_code(1), None);
     // Looked at and partly removed is not "not looked at" (review of phase 11, finding 8).
-    let left = SetupDone::ExclusionsLeft.exclusions_sentence(Path::new(r"C:\Crisol"));
+    let left = SetupDone::ExclusionsLeft.exclusions_message(Path::new(r"C:\Crisol"));
     assert!(left.contains("could not be removed"), "{left}");
     assert!(!left.contains("not looked at"), "{left}");
     let home = Path::new(r"C:\Users\O'Brien\Crisol");
@@ -147,7 +147,7 @@ fn the_endings_that_worked_have_their_own_codes() {
         r"Remove-MpPreference -ExclusionPath 'C:\Users\O''Brien\Crisol\data'"
     );
     assert!(SetupDone::ExclusionsUnavailable
-        .exclusions_sentence(home)
+        .exclusions_message(home)
         .contains("Remove-MpPreference"));
 }
 

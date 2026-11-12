@@ -8,6 +8,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crisol_core::config::Config;
+use crisol_core::i18n::{Language, Localized, Message};
+use crisol_core::msg;
 use crisol_core::paths::PrivateDirs;
 use crisol_core::shell::{self, ShellError, Terminal};
 use crisol_core::CrisolPaths;
@@ -47,6 +49,11 @@ pub struct TerminalOptions {
 }
 
 /// What a terminal is called in a list.
+/// An error answer said in `language`.
+fn failure(language: Language, code: ErrorCode, message: &Message) -> RpcError {
+    RpcError::new(code, message.render(language))
+}
+
 fn label_of(terminal: Terminal) -> &'static str {
     match terminal {
         Terminal::Pwsh => "PowerShell 7",
@@ -61,7 +68,11 @@ fn label_of(terminal: Terminal) -> &'static str {
 /// Windows Terminal is not a choice of its own: it hosts these shells, and a console window the
 /// system opens goes to it when the user made it the default terminal of Windows.
 #[must_use]
-pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptions {
+pub fn terminal_options(
+    desktop: &dyn Desktop,
+    config: &Config,
+    language: Language,
+) -> TerminalOptions {
     let find = |t: Terminal| desktop.find_terminal(t, None);
     let chosen = config.preferred_terminal();
     // A name Crisol does not know shows as "automatic", with the warning that says so.
@@ -69,9 +80,10 @@ pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptio
     let (effective, warning) = match shell::choose_terminal(None, preference, None, &find) {
         Ok((terminal, _, note)) => (
             Some(terminal.name()),
-            note.filter(|_| preference != shell::Preference::Automatic),
+            note.filter(|_| preference != shell::Preference::Automatic)
+                .map(|note| note.render(language)),
         ),
-        Err(error) => (None, Some(error.to_string())),
+        Err(error) => (None, Some(error.message().render(language))),
     };
     TerminalOptions {
         options: Terminal::ALL
@@ -95,9 +107,13 @@ pub fn terminal_options(desktop: &dyn Desktop, config: &Config) -> TerminalOptio
 /// [`terminal_options`] for the configuration of this context's home.
 pub fn current_terminal_options(context: &Context) -> Result<TerminalOptions, RpcError> {
     let config = Config::load_from(&context.paths)
-        .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?
+        .map_err(|e| failure(context.language, ErrorCode::InvalidParams, &e.message()))?
         .config;
-    Ok(terminal_options(&*context.desktop, &config))
+    Ok(terminal_options(
+        &*context.desktop,
+        &config,
+        context.language,
+    ))
 }
 
 /// Saves the terminal the user chose (`None`: automatic) in `[shell] terminal` of
@@ -107,19 +123,21 @@ pub fn choose_terminal(
     paths: &CrisolPaths,
     dirs: &dyn PrivateDirs,
     name: Option<&str>,
+    language: Language,
 ) -> Result<(), RpcError> {
     let terminal = match name {
         Some(name) => Some(Terminal::from_name(name).ok_or_else(|| {
-            RpcError::new(
+            failure(
+                language,
                 ErrorCode::InvalidParams,
-                format!("`{name}` is not a terminal; use pwsh, powershell, cmd or bash"),
+                &msg!("terminal.not_a_terminal", name = name),
             )
         })?),
         None => None,
     };
     shell::save_terminal_preference(paths, dirs, terminal)
         .map(drop)
-        .map_err(|e| RpcError::new(ErrorCode::Io, e.to_string()))
+        .map_err(|e| failure(language, ErrorCode::Io, &e.message()))
 }
 
 /// Where the terminal opens.
@@ -153,6 +171,7 @@ pub fn start_folder(
     sites: &[(String, PathBuf)],
     paths: &CrisolPaths,
     config: &Config,
+    language: Language,
 ) -> Result<PathBuf, RpcError> {
     match place {
         Place::Projects => Ok(projects_folder(paths, config)),
@@ -162,20 +181,19 @@ pub fn start_folder(
                 .find(|(site, _)| site == name)
                 .map(|(_, root)| root)
                 .ok_or_else(|| {
-                    RpcError::new(
+                    failure(
+                        language,
                         ErrorCode::NotFound,
-                        format!("there is no site called `{name}`; `crisol sites` lists them"),
+                        &msg!("terminal.no_site", name = name, command = "crisol sites"),
                     )
                 })?;
             if root.is_dir() {
                 Ok(root.clone())
             } else {
-                Err(RpcError::new(
+                Err(failure(
+                    language,
                     ErrorCode::NotFound,
-                    format!(
-                        "the folder of `{name}` ({}) is not there any more",
-                        root.display()
-                    ),
+                    &msg!("terminal.folder_gone", name = name, path = root.display()),
                 ))
             }
         }
@@ -204,7 +222,7 @@ pub struct Opened {
     pub note: Option<String>,
 }
 
-fn shell_error(error: &ShellError) -> RpcError {
+fn shell_error(error: &ShellError, language: Language) -> RpcError {
     let code = match error {
         ShellError::AlreadyInside => ErrorCode::Conflict,
         ShellError::NoShims | ShellError::NotFound(_) | ShellError::NoTerminal => {
@@ -213,7 +231,7 @@ fn shell_error(error: &ShellError) -> RpcError {
         ShellError::Unusable(_) => ErrorCode::InvalidParams,
         ShellError::Io(_) => ErrorCode::Io,
     };
-    let mut rpc = RpcError::new(code, error.to_string());
+    let mut rpc = failure(language, code, &error.message());
     if matches!(error, ShellError::NoShims) {
         rpc.fix = Some("crisol shims install".to_owned());
     }
@@ -227,9 +245,14 @@ fn site_roots(context: &Context) -> Result<Vec<(String, PathBuf)>, RpcError> {
             .into_iter()
             .map(|site| (site.name, PathBuf::from(site.root)))
             .collect()),
-        other => Err(RpcError::new(
+        other => Err(failure(
+            context.language,
             ErrorCode::Internal,
-            format!("unexpected answer to `sites`: {other:?}"),
+            &msg!(
+                "client.unexpected_answer",
+                call = "sites",
+                answer = format!("{other:?}")
+            ),
         )),
     }
 }
@@ -248,7 +271,14 @@ pub fn open_terminal(
         Place::Site(_) => site_roots(context)?,
         Place::Projects => Vec::new(),
     };
-    launch_terminal(&*context.desktop, &context.paths, env, place, &sites)
+    launch_terminal(
+        &*context.desktop,
+        &context.paths,
+        env,
+        place,
+        &sites,
+        context.language,
+    )
 }
 
 /// [`open_terminal`] once the sites are known: `sites` is `(name, root)` of each.
@@ -258,15 +288,16 @@ pub fn launch_terminal(
     env: &[(OsString, OsString)],
     place: &Place,
     sites: &[(String, PathBuf)],
+    language: Language,
 ) -> Result<Opened, RpcError> {
     let config = Config::load_from(paths)
-        .map_err(|e| RpcError::new(ErrorCode::InvalidParams, e.to_string()))?
+        .map_err(|e| failure(language, ErrorCode::InvalidParams, &e.message()))?
         .config;
-    let folder = start_folder(place, sites, paths, &config)?;
+    let folder = start_folder(place, sites, paths, &config, language)?;
     let find = |t: Terminal| desktop.find_terminal(t, None);
     let preference = config.terminal_preference();
-    let (terminal, program, note) =
-        shell::choose_terminal(None, preference, None, &find).map_err(|e| shell_error(&e))?;
+    let (terminal, program, note) = shell::choose_terminal(None, preference, None, &find)
+        .map_err(|e| shell_error(&e, language))?;
     let front = shell::front_folders(paths, &config);
     let launch = shell::plan_shell(&shell::ShellInput {
         paths,
@@ -277,11 +308,16 @@ pub fn launch_terminal(
         env,
         cwd: Some(&folder),
     })
-    .map_err(|e| shell_error(&e))?;
+    .map_err(|e| shell_error(&e, language))?;
     desktop.spawn_terminal(&launch).map_err(|e| {
-        RpcError::new(
+        failure(
+            language,
             ErrorCode::Io,
-            format!("cannot start {}: {e}", program.display()),
+            &msg!(
+                "terminal.cannot_start",
+                program = program.display(),
+                error = e
+            ),
         )
     })?;
     Ok(Opened {
@@ -289,7 +325,9 @@ pub fn launch_terminal(
         folder,
         // With no choice the automatic one is no news; with one (or a name it does not know),
         // why it is not that one is.
-        note: note.filter(|_| preference != shell::Preference::Automatic),
+        note: note
+            .filter(|_| preference != shell::Preference::Automatic)
+            .map(|note| note.render(language)),
     })
 }
 

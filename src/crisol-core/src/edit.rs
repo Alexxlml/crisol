@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
 use crate::config::Config;
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::CrisolPaths;
 use crate::project::{ProjectConfig, PROJECT_FILE};
 
@@ -32,7 +34,6 @@ type Check = fn(&str) -> Result<(), String>;
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
     /// The file exists but could not be read.
-    #[error("cannot read `{}`: {source}", path.display())]
     Read {
         /// File that failed.
         path: PathBuf,
@@ -40,7 +41,6 @@ pub enum EditError {
         source: io::Error,
     },
     /// The file could not be written.
-    #[error("cannot write `{}`: {source}", path.display())]
     Write {
         /// File that failed.
         path: PathBuf,
@@ -48,7 +48,6 @@ pub enum EditError {
         source: io::Error,
     },
     /// The existing text is not valid TOML. Nothing is changed.
-    #[error("cannot parse `{}`: {source}", path.display())]
     Parse {
         /// File that failed.
         path: PathBuf,
@@ -56,18 +55,34 @@ pub enum EditError {
         source: toml_edit::TomlError,
     },
     /// The key path is empty.
-    #[error("the key path must not be empty")]
     EmptyPath,
     /// A segment of the key path is a value, not a table.
-    #[error("`{0}` is not a table")]
     NotATable(String),
     /// The edited text is not an acceptable configuration, so it was not written.
-    #[error("the change would produce an invalid file: {0}")]
     Rejected(String),
     /// The file changed on disk since it was opened.
-    #[error("`{}` changed on disk while it was being edited; reload and try again", .0.display())]
     ChangedOnDisk(PathBuf),
 }
+
+impl Localized for EditError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Read { path, source } => msg!("io.read", path = path.display(), error = source),
+            Self::Write { path, source } => {
+                msg!("io.write", path = path.display(), error = source)
+            }
+            Self::Parse { path, source } => {
+                msg!("edit.parse", path = path.display(), error = source)
+            }
+            Self::EmptyPath => msg!("edit.empty_path"),
+            Self::NotATable(key) => msg!("edit.not_a_table", key = key),
+            Self::Rejected(reason) => msg!("edit.rejected", reason = reason),
+            Self::ChangedOnDisk(path) => msg!("edit.changed_on_disk", path = path.display()),
+        }
+    }
+}
+
+crate::display_as_message!(EditError);
 
 /// An open TOML file with pending edits.
 #[derive(Debug)]

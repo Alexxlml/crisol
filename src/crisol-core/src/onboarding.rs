@@ -19,6 +19,8 @@ use serde::{Serialize, Serializer};
 
 use crate::autostart::{self, Autostart, AutostartChange, AutostartError, AutostartState};
 use crate::ca::load_ca;
+use crate::i18n::{Localized, Message};
+use crate::msg;
 use crate::paths::{home_problems, CrisolPaths, HomeError, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
 use crate::setup::{suffix_of, SystemSetup};
@@ -132,60 +134,45 @@ impl Step {
 
     /// What will be done, in a sentence.
     #[must_use]
-    pub fn describe(&self) -> String {
+    pub fn describe(&self) -> Message {
         match self {
             Self::Shims {
                 folder,
                 refresh: true,
-            } => format!(
-                "Update the commands php, node, npm, composer and the rest in {} to this version of Crisol",
-                folder.display()
-            ),
-            Self::Shims { folder, .. } => format!(
-                "Put the commands php, node, npm, composer and the rest in {}, so each runs the version your project asks for",
-                folder.display()
-            ),
-            Self::Path { folder } => format!(
-                "Put {} first in your user PATH (only yours; open a new terminal afterwards)",
-                folder.display()
-            ),
+            } => msg!("setup.step.shims_update", folder = folder.display()),
+            Self::Shims { folder, .. } => msg!("setup.step.shims", folder = folder.display()),
+            Self::Path { folder } => msg!("setup.step.path", folder = folder.display()),
             Self::StartMenu {
                 path,
                 target,
                 refresh: true,
-            } => format!(
-                "Point the Start menu entry {} to this version of the window ({})",
-                path.display(),
-                target.display()
+            } => msg!(
+                "setup.step.startmenu_update",
+                path = path.display(),
+                target = target.display()
             ),
-            Self::StartMenu { path, target, .. } => format!(
-                "Add Crisol to your Start menu ({}) so the window opens from there ({}); only yours",
-                path.display(),
-                target.display()
+            Self::StartMenu { path, target, .. } => msg!(
+                "setup.step.startmenu",
+                path = path.display(),
+                target = target.display()
             ),
-            Self::Trust => "Make Crisol's local certificate authority, which vouches only for .test, .localhost and this computer, and ask Windows to trust it so browsers open your https sites without a warning (Windows asks you to confirm; `crisol trust` shows its fingerprints first)".to_owned(),
-            Self::Helper { suffix } => format!(
-                "With administrator rights (one prompt): install the helper in Program Files and make the DNS rule that sends .{suffix} to this computer"
-            ),
-            Self::Autostart { daemon } => format!(
-                "Start Crisol when you sign in ({})",
-                daemon.display()
-            ),
+            Self::Trust => msg!("setup.step.trust", command = "crisol trust"),
+            Self::Helper { suffix } => msg!("setup.step.helper", suffix = suffix),
+            Self::Autostart { daemon } => msg!("setup.step.autostart", daemon = daemon.display()),
         }
     }
 
     /// The question for a step that is asked alone.
     #[must_use]
-    pub fn question(&self) -> String {
+    pub fn question(&self) -> Message {
         match self {
-            Self::Trust => "Trust Crisol's local certificate authority?",
-            Self::Helper { .. } => {
-                "Install the helper and the DNS rule (asks for administrator rights)?"
+            Self::Trust => msg!("setup.question.trust"),
+            Self::Helper { .. } => msg!("setup.question.helper"),
+            Self::Autostart { .. } => msg!("setup.question.autostart"),
+            Self::Shims { .. } | Self::Path { .. } | Self::StartMenu { .. } => {
+                msg!("setup.question.other")
             }
-            Self::Autostart { .. } => "Start Crisol when you sign in?",
-            Self::Shims { .. } | Self::Path { .. } | Self::StartMenu { .. } => "Do it?",
         }
-        .to_owned()
     }
 }
 
@@ -206,18 +193,18 @@ pub struct Plan {
     /// What is left to do, in order.
     pub steps: Vec<Step>,
     /// What is in place already.
-    pub done: Vec<String>,
+    pub done: Vec<Message>,
     /// What stops the setup: nothing is changed while there is any.
     pub problems: Vec<Problem>,
     /// Things worth knowing that do not stop it.
-    pub notes: Vec<String>,
+    pub notes: Vec<Message>,
 }
 
 /// Why the setup cannot run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Problem {
     /// What is wrong, in a sentence.
-    pub message: String,
+    pub message: Message,
     /// The exact command that fixes it, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
@@ -262,10 +249,8 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
         .as_deref()
         .is_some_and(|exe| shims_current(paths, exe))
     {
-        plan.done.push(format!(
-            "The commands are in {} and up to date",
-            folder.display()
-        ));
+        plan.done
+            .push(msg!("setup.done.shims", folder = folder.display()));
     } else {
         plan.steps.push(Step::Shims {
             folder: folder.clone(),
@@ -275,10 +260,10 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
     match path_status(system.user_path, paths, &|_| false) {
         Ok(status) if status.in_path => plan
             .done
-            .push(format!("{} is in your user PATH", folder.display())),
+            .push(msg!("setup.done.path", folder = folder.display())),
         Ok(_) => plan.steps.push(Step::Path { folder }),
         Err(error) => plan.problems.push(Problem {
-            message: format!("cannot read your user PATH: {error}"),
+            message: msg!("setup.problem.path_read", error = error),
             fix: None,
         }),
     }
@@ -288,33 +273,34 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
     trust_step(system, now, &mut plan);
 
     match system.setup.installed() {
-        Ok(true) => plan
-            .done
-            .push("The helper and the DNS rule are installed".to_owned()),
+        Ok(true) => plan.done.push(msg!("setup.done.helper")),
         Ok(false) => plan.steps.push(Step::Helper {
             suffix: suffix_of(paths),
         }),
-        Err(error) => plan.notes.push(format!(
-            "cannot tell whether the helper is installed ({error}); `crisol system install` installs it"
+        Err(error) => plan.notes.push(msg!(
+            "setup.note.helper_unknown",
+            error = error,
+            command = "crisol system install"
         )),
     }
 
     if let Some(daemon) = &system.daemon_exe {
         match autostart::state(system.autostart, daemon) {
-            Ok(AutostartState::On) => plan.done.push("Crisol starts when you sign in".to_owned()),
+            Ok(AutostartState::On) => plan.done.push(msg!("setup.done.autostart")),
             Ok(AutostartState::Off) => plan.steps.push(Step::Autostart {
                 daemon: daemon.clone(),
             }),
             Ok(AutostartState::Other(other)) => {
-                plan.notes.push(format!(
-                    "Crisol starts when you sign in, but with another crisold ({other}); this replaces it"
-                ));
+                plan.notes
+                    .push(msg!("setup.note.autostart_elsewhere", other = other));
                 plan.steps.push(Step::Autostart {
                     daemon: daemon.clone(),
                 });
             }
-            Err(error) => plan.notes.push(format!(
-                "cannot read the sign-in entry ({error}); `crisol autostart status` says more"
+            Err(error) => plan.notes.push(msg!(
+                "setup.note.autostart_read",
+                error = error,
+                command = "crisol autostart status"
             )),
         }
     }
@@ -328,24 +314,27 @@ fn start_menu_step(system: &System<'_>, plan: &mut Plan) {
     let path = match system.start_menu.path() {
         Ok(path) => path,
         Err(error) => {
-            plan.notes.push(format!(
-                "cannot find your Start menu ({error}); the window opens from {}",
-                target.display()
+            plan.notes.push(msg!(
+                "setup.note.startmenu_path",
+                error = error,
+                target = target.display()
             ));
             return;
         }
     };
     match system.start_menu.target() {
         Ok(Some(current)) if same_path(&current, target) => {
-            plan.done.push("Crisol is in your Start menu".to_owned());
+            plan.done.push(msg!("setup.done.startmenu"));
         }
         Ok(current) => plan.steps.push(Step::StartMenu {
             path,
             target: target.clone(),
             refresh: current.is_some(),
         }),
-        Err(error) => plan.notes.push(format!(
-            "cannot read your Start menu entry ({error}); `crisol setup` cannot replace it"
+        Err(error) => plan.notes.push(msg!(
+            "setup.note.startmenu_read",
+            error = error,
+            command = "crisol setup"
         )),
     }
 }
@@ -358,7 +347,7 @@ fn check_programs(system: &System<'_>, plan: &mut Plan) {
     ] {
         let Some(program) = program else {
             plan.problems.push(Problem {
-                message: format!("{name} was not found next to this program"),
+                message: msg!("setup.problem.program_missing", name = name),
                 fix: None,
             });
             continue;
@@ -382,14 +371,11 @@ fn check_programs(system: &System<'_>, plan: &mut Plan) {
 fn home_problem(error: &HomeError) -> Problem {
     match error {
         HomeError::Exposed { path, fix } => Problem {
-            message: format!(
-                "`{}` can be modified by other accounts of this computer, and your PATH would lead to the commands Crisol keeps in it, so it will not set anything up",
-                path.display()
-            ),
+            message: msg!("setup.problem.home_exposed", path = path.display()),
             fix: Some(fix.clone()),
         },
         other => Problem {
-            message: other.to_string(),
+            message: other.message(),
             fix: None,
         },
     }
@@ -398,14 +384,11 @@ fn home_problem(error: &HomeError) -> Problem {
 fn problem_of(error: &ProgramError) -> Problem {
     match error {
         ProgramError::Exposed { path, fix, .. } => Problem {
-            message: format!(
-                "`{}` can be modified by other accounts of this computer, and Crisol would run the programs in it with your rights (or an administrator's), so it will not set anything up",
-                path.display()
-            ),
+            message: msg!("setup.problem.programs_exposed", path = path.display()),
             fix: Some(fix.clone()),
         },
         other => Problem {
-            message: other.to_string(),
+            message: other.message(),
             fix: None,
         },
     }
@@ -415,8 +398,10 @@ fn trust_step(system: &System<'_>, now: SystemTime, plan: &mut Plan) {
     let store = match &system.trust {
         Ok(store) => *store,
         Err(error) => {
-            plan.notes.push(format!(
-                "cannot open the certificates you trust ({error}); `crisol trust` tries again"
+            plan.notes.push(msg!(
+                "setup.note.trust_open",
+                error = error,
+                command = "crisol trust"
             ));
             return;
         }
@@ -424,16 +409,19 @@ fn trust_step(system: &System<'_>, now: SystemTime, plan: &mut Plan) {
     match load_ca(system.paths, system.dirs, now) {
         Ok(None) => plan.steps.push(Step::Trust),
         Ok(Some(ca)) => match status(store, &ca) {
-            Ok(state) if state.trusted => plan
-                .done
-                .push(format!("Windows trusts {}", ca.info().common_name)),
+            Ok(state) if state.trusted => plan.done.push(msg!(
+                "setup.done.trust",
+                name = ca.info().common_name.as_str()
+            )),
             Ok(_) => plan.steps.push(Step::Trust),
-            Err(error) => plan.notes.push(format!(
-                "cannot read the certificates you trust ({error}); `crisol trust` tries again"
+            Err(error) => plan.notes.push(msg!(
+                "setup.note.trust_read",
+                error = error,
+                command = "crisol trust"
             )),
         },
         Err(error) => plan.problems.push(Problem {
-            message: format!("the local CA cannot be used: {error}"),
+            message: msg!("setup.problem.ca", error => error.message()),
             fix: Some("crisol doctor".to_owned()),
         }),
     }
@@ -468,97 +456,93 @@ pub fn run(
     outcomes
 }
 
-fn declined_message(step: &Step) -> String {
+fn declined_message(step: &Step) -> Message {
     match step {
-        Step::Trust => "Left as it was; `crisol trust` does it later".to_owned(),
-        Step::Helper { .. } => "Left as it was; `crisol system install` does it later".to_owned(),
-        Step::Autostart { .. } => "Left as it was; `crisol autostart on` does it later".to_owned(),
+        Step::Trust => msg!("setup.declined.later", command = "crisol trust"),
+        Step::Helper { .. } => msg!("setup.declined.later", command = "crisol system install"),
+        Step::Autostart { .. } => msg!("setup.declined.later", command = "crisol autostart on"),
         Step::Shims { .. } | Step::Path { .. } | Step::StartMenu { .. } => {
-            "Left as it was".to_owned()
+            msg!("setup.declined.plain")
         }
     }
 }
 
-fn do_step(system: &System<'_>, step: &Step, now: SystemTime) -> (OutcomeKind, String) {
+fn do_step(system: &System<'_>, step: &Step, now: SystemTime) -> (OutcomeKind, Message) {
     match step {
         Step::Shims { folder, .. } => shims(system, folder),
         Step::Path { folder } => match path_add(system.user_path, system.paths) {
             Ok(PathChange::Added) => (
                 OutcomeKind::Done,
-                format!(
-                    "{} is first in your user PATH; open a new terminal to use it",
-                    folder.display()
-                ),
+                msg!("setup.did.path", folder = folder.display()),
             ),
             Ok(_) => (
                 OutcomeKind::Nothing,
-                format!("{} was in your user PATH already", folder.display()),
+                msg!("setup.nothing.path", folder = folder.display()),
             ),
             Err(error) => (
                 OutcomeKind::Failed,
-                format!("could not change your user PATH: {error}"),
+                msg!("setup.failed.path", error = error),
             ),
         },
         Step::StartMenu { path, target, .. } => match system.start_menu.create(target) {
             Ok(()) => (
                 OutcomeKind::Done,
-                format!("Added Crisol to your Start menu ({})", path.display()),
+                msg!("setup.did.startmenu", path = path.display()),
             ),
             Err(error) => (
                 OutcomeKind::Failed,
-                format!("could not make the Start menu entry: {error}"),
+                msg!("setup.failed.startmenu", error = error),
             ),
         },
         Step::Trust => trust(system, now),
         Step::Helper { suffix } => match system.setup.install(suffix) {
-            Ok(report) => (OutcomeKind::Done, report.steps.join("; ")),
+            Ok(report) => (OutcomeKind::Done, report.message()),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => (
                 OutcomeKind::Declined,
-                format!("The administrator prompt was declined ({error}); `crisol system install` tries again"),
+                msg!(
+                    "setup.declined.prompt",
+                    error = error,
+                    command = "crisol system install"
+                ),
             ),
             Err(error) => (
                 OutcomeKind::Failed,
-                format!("the helper could not be installed: {error}"),
+                msg!("setup.failed.helper", error = error),
             ),
         },
         Step::Autostart { daemon } => {
             match autostart::enable(system.autostart, daemon, system.dirs) {
-                Ok(AutostartChange::Enabled) => (
-                    OutcomeKind::Done,
-                    "Crisol will start when you sign in".to_owned(),
-                ),
-                Ok(AutostartChange::Replaced) => (
-                    OutcomeKind::Done,
-                    "Crisol will start when you sign in (the entry of another crisold was replaced)"
-                        .to_owned(),
-                ),
-                Ok(AutostartChange::Unchanged) => (
-                    OutcomeKind::Nothing,
-                    "Crisol already started when you sign in".to_owned(),
-                ),
-                Err(AutostartError::Program(error)) => (OutcomeKind::Failed, error.to_string()),
+                Ok(AutostartChange::Enabled) => (OutcomeKind::Done, msg!("setup.did.autostart")),
+                Ok(AutostartChange::Replaced) => {
+                    (OutcomeKind::Done, msg!("setup.did.autostart_replaced"))
+                }
+                Ok(AutostartChange::Unchanged) => {
+                    (OutcomeKind::Nothing, msg!("setup.nothing.autostart"))
+                }
+                Err(AutostartError::Program(error)) => (OutcomeKind::Failed, error.message()),
                 Err(AutostartError::Io(error)) => (
                     OutcomeKind::Failed,
-                    format!("could not make the sign-in entry: {error}"),
+                    msg!("setup.failed.autostart", error = error),
                 ),
             }
         }
     }
 }
 
-fn shims(system: &System<'_>, folder: &Path) -> (OutcomeKind, String) {
+fn shims(system: &System<'_>, folder: &Path) -> (OutcomeKind, Message) {
     let Some(exe) = &system.shim_exe else {
         return (
             OutcomeKind::Failed,
-            "crisol-shim.exe was not found next to this program".to_owned(),
+            msg!("setup.problem.program_missing", name = "crisol-shim.exe"),
         );
     };
     match install_shims(system.paths, exe, system.dirs, system.reserved_name) {
         Ok(done) if !done.failed.is_empty() => (
             OutcomeKind::Failed,
-            format!(
-                "could not write {}",
-                done.failed
+            msg!(
+                "setup.failed.shims",
+                names = done
+                    .failed
                     .iter()
                     .map(|(name, why)| format!("{name} ({why})"))
                     .collect::<Vec<_>>()
@@ -567,57 +551,58 @@ fn shims(system: &System<'_>, folder: &Path) -> (OutcomeKind, String) {
         ),
         Ok(done) if done.written.is_empty() => (
             OutcomeKind::Nothing,
-            format!("The commands in {} were up to date", folder.display()),
+            msg!("setup.nothing.shims", folder = folder.display()),
         ),
         Ok(done) => (
             OutcomeKind::Done,
-            format!(
-                "{} command(s) written in {}",
-                done.written.len(),
-                folder.display()
+            msg!(
+                "setup.did.shims",
+                count = done.written.len(),
+                folder = folder.display()
             ),
         ),
-        Err(error) => (OutcomeKind::Failed, error.to_string()),
+        Err(error) => (OutcomeKind::Failed, error.message()),
     }
 }
 
-fn trust(system: &System<'_>, now: SystemTime) -> (OutcomeKind, String) {
+fn trust(system: &System<'_>, now: SystemTime) -> (OutcomeKind, Message) {
     let store = match &system.trust {
         Ok(store) => *store,
-        Err(error) => return (OutcomeKind::Failed, error.clone()),
+        Err(error) => return (OutcomeKind::Failed, msg!("io.error", error = error)),
     };
     let tld = suffix_of(system.paths);
     let prepared = match prepare_trust(store, system.paths, system.dirs, &tld, now) {
         Ok(prepared) => prepared,
-        Err(error) => return (OutcomeKind::Failed, error.to_string()),
+        Err(error) => return (OutcomeKind::Failed, error.message()),
     };
     let name = prepared.ca.info().common_name.clone();
     if prepared.already {
         return (
             OutcomeKind::Nothing,
-            format!("Windows trusted {name} already"),
+            msg!("setup.nothing.trust", name = name),
         );
     }
     match trust_ca(store, &prepared.ca, system.paths, system.dirs) {
         Ok(AddOutcome::Added) => (
             OutcomeKind::Done,
-            format!(
-                "Windows trusts {name} now{}; a browser that was open may need a restart",
-                prepared
-                    .thumbprint
-                    .map(|sha1| format!(" (SHA-1 {sha1})"))
-                    .unwrap_or_default()
-            ),
+            match prepared.thumbprint {
+                Some(sha1) => msg!("setup.did.trust_sha1", name = name, sha1 = sha1),
+                None => msg!("setup.did.trust", name = name),
+            },
         ),
         Ok(AddOutcome::AlreadyThere) => (
             OutcomeKind::Nothing,
-            format!("Windows trusted {name} already"),
+            msg!("setup.nothing.trust", name = name),
         ),
         Ok(AddOutcome::Declined) => (
             OutcomeKind::Declined,
-            format!("Windows was told no; {name} is not trusted. `crisol trust` tries again"),
+            msg!(
+                "setup.declined.trust",
+                name = name,
+                command = "crisol trust"
+            ),
         ),
-        Err(error) => (OutcomeKind::Failed, error.to_string()),
+        Err(error) => (OutcomeKind::Failed, error.message()),
     }
 }
 

@@ -11,7 +11,6 @@
 //! become [`RpcError`]s with a code a client can act on, a sentence that can be shown as it is,
 //! and, when there is one, the exact command that fixes the problem.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -29,7 +28,7 @@ use crate::config::Config;
 use crate::dbservice::DbAdmin;
 use crate::edit::TomlEditor;
 use crate::fetch::Fetch;
-use crate::i18n::{rpc_error, Localized};
+use crate::i18n::{finding, rpc_error, Fix, Localized, Message};
 use crate::install::{unverified_sha256, InstallError, InstallOptions, Progress};
 use crate::manage::{
     install_version, install_version_from, is_unverified_install, list_available, list_installed,
@@ -258,10 +257,12 @@ impl Engine {
     /// about files.
     /// The sentence for a home that is not there yet.
     #[must_use]
-    pub fn no_home_message(&self) -> String {
-        format!(
-            "there is no Crisol home in {} yet; it is created with the first `crisol install` or `crisol start`",
-            self.paths.home().display()
+    pub fn no_home_message(&self) -> Message {
+        msg!(
+            "home.missing",
+            path = self.paths.home().display(),
+            install = "crisol install",
+            start = "crisol start"
         )
     }
 
@@ -269,19 +270,16 @@ impl Engine {
         let message = self.no_home_message();
         match call {
             Call::Doctor => Some(Ok(Reply::Doctor {
-                checks: vec![Check {
-                    action: None,
-                    name: "home".to_owned(),
-                    status: CheckStatus::Warning,
-                    detail: message,
-                    fix: None,
-                    name_text: None,
-                    detail_text: None,
-                    fix_text: None,
-                }],
+                checks: vec![finding(
+                    CheckStatus::Warning,
+                    &msg!("doctor.name.home_missing"),
+                    &message,
+                    None,
+                    None,
+                )],
             })),
             Call::List { .. } | Call::Sites | Call::Logs { .. } => {
-                Some(Err(RpcError::new(ErrorCode::NotFound, message)))
+                Some(Err(rpc_error(ErrorCode::NotFound, &message)))
             }
             _ => None,
         }
@@ -794,33 +792,43 @@ impl Engine {
                         action.get_or_insert_with(|| {
                             CheckAction::install(&i.service, Some(&fixed.to_string()))
                         });
-                        format!("fixed in {} {fixed}", i.service)
+                        msg!(
+                            "doctor.advisory.fixed_in",
+                            service = &i.service,
+                            version = fixed
+                        )
                     }
-                    None => "no fixed build exists".to_owned(),
+                    None => msg!("doctor.advisory.no_fix"),
                 };
-                lines.push(format!(
-                    "{} {}: {} ({}; {remedy}; {})",
-                    i.service, i.version, advisory.id, advisory.summary, advisory.url
+                lines.push(msg!(
+                    "doctor.advisory.line",
+                    service = &i.service,
+                    version = &i.version,
+                    id = &advisory.id,
+                    summary = &advisory.summary,
+                    remedy => remedy,
+                    url = &advisory.url
                 ));
             }
         }
-        (!lines.is_empty()).then(|| Check {
-            action: action.clone(),
-            name: "known vulnerabilities".to_owned(),
-            status: CheckStatus::Warning,
-            detail: lines.join("; "),
-            // When the catalog of this `crisol.exe` lacks the fix, the way out is `--from`.
-            fix: action.as_ref().and_then(CheckAction::command).or_else(|| {
-                Some(
-                    "install a fixed version if the line has one; if this crisol.exe does not \
-                     list it yet: crisol install <tool> <version> --from <zip> --sha256 <hash>"
-                        .to_owned(),
-                )
-            }),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        })
+        let (first, rest) = lines.split_first()?;
+        // When the catalog of this `crisol.exe` lacks the fix, the way out is `--from`.
+        let fix = action.as_ref().and_then(CheckAction::command).map_or_else(
+            || {
+                Fix::Say(msg!(
+                    "doctor.advisory.fix",
+                    command = "crisol install <tool> <version> --from <zip> --sha256 <hash>"
+                ))
+            },
+            Fix::Command,
+        );
+        Some(finding(
+            CheckStatus::Warning,
+            &msg!("doctor.name.vulnerabilities"),
+            &Message::joined(first.clone(), rest.to_vec()),
+            Some(fix),
+            action,
+        ))
     }
 
     /// Installed versions that no longer receive security fixes (ADR-0012), including one
@@ -840,23 +848,21 @@ impl Engine {
             .into_iter()
             .any(|p| !p.end_of_life && !p.version.is_prerelease());
         let action = supported.then(|| CheckAction::install(&first.service, None));
-        Some(Check {
-            fix: action.as_ref().and_then(CheckAction::command),
+        let list = old
+            .iter()
+            .map(|i| format!("{} {}", i.service, i.version))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(finding(
+            CheckStatus::Warning,
+            &msg!("doctor.name.unsupported"),
+            &msg!("doctor.unsupported", list = list, count = old.len()),
+            action
+                .as_ref()
+                .and_then(CheckAction::command)
+                .map(Fix::Command),
             action,
-            name: "unsupported versions".to_owned(),
-            status: CheckStatus::Warning,
-            detail: format!(
-                "{} no longer receive{} security fixes",
-                old.iter()
-                    .map(|i| format!("{} {}", i.service, i.version))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if old.len() == 1 { "s" } else { "" }
-            ),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        })
+        ))
     }
 
     /// Pieces of logs left by a rotation that was cut short (`runtime.log.rotating`): old lines
@@ -873,24 +879,21 @@ impl Engine {
             })
             .collect();
         found.sort();
-        (!found.is_empty()).then(|| Check {
-            action: Some(CheckAction::Reveal {
-                path: found[0].display().to_string(),
-            }),
-            name: "log leftovers".to_owned(),
-            status: CheckStatus::Warning,
-            detail: format!(
-                "a rotation of the logs was cut short and left old lines that nothing removes: {}",
-                found
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            fix: Some("read them if you need them, then delete them".to_owned()),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
+        let list = found
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        (!found.is_empty()).then(|| {
+            finding(
+                CheckStatus::Warning,
+                &msg!("doctor.name.log_leftovers"),
+                &msg!("doctor.log_leftovers", list = list),
+                Some(Fix::Say(msg!("doctor.log_leftovers_fix"))),
+                Some(CheckAction::Reveal {
+                    path: found[0].display().to_string(),
+                }),
+            )
         })
     }
 
@@ -917,76 +920,69 @@ impl Engine {
         }
         if let Some((_, service, version)) = different.first() {
             let action = CheckAction::reinstall(service, version);
-            return Some(Check {
-                fix: action.command(),
-                action: Some(action),
-                name: "unverified installs".to_owned(),
-                status: CheckStatus::Problem,
-                detail: format!(
-                    "{} {} not the official build: the catalog lists that version with another hash",
-                    different
-                        .iter()
-                        .map(|(name, ..)| name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if different.len() == 1 { "is" } else { "are" }
+            let list = different
+                .iter()
+                .map(|(name, ..)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Some(finding(
+                CheckStatus::Problem,
+                &msg!("doctor.name.unverified"),
+                &msg!(
+                    "doctor.unverified.different",
+                    list = list,
+                    count = different.len()
                 ),
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            });
+                action.command().map(Fix::Command),
+                Some(action),
+            ));
         }
-        (!waiting.is_empty()).then(|| Check {
-            action: None,
-            name: "unverified installs".to_owned(),
-            status: CheckStatus::Warning,
-            detail: format!(
-                "{} installed from a file with a hash you gave, not verified by Crisol",
-                waiting.join(", ")
-            ),
-            fix: Some(format!(
-                "when a newer crisol.exe lists the version, `crisol install {}` with it verifies it",
-                waiting[0]
-            )),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
+        (!waiting.is_empty()).then(|| {
+            finding(
+                CheckStatus::Warning,
+                &msg!("doctor.name.unverified"),
+                &msg!("doctor.unverified.waiting", list = waiting.join(", ")),
+                Some(Fix::Say(msg!(
+                    "doctor.unverified.waiting_fix",
+                    command = format!("crisol install {}", waiting[0])
+                ))),
+                None,
+            )
         })
     }
 
     /// A service with data in more than one series (MariaDB 10.11 and 11.8, say): each series is
     /// kept apart and nothing is migrated, so `doctor` says where each one is.
     fn check_data_series(&self) -> Option<Check> {
-        let lines: Vec<String> = crate::dbservice::DbKind::ALL
+        let lines: Vec<Message> = crate::dbservice::DbKind::ALL
             .into_iter()
             .filter_map(|kind| {
                 let series = crate::dbservice::series_with_data(&self.paths, kind);
                 (series.len() > 1).then(|| {
-                    format!(
-                        "{} has data in {}",
-                        kind.service(),
-                        series
-                            .iter()
-                            .map(|s| format!("data/{}/{s}", kind.service()))
-                            .collect::<Vec<_>>()
-                            .join(" and ")
+                    msg!(
+                        "doctor.data_series.line",
+                        service = kind.service(),
+                        series => crate::i18n::and_list(
+                            &series
+                                .iter()
+                                .map(|s| format!("data/{}/{s}", kind.service()))
+                                .collect::<Vec<_>>()
+                        )
                     )
                 })
             })
             .collect();
-        (!lines.is_empty()).then(|| Check {
-            action: None,
-            name: "data series".to_owned(),
-            status: CheckStatus::Warning,
-            detail: format!(
-                "{}; the series are kept apart and nothing is migrated, so the one in use is the one the version pinned in crisol.toml (or the newest installed) selects",
-                lines.join("; ")
+        let (first, rest) = lines.split_first()?;
+        Some(finding(
+            CheckStatus::Warning,
+            &msg!("doctor.name.data_series"),
+            &msg!(
+                "doctor.data_series",
+                lines => Message::joined(first.clone(), rest.to_vec())
             ),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        })
+            None,
+            None,
+        ))
     }
 
     /// What was left out of PHP's CA bundle and why: information, with nothing to fix, so it
@@ -1006,68 +1002,61 @@ impl Engine {
             self.deps.dirs.as_ref(),
         )
         .ok()??;
-        (!notes.is_empty()).then(|| Check {
-            action: None,
-            name: "php ca bundle".to_owned(),
-            status: CheckStatus::Ok,
-            detail: notes.join("; "),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        })
+        let (first, rest) = notes.split_first()?;
+        Some(finding(
+            CheckStatus::Ok,
+            &msg!("doctor.name.php_ca_bundle"),
+            &Message::joined(first.clone(), rest.to_vec()),
+            None,
+            None,
+        ))
     }
 
     /// Memcached cannot have a login: when it is enabled, `doctor` says so.
     fn check_memcached(&self) -> Option<Check> {
         let loaded = Config::load_from(&self.paths).ok()?;
-        loaded.config.services.memcached.enabled.then(|| Check {
-            action: None,
-            name: "memcached".to_owned(),
-            status: CheckStatus::Warning,
-            detail: crate::dbservice::MEMCACHED_NOTE.to_owned(),
-            fix: None,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
+        loaded.config.services.memcached.enabled.then(|| {
+            finding(
+                CheckStatus::Warning,
+                &msg!("doctor.name.memcached"),
+                &crate::dbservice::memcached_note(),
+                None,
+                None,
+            )
         })
     }
 
     fn check_home(&self) -> Check {
-        let name = "home permissions".to_owned();
+        let name = msg!("doctor.name.home_permissions");
         let problems = home_problems(&self.paths, self.deps.dirs.as_ref());
         let Some(first) = problems.first() else {
-            return Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: format!(
-                    "only you, the system and administrators can write in {}",
-                    self.paths.home().display()
-                ),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            };
+            return finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!("doctor.home.ok", path = self.paths.home().display()),
+                None,
+                None,
+            );
         };
         let rpc = home_error(first);
         // Every folder is named; the command is for the first, and `doctor` names the next.
-        let mut detail = rpc.message;
         let others: Vec<String> = problems[1..].iter().map(problem_path).collect();
-        if !others.is_empty() {
-            let _ = write!(detail, "; the same goes for {}", others.join(", "));
-        }
-        Check {
-            action: None,
-            name,
-            status: CheckStatus::Problem,
-            detail,
-            fix: rpc.fix,
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
-        }
+        let detail = if others.is_empty() {
+            first.message()
+        } else {
+            msg!(
+                "doctor.home.problem_more",
+                first => first.message(),
+                others = others.join(", ")
+            )
+        };
+        finding(
+            CheckStatus::Problem,
+            &name,
+            &detail,
+            rpc.fix.map(Fix::Command),
+            None,
+        )
     }
 
     /// The button of the checks about `crisol.toml`: Explorer with the file selected.
@@ -1079,97 +1068,76 @@ impl Engine {
     }
 
     fn check_config(&self) -> Check {
-        let name = "configuration".to_owned();
+        let name = msg!("doctor.name.config");
+        let file = self.paths.config_file();
         match Config::load_from(&self.paths) {
-            Ok(loaded) if loaded.warnings.is_empty() => Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: format!("{} is valid", self.paths.config_file().display()),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
-            Ok(loaded) => Check {
-                action: Some(self.reveal_config()),
-                name,
-                status: CheckStatus::Warning,
-                detail: loaded
-                    .warnings
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-                fix: Some(format!("edit {}", self.paths.config_file().display())),
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
-            Err(error) => Check {
-                action: Some(self.reveal_config()),
-                name,
-                status: CheckStatus::Problem,
-                detail: error.to_string(),
-                fix: Some(format!("fix {}", self.paths.config_file().display())),
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
+            Ok(loaded) if loaded.warnings.is_empty() => finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!("doctor.config.valid", path = file.display()),
+                None,
+                None,
+            ),
+            Ok(loaded) => finding(
+                CheckStatus::Warning,
+                &name,
+                &Message::joined(
+                    loaded.warnings[0].message(),
+                    loaded.warnings[1..]
+                        .iter()
+                        .map(Localized::message)
+                        .collect(),
+                ),
+                Some(Fix::Say(msg!("doctor.config.edit", path = file.display()))),
+                Some(self.reveal_config()),
+            ),
+            Err(error) => finding(
+                CheckStatus::Problem,
+                &name,
+                &error.message(),
+                Some(Fix::Say(msg!("doctor.config.fix", path = file.display()))),
+                Some(self.reveal_config()),
+            ),
         }
     }
 
     fn check_installed(&self) -> Check {
-        let name = "installed tools".to_owned();
+        let name = msg!("doctor.name.installed");
         let installed = match list_installed(&self.paths) {
             Ok(list) => list,
             Err(error) => {
-                return Check {
-                    action: None,
-                    name,
-                    status: CheckStatus::Problem,
-                    detail: error.to_string(),
-                    fix: None,
-                    name_text: None,
-                    detail_text: None,
-                    fix_text: None,
-                }
+                return finding(CheckStatus::Problem, &name, &error.message(), None, None)
             }
         };
         let has = |service: &str| installed.iter().any(|i| i.service == service);
         let missing: Vec<&str> = ["nginx", "php"].into_iter().filter(|s| !has(s)).collect();
         if missing.is_empty() {
-            Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: installed
-                    .iter()
-                    .map(|i| format!("{} {}", i.service, i.version))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            }
+            let list = installed
+                .iter()
+                .map(|i| format!("{} {}", i.service, i.version))
+                .collect::<Vec<_>>()
+                .join(", ");
+            finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!("doctor.installed.list", list = list),
+                None,
+                None,
+            )
         } else {
             let action = CheckAction::install(missing[0], None);
-            Check {
-                fix: action.command(),
-                action: Some(action),
-                name,
-                status: CheckStatus::Warning,
-                detail: format!("not installed: {}", missing.join(", ")),
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            }
+            finding(
+                CheckStatus::Warning,
+                &name,
+                &msg!("doctor.installed.missing", list = missing.join(", ")),
+                action.command().map(Fix::Command),
+                Some(action),
+            )
         }
     }
 
     fn check_shims(&self) -> Check {
-        let name = "shims".to_owned();
+        let name = msg!("doctor.name.shims");
         let dir = self.paths.shims_dir();
         let missing: Vec<String> = SHIM_COMMANDS
             .iter()
@@ -1177,27 +1145,29 @@ impl Engine {
             .filter(|f| !dir.join(f).is_file())
             .collect();
         if missing.is_empty() {
-            Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: format!("{} has {}", dir.display(), SHIM_COMMANDS.join(", ")),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            }
+            finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!(
+                    "doctor.shims.ok",
+                    folder = dir.display(),
+                    list = SHIM_COMMANDS.join(", ")
+                ),
+                None,
+                None,
+            )
         } else {
-            Check {
-                action: None,
-                name,
-                status: CheckStatus::Warning,
-                detail: format!("missing in {}: {}", dir.display(), missing.join(", ")),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            }
+            finding(
+                CheckStatus::Warning,
+                &name,
+                &msg!(
+                    "doctor.shims.missing",
+                    folder = dir.display(),
+                    list = missing.join(", ")
+                ),
+                None,
+                None,
+            )
         }
     }
 
@@ -1228,57 +1198,45 @@ impl Engine {
             })
             .map(|c| format!("{} (line {}: `{}`)", c.name, c.line, c.text))
             .collect();
-        (!elsewhere.is_empty()).then(|| Check {
-            action: None,
-            name: "site names".to_owned(),
-            status: CheckStatus::Problem,
-            detail: format!(
-                "the hosts file sends these sites to another address, and it wins over Crisol: {}",
-                elsewhere.join("; ")
-            ),
-            fix: Some(
-                "remove or change those lines of the hosts file (it needs an administrator), or rename the sites"
-                    .to_owned(),
-            ),
-            name_text: None,
-            detail_text: None,
-            fix_text: None,
+        (!elsewhere.is_empty()).then(|| {
+            finding(
+                CheckStatus::Problem,
+                &msg!("doctor.name.site_names"),
+                &msg!("doctor.hosts_collisions", list = elsewhere.join("; ")),
+                Some(Fix::Say(msg!("doctor.hosts_collisions_fix"))),
+                None,
+            )
         })
     }
 
     fn check_sites(&self) -> Check {
-        let name = "sites".to_owned();
+        let name = msg!("doctor.name.sites");
         match self.discover() {
-            Ok((list, config)) if list.warnings.is_empty() => Check {
-                action: None,
-                name,
-                status: CheckStatus::Ok,
-                detail: format!("{} site(s) under .{}", list.sites.len(), config.sites.tld),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
-            Ok((list, _)) => Check {
-                action: None,
-                name,
-                status: CheckStatus::Warning,
-                detail: list.warnings.join("; "),
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
-            Err(error) => Check {
-                action: None,
-                name,
-                status: CheckStatus::Problem,
-                detail: error.message,
-                fix: None,
-                name_text: None,
-                detail_text: None,
-                fix_text: None,
-            },
+            Ok((list, config)) if list.warnings.is_empty() => finding(
+                CheckStatus::Ok,
+                &name,
+                &msg!(
+                    "doctor.sites.ok",
+                    count = list.sites.len(),
+                    tld = config.sites.tld
+                ),
+                None,
+                None,
+            ),
+            Ok((list, _)) => finding(
+                CheckStatus::Warning,
+                &name,
+                &msg!("doctor.sites.warnings", list = list.warnings.join("; ")),
+                None,
+                None,
+            ),
+            Err(error) => finding(
+                CheckStatus::Problem,
+                &name,
+                &msg!("doctor.sites.error", error => &error),
+                None,
+                None,
+            ),
         }
     }
 }

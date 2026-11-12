@@ -13,10 +13,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::catalog::{Catalog, CatalogError, Package, Target};
 use crate::fetch::Fetch;
+use crate::i18n::{Localized, Message};
 use crate::install::{
     confirm_unverified, install, install_from, is_unverified, InstallError, InstallOptions,
     Installed, Origin, Progress, STAGING_PREFIX,
 };
+use crate::ioerror::io_message;
+use crate::msg;
 use crate::paths::{require_private_home, CrisolPaths, HomeError, PathsError, PrivateDirs};
 use crate::version::{Version, VersionError, VersionReq};
 
@@ -53,28 +56,18 @@ pub struct Removed {
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
     /// The installation itself failed.
-    #[error(transparent)]
     Install(#[from] InstallError),
     /// The home is open to other accounts: nothing is installed or removed.
-    #[error(transparent)]
     Home(#[from] HomeError),
     /// The catalog has no such version.
-    #[error(transparent)]
     Catalog(#[from] CatalogError),
     /// A name is not a valid folder name.
-    #[error(transparent)]
     Paths(#[from] PathsError),
     /// The version text is not a version.
-    #[error(transparent)]
     Version(#[from] VersionError),
     /// This operating system or CPU has no catalog entries.
-    #[error("this platform is not supported by Crisol")]
     UnsupportedPlatform,
     /// That version is not installed.
-    #[error(
-        "{service} {request} is not installed (installed: {})",
-        list_or_none(installed)
-    )]
     NotInstalled {
         /// Tool asked for.
         service: String,
@@ -84,7 +77,6 @@ pub enum ManageError {
         installed: Vec<String>,
     },
     /// The request matches more than one installed version.
-    #[error("{service} {request} matches several installed versions ({}); give the full version", matches.join(", "))]
     Ambiguous {
         /// Tool asked for.
         service: String,
@@ -95,11 +87,9 @@ pub enum ManageError {
     },
     /// A file of that installation is open or running, so it cannot be removed. Nothing was
     /// changed. Carries the file that is busy (or the folder, if the folder itself is).
-    #[error("`{}` is in use (is one of its programs running?); nothing was removed", .0.display())]
     InUse(PathBuf),
     /// `--from` needs the exact version, with as many parts as the catalog's versions of that
     /// tool (`8.4.28`, `17.12`), not a line or `latest`.
-    #[error("`--from` needs an exact version like {example}, not `{given}`")]
     FromNeedsExactVersion {
         /// What was given.
         given: String,
@@ -107,13 +97,8 @@ pub enum ManageError {
         example: String,
     },
     /// `--sha256` is not 64 hexadecimal digits.
-    #[error("`--sha256` must be 64 hexadecimal digits")]
     FromBadHash,
     /// The catalog already has that version with another hash: `--from` cannot override it.
-    #[error(
-        "the catalog already has {service} {version} with sha256 {expected}; \
-         `--from` cannot replace it (the file you gave has {given})"
-    )]
     FromContradictsCatalog {
         /// Tool.
         service: String,
@@ -125,10 +110,8 @@ pub enum ManageError {
         given: String,
     },
     /// The catalog does not know the tool, so there is no layout to unpack it with.
-    #[error("the catalog has no {0} to take the archive layout from; `--from` needs one")]
     FromUnknownService(String),
     /// A file operation failed.
-    #[error("{action} `{}`: {source}", path.display())]
     Io {
         /// What was being done.
         action: &'static str,
@@ -139,13 +122,76 @@ pub enum ManageError {
     },
 }
 
-fn list_or_none(items: &[String]) -> String {
-    if items.is_empty() {
-        "none".to_owned()
-    } else {
-        items.join(", ")
+impl Localized for ManageError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Install(error) => error.message(),
+            Self::Home(error) => error.message(),
+            Self::Catalog(error) => error.message(),
+            Self::Paths(error) => error.message(),
+            Self::Version(error) => error.message(),
+            Self::UnsupportedPlatform => msg!("manage.unsupported_platform"),
+            Self::NotInstalled {
+                service,
+                request,
+                installed,
+            } if installed.is_empty() => msg!(
+                "manage.not_installed_none",
+                service = service,
+                request = request
+            ),
+            Self::NotInstalled {
+                service,
+                request,
+                installed,
+            } => msg!(
+                "manage.not_installed",
+                service = service,
+                request = request,
+                installed = installed.join(", ")
+            ),
+            Self::Ambiguous {
+                service,
+                request,
+                matches,
+            } => msg!(
+                "manage.ambiguous",
+                service = service,
+                request = request,
+                matches = matches.join(", ")
+            ),
+            Self::InUse(path) => msg!("manage.in_use", path = path.display()),
+            Self::FromNeedsExactVersion { given, example } => msg!(
+                "manage.from_needs_exact_version",
+                given = given,
+                example = example
+            ),
+            Self::FromBadHash => msg!("manage.from_bad_hash"),
+            Self::FromContradictsCatalog {
+                service,
+                version,
+                expected,
+                given,
+            } => msg!(
+                "manage.from_contradicts_catalog",
+                service = service,
+                version = version,
+                expected = expected,
+                given = given
+            ),
+            Self::FromUnknownService(service) => {
+                msg!("manage.from_unknown_service", service = service)
+            }
+            Self::Io {
+                action,
+                path,
+                source,
+            } => io_message(action, path, source),
+        }
     }
 }
+
+crate::display_as_message!(ManageError);
 
 /// Every installed version, ordered by service and then version (oldest first).
 pub fn list_installed(paths: &CrisolPaths) -> Result<Vec<InstalledVersion>, ManageError> {

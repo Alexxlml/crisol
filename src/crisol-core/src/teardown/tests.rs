@@ -100,7 +100,7 @@ fn everything_crisol_changed_is_listed_and_then_undone() {
     );
     assert!(plan.kept[0].contains("--purge"), "{:?}", plan.kept);
     for step in &plan.steps {
-        assert_ne!(step.describe(), "");
+        assert_ne!(step.describe().to_string(), "");
     }
     // Looking changed nothing.
     assert!(world.autostart.current().unwrap().is_some());
@@ -345,7 +345,12 @@ fn without_the_helper_what_needs_an_administrator_is_told_as_commands() {
         hosts_block: Some(Path::new(r"C:\Windows\System32\drivers\etc\hosts").to_path_buf()),
     });
     let plan_left = plan(&world.system(&left, false), false);
-    let text = plan_left.by_hand.join("\n");
+    let text = plan_left
+        .by_hand
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(text.contains("Remove-DnsClientNrptRule"), "{text}");
     assert!(text.contains("Comment -eq 'Crisol'"), "{text}");
     assert!(text.contains("# BEGIN CRISOL"), "{text}");
@@ -517,7 +522,10 @@ fn the_plan_and_the_outcomes_serialize_as_a_client_reads_them() {
 
     let json = serde_json::to_value(&plan).unwrap();
     assert_eq!(json["steps"][0]["step"], "ca");
-    assert_eq!(json["steps"][0]["description"], plan.steps[0].describe());
+    assert_eq!(
+        json["steps"][0]["description"],
+        plan.steps[0].describe().to_string()
+    );
     assert_eq!(
         json["purge"]["home"],
         world.paths.home().display().to_string()
@@ -530,11 +538,11 @@ fn the_plan_and_the_outcomes_serialize_as_a_client_reads_them() {
     let outcome = Outcome {
         step: "ca",
         kind: OutcomeKind::Declined,
-        message: "no".to_owned(),
+        message: msg!("setup.declined.plain"),
     };
     assert_eq!(
         serde_json::to_value(&outcome).unwrap(),
-        serde_json::json!({"step": "ca", "result": "declined", "message": "no"})
+        serde_json::json!({"step": "ca", "result": "declined", "message": "Left as it was"})
     );
     let no_purge = serde_json::to_value(super::plan(&system, false)).unwrap();
     assert!(no_purge["purge"].is_null());

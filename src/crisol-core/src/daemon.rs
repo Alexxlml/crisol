@@ -263,10 +263,9 @@ impl Daemon {
         }
         match call {
             Call::Hello { protocol, .. } => self.hello(*protocol),
-            Call::Status { .. } if !self.engine.paths().home().exists() => Err(RpcError::new(
-                ErrorCode::NotFound,
-                self.engine.no_home_message(),
-            )),
+            Call::Status { .. } if !self.engine.paths().home().exists() => Err(
+                crate::i18n::rpc_error(ErrorCode::NotFound, &self.engine.no_home_message()),
+            ),
             Call::Status { service } => self.status(service.as_deref()),
             Call::Start { service } => {
                 self.require_whole_stack(service.as_deref())?;

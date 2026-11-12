@@ -13,23 +13,19 @@ use std::path::{Path, PathBuf};
 
 use crisol_protocol::{ErrorCode, RpcError};
 
+use crate::i18n::{rpc_error, Localized, Message};
+use crate::msg;
 use crate::paths::PrivateDirs;
 
 /// Why a program of Crisol is not to be launched.
 #[derive(Debug, thiserror::Error)]
 pub enum ProgramError {
     /// The program is not there.
-    #[error("`{}` was not found", path.display())]
     Missing {
         /// Where it was looked for.
         path: PathBuf,
     },
     /// The program, or the folder it is in, can be written by other accounts.
-    #[error(
-        "`{}` can be modified by other accounts of this computer, and Crisol would run \
-         `{}` with your rights (or an administrator's), so it will not",
-        path.display(), program.display()
-    )]
     Exposed {
         /// The file or folder that is open.
         path: PathBuf,
@@ -39,7 +35,6 @@ pub enum ProgramError {
         fix: String,
     },
     /// The permissions could not be read.
-    #[error("cannot check who can write to `{}`: {source}", path.display())]
     Check {
         /// What was being checked.
         path: PathBuf,
@@ -47,6 +42,24 @@ pub enum ProgramError {
         source: io::Error,
     },
 }
+
+impl Localized for ProgramError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Missing { path } => msg!("program.missing", path = path.display()),
+            Self::Exposed { path, program, .. } => msg!(
+                "program.exposed",
+                path = path.display(),
+                program = program.display()
+            ),
+            Self::Check { path, source } => {
+                msg!("program.check", path = path.display(), error = source)
+            }
+        }
+    }
+}
+
+crate::display_as_message!(ProgramError);
 
 /// Refuses unless `program` exists and neither it nor its folder can be written by other
 /// accounts. If the permissions cannot be read it refuses as well.
@@ -87,18 +100,15 @@ pub fn require_trusted_program(program: &Path, dirs: &dyn PrivateDirs) -> Result
 /// A [`ProgramError`] as an error a client can show: the sentence, and the command apart.
 #[must_use]
 pub fn program_error(error: &ProgramError) -> RpcError {
-    match error {
-        ProgramError::Exposed { path, program, fix } => RpcError::new(
-            ErrorCode::HomeExposed,
-            format!(
-                "`{}` can be modified by other accounts of this computer, and Crisol would run `{}` with your rights (or an administrator's), so it will not",
-                path.display(),
-                program.display()
-            ),
-        )
-        .with_fix(fix.clone()),
-        ProgramError::Missing { .. } => RpcError::new(ErrorCode::NotAvailable, error.to_string()),
-        ProgramError::Check { .. } => RpcError::new(ErrorCode::Io, error.to_string()),
+    let (code, fix) = match error {
+        ProgramError::Exposed { fix, .. } => (ErrorCode::HomeExposed, Some(fix)),
+        ProgramError::Missing { .. } => (ErrorCode::NotAvailable, None),
+        ProgramError::Check { .. } => (ErrorCode::Io, None),
+    };
+    let rpc = rpc_error(code, &error.message());
+    match fix {
+        Some(fix) => rpc.with_fix(fix.clone()),
+        None => rpc,
     }
 }
 
