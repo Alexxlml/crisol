@@ -6,6 +6,7 @@
 //! each answer: the lines to add, or the lines to start over with when the file is new (the
 //! first read) or was rotated underneath the viewer. The page only draws it.
 
+use crisol_core::msg;
 use crisol_protocol::{Call, ErrorCode, LogChunk, Reply, RpcError};
 use serde::Serialize;
 
@@ -88,7 +89,12 @@ pub fn fetch_log(
         Reply::Logs(chunk) => Ok(log_update(service, from, chunk)),
         other => Err(RpcError::new(
             ErrorCode::Internal,
-            format!("unexpected answer to `logs`: {other:?}"),
+            msg!(
+                "client.unexpected_answer",
+                call = "logs",
+                answer = format!("{other:?}")
+            )
+            .render(context.language),
         )),
     }
 }

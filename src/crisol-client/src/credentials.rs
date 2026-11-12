@@ -6,6 +6,7 @@
 //! when it is not, so a click never reaches the daemon only to be refused. The page draws it.
 
 use crisol_core::dbservice::{DbKind, PasswordChange};
+use crisol_core::msg;
 use crisol_protocol::{Call, CredentialsInfo, ErrorCode, Reply, RpcError};
 use serde::Serialize;
 
@@ -159,7 +160,12 @@ pub fn fetch_credentials(
         }
         other => Err(RpcError::new(
             ErrorCode::Internal,
-            format!("unexpected answer to `credentials`: {other:?}"),
+            msg!(
+                "client.unexpected_answer",
+                call = "credentials",
+                answer = format!("{other:?}")
+            )
+            .render(context.language),
         )),
     }
 }

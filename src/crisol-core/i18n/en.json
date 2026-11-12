@@ -438,5 +438,11 @@
   "client.daemon_silent": "the daemon did not open its pipe in {seconds} seconds; its log is {log}",
   "client.daemon_not_running": "the daemon is not running; `{command}` starts it",
   "versions.no_choice": "there is no version of `{service}` to choose; only php and node",
-  "sites.cannot_open": "cannot open {url}: {error}"
+  "sites.cannot_open": "cannot open {url}: {error}",
+
+  "daemon.stopped_unexpectedly": "`{method}` stopped unexpectedly",
+  "daemon.in_progress": "{label} is in progress; run `{command}` again when it ends",
+  "daemon.cannot_run": "the daemon cannot run this operation right now",
+  "daemon.still_in_progress": "`{method}` is still in progress after {seconds} seconds; `{command}` shows where it is",
+  "daemon.stopped_before_answering": "the daemon stopped before answering"
 }

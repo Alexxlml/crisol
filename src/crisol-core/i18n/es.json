@@ -438,5 +438,11 @@
   "client.daemon_silent": "el daemon no abrió su canal en {seconds} segundos; su registro está en {log}",
   "client.daemon_not_running": "el daemon no está en ejecución; `{command}` lo inicia",
   "versions.no_choice": "no hay ninguna versión de `{service}` que elegir; solo php y node",
-  "sites.cannot_open": "no se puede abrir {url}: {error}"
+  "sites.cannot_open": "no se puede abrir {url}: {error}",
+
+  "daemon.stopped_unexpectedly": "`{method}` se detuvo inesperadamente",
+  "daemon.in_progress": "{label} está en curso; vuelve a ejecutar `{command}` cuando termine",
+  "daemon.cannot_run": "el daemon no puede ejecutar esta operación ahora mismo",
+  "daemon.still_in_progress": "`{method}` sigue en curso después de {seconds} segundos; `{command}` muestra en qué punto está",
+  "daemon.stopped_before_answering": "el daemon se detuvo antes de responder"
 }

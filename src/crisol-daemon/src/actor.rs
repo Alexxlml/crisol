@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 use crisol_core::daemon::Daemon;
 use crisol_core::engine::Engine;
+use crisol_core::i18n::rpc_error;
+use crisol_core::msg;
 use crisol_protocol::{Call, DoneInfo, ErrorCode, Event, Reply, RpcError};
 use tokio::sync::oneshot;
 use tracing::{info, warn};
@@ -218,9 +220,9 @@ fn spawn_worker(engine: Engine, events: Bus, inbox: Sender<Input>) -> Option<Sen
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| {
-                        Err(RpcError::new(
+                        Err(rpc_error(
                             ErrorCode::Internal,
-                            format!("`{}` stopped unexpectedly", call.method()),
+                            &msg!("daemon.stopped_unexpectedly", method = call.method()),
                         ))
                     });
                 let finished = Finished {
@@ -261,11 +263,12 @@ impl Ctx<'_> {
         // A start while the files of a tool are being changed would run half an installation.
         if matches!(call, Call::Start { .. } | Call::Restart { .. }) {
             if let Some(label) = self.busy.iter().find(|label| *label != "doctor") {
-                let _ = reply.send(Err(RpcError::new(
+                let _ = reply.send(Err(rpc_error(
                     ErrorCode::Conflict,
-                    format!(
-                        "{label} is in progress; run `crisol {}` again when it ends",
-                        call.method()
+                    &msg!(
+                        "daemon.in_progress",
+                        label = label,
+                        command = format!("crisol {}", call.method())
                     ),
                 )));
                 return;
@@ -334,9 +337,9 @@ impl Ctx<'_> {
 }
 
 fn refuse(reply: oneshot::Sender<Result<Reply, RpcError>>) {
-    let _ = reply.send(Err(RpcError::new(
+    let _ = reply.send(Err(rpc_error(
         ErrorCode::Internal,
-        "the daemon cannot run this operation right now",
+        &msg!("daemon.cannot_run"),
     )));
 }
 
@@ -354,12 +357,13 @@ fn release(daemon: &mut Daemon, waiters: &mut Vec<Waiter>, settle: Duration, eve
             let outcome = finish(daemon, &waiter.call, waiter.first);
             let _ = waiter.reply.send(numbered(outcome, seq));
         } else if now >= waiter.deadline {
-            let _ = waiter.reply.send(Err(RpcError::new(
+            let _ = waiter.reply.send(Err(rpc_error(
                 ErrorCode::Conflict,
-                format!(
-                    "`{}` is still in progress after {} seconds; `crisol status` shows where it is",
-                    waiter.call.method(),
-                    settle.as_secs()
+                &msg!(
+                    "daemon.still_in_progress",
+                    method = waiter.call.method(),
+                    seconds = settle.as_secs(),
+                    command = "crisol status"
                 ),
             )));
         } else {

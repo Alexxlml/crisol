@@ -31,6 +31,9 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, oneshot, watch, Notify};
 use tracing::{debug, warn};
 
+use crisol_core::i18n::rpc_error;
+use crisol_core::msg;
+
 use crate::actor::{Input, Msg};
 use crate::bus::Bus;
 
@@ -198,9 +201,9 @@ async fn ask(shared: &Shared, call: Call, out: &Out) -> Result<Reply, RpcError> 
         events: events_tx,
     };
     if shared.actor.send(Input::Request(msg)).is_err() {
-        return Err(RpcError::new(
+        return Err(rpc_error(
             ErrorCode::Internal,
-            "the daemon is shutting down",
+            &msg!("daemon.shutting_down"),
         ));
     }
     loop {
@@ -211,7 +214,12 @@ async fn ask(shared: &Shared, call: Call, out: &Out) -> Result<Reply, RpcError> 
                 }
             }
             outcome = &mut reply_rx => {
-                return outcome.unwrap_or_else(|_| Err(RpcError::new(ErrorCode::Internal, "the daemon stopped before answering")));
+                return outcome.unwrap_or_else(|_| {
+                    Err(rpc_error(
+                        ErrorCode::Internal,
+                        &msg!("daemon.stopped_before_answering"),
+                    ))
+                });
             }
         }
     }
