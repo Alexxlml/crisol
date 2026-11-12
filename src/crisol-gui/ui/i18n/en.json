@@ -172,7 +172,6 @@
   "doctor.loading": "Looking at this computer…",
   "doctor.all_ok": "Everything Crisol checks is fine.",
   "doctor.check_again": "Check again",
-  "doctor.checking": "Checking…",
   "doctor.summary": "{problems} problem(s) and {warnings} warning(s).",
   "doctor.status.ok": "OK",
   "doctor.status.warning": "Warning",

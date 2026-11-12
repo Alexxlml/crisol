@@ -342,9 +342,11 @@ function renderDoctor() {
   const summary = document.getElementById("doctor-summary");
   // Checking again only asks `doctor` again: what is found and what each row offers is still
   // the app's to say. What was fixed from a terminal shows without leaving the screen.
+  // It is only there while nothing is being checked: neither a check of its own nor the one
+  // that follows a fix (a button of a row asks `doctor` again when it is done).
   const again = document.getElementById("doctor-again");
-  again.textContent = pending.has("doctor") ? t("doctor.checking") : t("doctor.check_again");
-  again.disabled = pending.has("doctor");
+  again.textContent = t("doctor.check_again");
+  again.hidden = [...pending].some((key) => key === "doctor" || key.startsWith("doctor:"));
   if (!doctorView) {
     box.replaceChildren();
     empty.hidden = false;

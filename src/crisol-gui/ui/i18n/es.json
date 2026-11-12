@@ -172,7 +172,6 @@
   "doctor.loading": "Revisando este equipo…",
   "doctor.all_ok": "Todo lo que Crisol revisa está bien.",
   "doctor.check_again": "Volver a comprobar",
-  "doctor.checking": "Comprobando…",
   "doctor.summary": "{problems} problema(s) y {warnings} aviso(s).",
   "doctor.status.ok": "Bien",
   "doctor.status.warning": "Aviso",
