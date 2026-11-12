@@ -634,6 +634,15 @@ pub enum Agreed {
     Ran(Vec<Outcome>),
 }
 
+/// Whether the person must open a new terminal for the commands to be found: only when the
+/// shims folder was just put in the user `PATH`. A terminal opened before keeps its own copy.
+#[must_use]
+pub fn needs_new_terminal(outcomes: &[Outcome]) -> bool {
+    outcomes
+        .iter()
+        .any(|o| o.step == "path" && o.kind == OutcomeKind::Done)
+}
+
 /// Gives `agree` the whole `plan` and, only if it says yes, runs it. `agree_step` is asked
 /// about the steps that are asked alone, when their turn comes.
 pub fn run_if_agreed(

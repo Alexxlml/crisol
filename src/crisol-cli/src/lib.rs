@@ -810,8 +810,10 @@ impl Session<'_> {
                 "{}",
                 if failed {
                     "Something failed; solve what is said above and run `crisol setup` again: it only does what is left."
-                } else {
+                } else if onboarding::needs_new_terminal(&outcomes) {
                     "Done. Open a new terminal for the commands to be in your PATH; `crisol start` starts the sites."
+                } else {
+                    "Done. `crisol start` starts the sites."
                 }
             );
         }

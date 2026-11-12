@@ -130,6 +130,7 @@ fn running_it_all_sets_everything_up_and_a_second_look_finds_nothing_left() {
             .in_path
     );
     assert!(world.autostart.current().unwrap().is_some());
+    assert!(needs_new_terminal(&outcomes), "the PATH changed");
 
     // The helper fake does not remember; with a helper installed nothing else is left.
     let installed = FakeSetup::new();
@@ -296,6 +297,10 @@ fn after_an_update_the_shims_of_the_old_program_are_listed_again_and_brought_up_
 
     let outcomes = run(&system, &after, &mut |_| true, SystemTime::now());
     assert_eq!(kinds(&outcomes), [("shims", OutcomeKind::Done)]);
+    assert!(
+        !needs_new_terminal(&outcomes),
+        "the PATH was already there: the open terminals still find the commands"
+    );
     assert!(plan(&system, SystemTime::now()).is_empty());
 }
 
