@@ -2,8 +2,8 @@
 //!
 //! The daemon writes its sentences in English and adds, next to each, a [`Text`]: a key and its
 //! data. Here each sentence is replaced by the one of the user's language and the `*_text`
-//! fields are emptied, so whoever receives the reply (the CLI, the page) reads plain sentences
-//! and nothing else changes for it. A key this language lacks is said in English; one that no
+//! fields are emptied (all but `name_text` of a check, which names the row), so whoever
+//! receives the reply (the CLI, the page) reads plain sentences and nothing else changes for it. A key this language lacks is said in English; one that no
 //! dictionary has (a daemon newer than this client) leaves the sentence the daemon sent.
 
 use crisol_core::i18n::{translate, Language};

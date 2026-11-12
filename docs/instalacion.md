@@ -24,6 +24,16 @@ crisol setup
 
 `crisol setup` solo hace lo que falta, así que puedes repetirlo cuando quieras. `crisol setup --yes` no pregunta (Windows sigue preguntando lo suyo).
 
+## Idioma
+
+La ventana y los mensajes de `crisol` salen en el idioma de Windows si Crisol tiene traducción (hoy, español); si no, en inglés. Para forzar uno, define `CRISOL_LANG` (`en`, `es`). Por ejemplo, para copiar la salida en inglés en un issue, en PowerShell:
+
+```powershell
+$env:CRISOL_LANG = "en"; crisol doctor
+```
+
+`--json` sale siempre en inglés, y `--help` también. Mientras se terminan de traducir, algunos mensajes todavía salen en inglés.
+
 ## Avisos de Windows
 
 Las primeras versiones **no están firmadas** con Authenticode (ADR-0024, sección 5). Windows puede mostrar SmartScreen («editor desconocido») y el aviso de administrador de `crisol setup` dirá lo mismo. La firma llegará más adelante.

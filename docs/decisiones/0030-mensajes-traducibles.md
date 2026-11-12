@@ -40,7 +40,7 @@ Lo decide `crisol_core::i18n::choose(env, preferred) -> Language`, una función 
 ### 4. Quién traduce: el cliente, nunca el daemon
 
 - **El daemon siempre contesta en inglés**, como hoy, y además manda la clave y los datos. No sabe ni le importa quién lo lee, y dos clientes con idiomas distintos pueden hablarle a la vez.
-- **El protocolo gana el tipo `Text`** (`{ "key": "…", "args": { "name": "valor" } }`) y campos opcionales junto a cada texto traducible. Los campos de hoy siguen ahí y en inglés. **El protocolo sigue en la versión 3** (ADR-0025): solo se agregan campos opcionales, que un cliente viejo ignora y que un daemon viejo no manda.
+- **El protocolo gana el tipo `Text`** (`{ "key": "…", "args": { "name": "valor" } }`) y campos opcionales junto a cada texto traducible. Los campos de hoy siguen ahí y en inglés. **El protocolo sigue en la versión 4** (ADR-0025; decía 3 por error, corregido en la revisión de F13.10a): solo se agregan campos opcionales, que un cliente viejo ignora y que un daemon viejo no manda.
   - `RpcError`: `text` y `fix_text`.
   - `Check`: `name_text`, `detail_text` y `fix_text`. `name` sigue siendo el identificador inglés de la fila.
   - `DoneInfo` y `StatusInfo`: `message_text` y `warnings_text`. `warnings_text` es `Vec<Option<Text>>`, vacío o del mismo largo que `warnings`; si el largo no coincide, el cliente lo ignora.
