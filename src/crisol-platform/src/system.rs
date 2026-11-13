@@ -17,7 +17,7 @@ use crisol_core::dns::{status as nrpt_status, NrptStatus};
 use crisol_core::engine::{Deps, SystemChecks};
 use crisol_core::fetch::HttpFetcher;
 use crisol_core::hosts::{block_names, foreign_names, HostsFile};
-use crisol_core::i18n::{finding, Fix, Localized, Message};
+use crisol_core::i18n::{finding, io_said, Fix, Localized, Message};
 use crisol_core::msg;
 use crisol_core::paths::CrisolPaths;
 use crisol_core::setup::suffix_of;
@@ -136,14 +136,7 @@ fn path_check(paths: &CrisolPaths) -> Check {
     let shims = paths.shims_dir();
     let status = match path_status(&RegistryUserPath::new(), paths, &|p| p.is_file()) {
         Ok(status) => status,
-        Err(error) => {
-            return check(
-                &name,
-                CheckStatus::Problem,
-                &msg!("io.error", error = error),
-                None,
-            )
-        }
+        Err(error) => return check(&name, CheckStatus::Problem, &io_said(&error), None),
     };
     let shadows = describe_shadows(&status.shadows);
     // What wins over the shims says more than whether they are in the PATH: the machine's Node
@@ -203,7 +196,7 @@ fn helper_check() -> Check {
         Err(error) => check_do(
             &name,
             CheckStatus::Problem,
-            &msg!("io.error", error = error),
+            &io_said(&error),
             local(LocalOp::SystemInstall),
         ),
     }
@@ -271,12 +264,7 @@ fn nrpt_check(tld: &str, daemon_running: bool) -> Check {
             ),
             None,
         ),
-        Err(error) => check(
-            &name,
-            CheckStatus::Problem,
-            &msg!("io.error", error = error),
-            None,
-        ),
+        Err(error) => check(&name, CheckStatus::Problem, &error.message(), None),
     }
 }
 
@@ -318,14 +306,7 @@ fn hosts_check(tld: &str) -> Check {
     let (names, foreign) =
         match block_names(&text).and_then(|n| Ok((n, foreign_names(&text, tld)?))) {
             Ok(found) => found,
-            Err(error) => {
-                return check(
-                    &name,
-                    CheckStatus::Problem,
-                    &msg!("io.error", error = error),
-                    None,
-                )
-            }
+            Err(error) => return check(&name, CheckStatus::Problem, &error.message(), None),
         };
     let ours = if names.is_empty() {
         msg!("doctor.hosts.none")
@@ -424,12 +405,7 @@ fn trust_check(paths: &CrisolPaths) -> Check {
             &msg!("doctor.ca.trusted", name = common_name),
             None,
         ),
-        Err(error) => check(
-            &name,
-            CheckStatus::Problem,
-            &msg!("io.error", error = error),
-            None,
-        ),
+        Err(error) => check(&name, CheckStatus::Problem, &io_said(&error), None),
     }
 }
 

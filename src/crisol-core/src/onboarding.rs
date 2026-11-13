@@ -19,7 +19,7 @@ use serde::{Serialize, Serializer};
 
 use crate::autostart::{self, Autostart, AutostartChange, AutostartError, AutostartState};
 use crate::ca::load_ca;
-use crate::i18n::{Localized, Message};
+use crate::i18n::{io_said, Localized, Message};
 use crate::msg;
 use crate::paths::{home_problems, CrisolPaths, HomeError, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
@@ -279,7 +279,7 @@ pub fn plan(system: &System<'_>, now: SystemTime) -> Plan {
         }),
         Err(error) => plan.notes.push(msg!(
             "setup.note.helper_unknown",
-            error = error,
+            error => io_said(&error),
             command = "crisol system install"
         )),
     }
@@ -507,7 +507,7 @@ fn do_step(system: &System<'_>, step: &Step, now: SystemTime) -> (OutcomeKind, M
             ),
             Err(error) => (
                 OutcomeKind::Failed,
-                msg!("setup.failed.helper", error = error),
+                msg!("setup.failed.helper", error => io_said(&error)),
             ),
         },
         Step::Autostart { daemon } => {

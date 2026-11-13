@@ -12,7 +12,7 @@ use std::io;
 use std::path::Path;
 
 use crate::globals::{shimmed_globals, sync_global_shims, GlobalSync};
-use crate::i18n::{and_list, Localized, Message};
+use crate::i18n::{and_list, io_said, Localized, Message};
 use crate::msg;
 use crate::paths::{CrisolPaths, PrivateDirs};
 use crate::programs::{require_trusted_program, ProgramError};
@@ -35,7 +35,7 @@ impl Localized for ShimsError {
     fn message(&self) -> Message {
         match self {
             Self::Program(error) => error.message(),
-            Self::Io(error) => msg!("io.error", error = error),
+            Self::Io(error) => io_said(error),
         }
     }
 }

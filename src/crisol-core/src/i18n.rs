@@ -361,6 +361,21 @@ impl Message {
     }
 }
 
+/// What a failed operation said. An error of Crisol's own carried inside an `io::Error` (the
+/// helper that cannot be used, a program that is not to be run) is said from its key, so it
+/// comes out in the person's language; the system's own text is said as it is.
+#[must_use]
+pub fn io_said(error: &std::io::Error) -> Message {
+    let inner = error.get_ref();
+    if let Some(problem) = inner.and_then(|e| e.downcast_ref::<crate::setup::HelperProblem>()) {
+        return problem.message();
+    }
+    if let Some(program) = inner.and_then(|e| e.downcast_ref::<crate::programs::ProgramError>()) {
+        return program.message();
+    }
+    msg!("io.error", error = error)
+}
+
 /// `items` one after the other with "and" in between (`a and b and c`), the word in the
 /// dictionary (`i18n.and`). Each item is shown as it is.
 #[must_use]
@@ -611,6 +626,34 @@ mod tests {
         assert_eq!(many.to_string(), "3 sites");
         assert_eq!(many.render(Language::SPANISH), "3 sitios");
         assert_eq!(one.render(Language::SPANISH), "1 sitio");
+    }
+
+    #[test]
+    fn an_error_of_crisol_inside_an_io_error_is_said_in_the_language() {
+        use crate::setup::HelperProblem;
+        let problem = HelperProblem::OtherVersion {
+            installed: "0.1.0".to_owned(),
+            expected: "0.2.0".to_owned(),
+        };
+        let english = problem.to_string();
+        let error = std::io::Error::new(std::io::ErrorKind::InvalidData, problem);
+        // The text of the error does not change, and its sentence is the one of its key.
+        assert_eq!(error.to_string(), english);
+        let said = io_said(&error);
+        assert_eq!(said.key(), "helper.other_version");
+        assert_eq!(said.to_string(), english);
+        assert!(
+            said.render(Language::SPANISH)
+                .starts_with("el ayudante con privilegios es de Crisol 0.1.0"),
+            "{}",
+            said.render(Language::SPANISH)
+        );
+        // The system's own text is said as it is.
+        let plain = std::io::Error::other("Access is denied.");
+        assert_eq!(
+            io_said(&plain).render(Language::SPANISH),
+            "Access is denied."
+        );
     }
 
     #[test]

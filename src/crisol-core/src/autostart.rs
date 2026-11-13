@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 
 use crisol_protocol::{Check, CheckAction, CheckStatus, LocalOp};
 
-use crate::i18n::{finding, Fix, Localized, Message};
+use crate::i18n::{finding, io_said, Fix, Localized, Message};
 use crate::msg;
 use crate::paths::PrivateDirs;
 use crate::programs::{require_trusted_program, ProgramError};
@@ -103,7 +103,7 @@ impl Localized for AutostartError {
     fn message(&self) -> Message {
         match self {
             Self::Program(error) => error.message(),
-            Self::Io(error) => msg!("io.error", error = error),
+            Self::Io(error) => io_said(error),
         }
     }
 }

@@ -213,7 +213,7 @@ fn error_messages_have_no_double_spaces() {
     for error in [
         HostsError::DamagedBlock {
             line: 3,
-            problem: "the block never ends",
+            problem: super::BlockProblem::NeverEnds,
         },
         HostsError::InvalidName("x".to_owned()),
     ] {

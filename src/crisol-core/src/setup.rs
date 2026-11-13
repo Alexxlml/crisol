@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::dns::{rule_for, DnsError, DEFAULT_DNS_ADDR};
 use crate::exclusions::{decode_home, encode_home};
-use crate::i18n::Message;
+use crate::i18n::{Localized, Message};
 use crate::msg;
 use crate::shell::powershell_quote;
 
@@ -96,14 +96,23 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Why the installed helper is not to be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HelperProblem {
+    /// There is no program where it is installed.
+    NotInstalled {
+        /// Where it was looked for.
+        path: String,
+    },
+    /// The program, or its folder, can be changed by accounts that are not administrators.
+    Exposed {
+        /// The file or folder that is open.
+        item: String,
+        /// The folder of the helper.
+        folder: String,
+    },
     /// There is no manifest: the helper was copied by hand, or by an older Crisol.
-    #[error("the privileged helper has no manifest, so there is no telling which program it is; install it again with `crisol system install`")]
     NoManifest,
     /// The manifest cannot be understood.
-    #[error("the manifest of the privileged helper is damaged ({0}); install it again with `crisol system install`")]
     DamagedManifest(String),
     /// The program is not the one that was installed.
-    #[error("the privileged helper is not the program that was installed (its hash is {actual}, the manifest says {recorded}); install it again with `crisol system install`")]
     Changed {
         /// What the manifest says.
         recorded: String,
@@ -111,7 +120,6 @@ pub enum HelperProblem {
         actual: String,
     },
     /// It was installed by another version of Crisol.
-    #[error("the privileged helper is from Crisol {installed} and this is Crisol {expected}; install it again with `crisol system install`")]
     OtherVersion {
         /// The version in the manifest.
         installed: String,
@@ -119,6 +127,43 @@ pub enum HelperProblem {
         expected: String,
     },
 }
+
+/// What reinstalls the helper, said as a datum in every sentence of [`HelperProblem`].
+const REINSTALL: &str = "crisol system install";
+
+impl Localized for HelperProblem {
+    fn message(&self) -> Message {
+        match self {
+            Self::NotInstalled { path } => {
+                msg!("helper.not_installed", path = path, command = REINSTALL)
+            }
+            Self::Exposed { item, folder } => {
+                msg!("helper.exposed", item = item, folder = folder)
+            }
+            Self::NoManifest => msg!("helper.no_manifest", command = REINSTALL),
+            Self::DamagedManifest(why) => {
+                msg!("helper.damaged_manifest", why = why, command = REINSTALL)
+            }
+            Self::Changed { recorded, actual } => msg!(
+                "helper.changed",
+                actual = actual,
+                recorded = recorded,
+                command = REINSTALL
+            ),
+            Self::OtherVersion {
+                installed,
+                expected,
+            } => msg!(
+                "helper.other_version",
+                installed = installed,
+                expected = expected,
+                command = REINSTALL
+            ),
+        }
+    }
+}
+
+crate::display_as_message!(HelperProblem);
 
 /// Whether the helper `program` with the manifest `text` is the one this Crisol (version
 /// `expected_version`) should run. Nothing is executed.

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crisol_core::dns::ElevatedOp;
-use crisol_core::setup::{check as check_manifest, SetupOp, MANIFEST_FILE};
+use crisol_core::setup::{check as check_manifest, HelperProblem, SetupOp, MANIFEST_FILE};
 use crisol_core::PrivateDirs;
 
 use crate::nrpt::{run_elevated, run_elevated_op};
@@ -73,14 +73,14 @@ impl HelperLocation {
 
     /// Whether the helper is there and nobody but the administrators can have changed it.
     pub fn verify(&self) -> io::Result<()> {
+        // The problem goes inside the error as it is, so that whoever shows it can say it in the
+        // person's language (`crisol_core::i18n::io_said`).
         if !self.path.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!(
-                    "the privileged helper is not installed at {}; `crisol system install` puts it \
-                     there (it needs an administrator, once)",
-                    self.path.display()
-                ),
+                HelperProblem::NotInstalled {
+                    path: self.path.display().to_string(),
+                },
             ));
         }
         let folder = self.path.parent().unwrap_or(&self.path);
@@ -88,14 +88,10 @@ impl HelperLocation {
             if self.dirs.is_writable_by_non_administrators(item)? {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    format!(
-                        "{} can be changed or owned by accounts that are not administrators, so \
-                         Crisol will not run the helper with administrator rights. Reinstall it \
-                         with the installer, or make sure only Administrators and SYSTEM can \
-                         write to {}",
-                        item.display(),
-                        folder.display()
-                    ),
+                    HelperProblem::Exposed {
+                        item: item.display().to_string(),
+                        folder: folder.display().to_string(),
+                    },
                 ));
             }
         }
@@ -108,7 +104,7 @@ impl HelperLocation {
             Err(e) => return Err(e),
         };
         check_manifest(text.as_deref(), &fs::read(&self.path)?, HELPER_VERSION)
-            .map_err(|problem| io::Error::new(io::ErrorKind::InvalidData, problem.to_string()))
+            .map_err(|problem| io::Error::new(io::ErrorKind::InvalidData, problem))
     }
 
     /// Checks the helper, and only then shows the UAC prompt and runs a setup operation (its

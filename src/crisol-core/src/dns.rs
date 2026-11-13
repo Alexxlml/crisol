@@ -23,6 +23,8 @@ use std::time::Duration;
 
 use crate::ca::is_special_use;
 use crate::hosts::{clean_names, HostsError, HostsManager, HostsManagerError};
+use crate::i18n::{Localized, Message};
+use crate::msg;
 
 pub mod fake;
 
@@ -325,30 +327,16 @@ pub enum EnableOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum DnsError {
     /// The suffix is not a plain domain name.
-    #[error("`{0}` is not a valid domain suffix")]
     InvalidSuffix(String),
     /// The server of a rule is not an IP address.
-    #[error("`{0}` is not an IP address")]
     InvalidAddress(String),
     /// The helper was given something other than one of its operations.
-    #[error("the helper does not do `{0}`; it only accepts nrpt-add <suffix> <ip>, nrpt-remove <suffix>, hosts-set <name>... and hosts-clear")]
     InvalidArguments(String),
     /// Only the reserved names may be pointed at the local responder.
-    #[error(
-        "`{0}` could be a real public domain; Crisol only resolves local, special-use suffixes \
-         (test, localhost, example, invalid, local, internal, home.arpa)"
-    )]
     NotSpecialUse(String),
     /// The server for the rule or the responder must be loopback.
-    #[error(
-        "{0} is not a loopback address; the local DNS server is never reachable from the network"
-    )]
     NotLoopback(IpAddr),
     /// Another tool already has a rule for this suffix.
-    #[error(
-        "the rule for `{namespace}` was made by something else (server {server}, comment \
-         `{comment}`); Crisol leaves it alone. Remove it yourself or use another suffix"
-    )]
     Foreign {
         /// The namespace.
         namespace: String,
@@ -358,15 +346,43 @@ pub enum DnsError {
         comment: String,
     },
     /// The socket could not be bound.
-    #[error("could not listen for DNS queries: {0}")]
     Bind(io::Error),
     /// The `hosts` file or the names for it are refused.
-    #[error(transparent)]
     Hosts(HostsError),
     /// The table could not be read or changed.
-    #[error("name resolution policy: {0}")]
     Policy(#[from] io::Error),
 }
+
+impl Localized for DnsError {
+    fn message(&self) -> Message {
+        match self {
+            Self::InvalidSuffix(suffix) => msg!("dns.invalid_suffix", suffix = suffix),
+            Self::InvalidAddress(address) => msg!("dns.invalid_address", address = address),
+            Self::InvalidArguments(given) => msg!(
+                "dns.invalid_arguments",
+                given = given,
+                accepted = "nrpt-add <suffix> <ip>, nrpt-remove <suffix>, hosts-set <name>... and hosts-clear"
+            ),
+            Self::NotSpecialUse(suffix) => msg!("dns.not_special_use", suffix = suffix),
+            Self::NotLoopback(address) => msg!("dns.not_loopback", address = address),
+            Self::Foreign {
+                namespace,
+                server,
+                comment,
+            } => msg!(
+                "dns.foreign",
+                namespace = namespace,
+                server = server,
+                comment = comment
+            ),
+            Self::Bind(error) => msg!("dns.bind", error = error),
+            Self::Hosts(error) => error.message(),
+            Self::Policy(error) => msg!("dns.policy", error => crate::i18n::io_said(error)),
+        }
+    }
+}
+
+crate::display_as_message!(DnsError);
 
 /// The rule Crisol would create for this suffix and server, after validating both.
 pub fn rule_for(suffix: &str, server: IpAddr) -> Result<NrptRule, DnsError> {

@@ -29,6 +29,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 
 use crate::ca::is_special_use;
+use crate::i18n::{Localized, Message};
+use crate::msg;
 
 /// First line of the block.
 pub const BEGIN: &str = "# BEGIN CRISOL";
@@ -41,20 +43,44 @@ const NOTE: &str = "# Managed by Crisol: whatever is between these markers is re
 pub enum HostsError {
     /// A `BEGIN` marker without its `END`, an `END` without `BEGIN`, markers in the wrong
     /// order, or more than one block.
-    #[error(
-        "the hosts file has a damaged Crisol block (line {line}: {problem}); fix or remove it by \
-         hand, Crisol will not guess"
-    )]
     DamagedBlock {
         /// 1-based line where the problem was found.
         line: usize,
         /// What is wrong.
-        problem: &'static str,
+        problem: BlockProblem,
     },
     /// The name is not a plain host name under a special-use suffix.
-    #[error("`{0}` cannot go in the hosts file: only plain names under test, localhost, example, invalid, local, internal or home.arpa")]
     InvalidName(String),
 }
+
+/// What is wrong with a damaged Crisol block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockProblem {
+    /// A second `BEGIN` marker.
+    SecondStart,
+    /// An `END` marker before any `BEGIN`.
+    EndWithoutStart,
+    /// A `BEGIN` marker with no `END`.
+    NeverEnds,
+}
+
+impl Localized for HostsError {
+    fn message(&self) -> Message {
+        match self {
+            Self::DamagedBlock { line, problem } => {
+                let problem = match problem {
+                    BlockProblem::SecondStart => msg!("hosts.block.second_start"),
+                    BlockProblem::EndWithoutStart => msg!("hosts.block.end_without_start"),
+                    BlockProblem::NeverEnds => msg!("hosts.block.never_ends"),
+                };
+                msg!("hosts.damaged_block", line = line, problem => problem)
+            }
+            Self::InvalidName(name) => msg!("hosts.invalid_name", name = name),
+        }
+    }
+}
+
+crate::display_as_message!(HostsError);
 
 /// A name that something else already defines in the file, outside the block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +150,7 @@ fn find_block(lines: &[&str]) -> Result<Option<(usize, usize)>, HostsError> {
                 if begin.is_some() || found.is_some() {
                     return Err(HostsError::DamagedBlock {
                         line: i + 1,
-                        problem: "a second block starts",
+                        problem: BlockProblem::SecondStart,
                     });
                 }
                 begin = Some(i);
@@ -134,7 +160,7 @@ fn find_block(lines: &[&str]) -> Result<Option<(usize, usize)>, HostsError> {
                 None => {
                     return Err(HostsError::DamagedBlock {
                         line: i + 1,
-                        problem: "an end marker with no start",
+                        problem: BlockProblem::EndWithoutStart,
                     })
                 }
             },
@@ -144,7 +170,7 @@ fn find_block(lines: &[&str]) -> Result<Option<(usize, usize)>, HostsError> {
     match begin {
         Some(b) => Err(HostsError::DamagedBlock {
             line: b + 1,
-            problem: "the block never ends",
+            problem: BlockProblem::NeverEnds,
         }),
         None => Ok(found),
     }

@@ -40,7 +40,7 @@ use crate::autostart::Autostart;
 use crate::dbservice::DbKind;
 use crate::dns::RULE_COMMENT;
 use crate::hosts::{BEGIN, END};
-use crate::i18n::Message;
+use crate::i18n::{io_said, Message};
 use crate::msg;
 use crate::paths::CrisolPaths;
 use crate::programs::WINGET_ID;
@@ -498,7 +498,7 @@ pub fn plan(system: &System<'_>, purge: bool) -> Plan {
         Ok(false) => without_helper(system, &suffix, &home, &mut plan),
         Err(error) => plan.problems.push(msg!(
             "teardown.problem.helper_unknown",
-            error = error,
+            error => io_said(&error),
             command = "crisol system uninstall"
         )),
     }
@@ -699,7 +699,7 @@ pub fn run(
                 ),
                 Err(error) => (
                     OutcomeKind::Failed,
-                    msg!("teardown.failed.helper", error = error),
+                    msg!("teardown.failed.helper", error => io_said(&error)),
                 ),
             },
             // Deleting comes last, and only when everything above is gone: a CA still trusted
