@@ -284,3 +284,5 @@ Reglas de toda la fase:
 ## Fuera de alcance de este plan
 
 Soporte Linux/macOS (solo se garantiza que el diseño lo permita), túneles/compartir sitios, bases de datos remotas, actualizaciones automáticas de Crisol y la traducción de `--help` de la CLI. Se planifican después de la Fase 13.
+
+**Antes de la GUI en Linux:** la bandeja de Tauri trae en Linux `glib` 0.18 (por `gtk` → `tray-icon`/`muda`), con la alerta GHSA-wrw7-89jp-8q8g (media, corregida en `glib` 0.20). En Windows no se compila, así que hoy no afecta. Hay que comprobar que Tauri ya usa `gtk` 0.20 o posterior (`cargo tree -i glib --target all`) antes de publicar la GUI para Linux. La alerta de Dependabot queda abierta como recordatorio (propietario, 2026-11-14).
